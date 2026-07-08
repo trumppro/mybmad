@@ -8,10 +8,10 @@ A minimal deterministic spine proving the thesis end-to-end: ≥3 real platform 
 
 ## Scope
 
-- `@spine/core`: in-memory engine passing the conformance suite in `packages/core/test/` (written first, from the prose FSM — see roadmap §1).
+- `@oahs/core`: in-memory engine passing the conformance suite in `packages/core/test/` (written first, from the prose FSM — see roadmap §1).
 - Persistence: PostgreSQL 16 + Drizzle; events + projections in one transaction.
-- Surfaces: MCP + HTTP from one zod contract source; gate-holder CLI (`spine inbox|approve|reject`).
-- Runner: `spine work` — poll, claim (fencing), claim-named worktree, mirror-on-dispatch, invoke dev-auto, parse HALT, run pinned verification, push, submit raw evidence.
+- Surfaces: MCP + HTTP from one zod contract source; gate-holder CLI (`oahs inbox|approve|reject`).
+- Runner: `oahs work` — poll, claim (fencing), claim-named worktree, mirror-on-dispatch, invoke dev-auto, parse HALT, run pinned verification, push, submit raw evidence.
 - Reconciler: detect-only.
 
 ## Out of scope (YAGNI — roadmap Build phases)

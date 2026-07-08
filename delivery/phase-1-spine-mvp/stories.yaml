@@ -4,7 +4,7 @@
 - id: '1'
   title: FSM transition engine passing the transitions conformance tests
   description: >-
-    Implement the versioned transition table and advanceState in @spine/core:
+    Implement the versioned transition table and advanceState in @oahs/core:
     golden path, never-downgrade, idempotency, privileged downgrade,
     dependency guard. Makes test/fsm-transitions.test.ts green.
   spec_checkpoint: true
@@ -98,13 +98,13 @@
   spec_checkpoint: true
 
 - id: '13'
-  title: Gate-holder CLI (spine inbox, approve, reject)
+  title: Gate-holder CLI (oahs inbox, approve, reject)
   description: >-
     Terminal surface for the human gate-holder: list items awaiting gates,
     approve or reject through the rails; no YAML files opened.
 
 - id: '14'
-  title: Runner CLI (spine work) driving unmodified bmad-dev-auto
+  title: Runner CLI (oahs work) driving unmodified bmad-dev-auto
   description: >-
     Poll, claim, claim-named worktree, mirror-on-dispatch, invoke the coding
     CLI, parse HALT and Auto Run Result, run pinned verification, push,

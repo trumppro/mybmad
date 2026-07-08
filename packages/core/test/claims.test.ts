@@ -327,13 +327,15 @@ describe('§1.3 claim protocol', () => {
     // missing token = failed data guard → GuardFailedError; a presented but
     // wrong token = fencing conflict → ConflictError (409).
 
-    it('backlog→draft without a claim → GuardFailedError, state untouched', () => {
+    // ARBITRATED PIN (see CONFORMANCE.md "Claims"): claims serialize the
+    // EXECUTION zone. Planning transitions (backlog→draft, draft→ready_for_dev)
+    // are permission-only — 4 other clusters advance them unclaimed, and the
+    // dispatch path (roadmap §2.3) always claims regardless of state. A
+    // presented token is still always validated (tests below).
+    it('backlog→draft succeeds without a claim — planning transitions are permission-only', () => {
       const { engine, actorId, workItemId } = setup();
-      expect(() => engine.advanceState({ workItemId, to: 'draft', actorId })).toThrow(
-        GuardFailedError,
-      );
-      // R§1.1 rank order starts at backlog — nothing moved
-      expect(engine.getWorkItem(workItemId).state).toBe('backlog');
+      const advanced = engine.advanceState({ workItemId, to: 'draft', actorId });
+      expect(advanced.state).toBe('draft');
     });
 
     it('ready_for_dev→in_progress without a claim → GuardFailedError', () => {

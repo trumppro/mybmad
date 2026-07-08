@@ -50,8 +50,9 @@ The word "skill" is overloaded three ways in our ecosystem. To keep the thesis d
 | D8 | `blocked` is an **overlay** (`blocked_reason` column), not an FSM state. HALT's blocking-condition taxonomy becomes its enum. | Preserves never-downgrade; unblock restores position without a backward transition. |
 | D9 | Work items are **born in git** (`stories.yaml`, per the existing stories schema) and imported idempotently into the spine. `sprint-status.yaml` becomes a report generated *from* the DB. | One direction of truth per datum; the dev-auto dispatch contract keeps working unchanged. |
 | D10 | The HALT contract keeps its **two terminal statuses** (`done` \| `blocked`). "Needs input" is `blocked` with condition `awaiting_human_input`. | 47 playbooks stay untouched; routing richness lives in the condition taxonomy. |
+| D11 | Product name: **oahs** — Open Agents Harness System. Package scope `@oahs/*`, CLI binary `oahs`. "Spine" remains the internal architecture term for the deterministic core (from the thesis); "oahs" is the product. Satisfies the trademark constraint (the code is MIT; "BMAD" is a trademark of BMad Code LLC — reused content stays attributed, the product carries its own name). | Decided by the product owner, 2026-07-08. |
 
-☐ Open: product name (the code is MIT; "BMAD" is a trademark of BMad Code LLC — the commercial platform needs its own name). Pricing, hosting, vendor posture remain open per the thesis.
+☐ Open: pricing, hosting, vendor posture remain open per the thesis.
 
 ---
 
@@ -124,7 +125,7 @@ The same contracts emitted as MCP tool definitions — same handler, same valida
 
 ### §2.3 Worker dispatch
 
-The dev-auto contract, promoted from files to API: dispatch = `{work_item, claim + fencing token, repo/branch-of-claim, playbook ref, spec_folder + story_id + invoke_dev_with}`. The runner (`spine work`, a small CLI/daemon on the dev machine):
+The dev-auto contract, promoted from files to API: dispatch = `{work_item, claim + fencing token, repo/branch-of-claim, playbook ref, spec_folder + story_id + invoke_dev_with}`. The runner (`oahs work`, a small CLI/daemon on the dev machine):
 
 1. polls/claims → creates the claim-named worktree → mirror-on-dispatch,
 2. invokes the coding CLI with the playbook untouched (dev-auto as-is),
@@ -232,7 +233,7 @@ What makes procurement say yes, sequenced last because none of it is retrofit if
 | Phase | Delivers | Exit criterion | Effort |
 |---|---|---|---|
 | **0** | This roadmap; PRD/architecture/backlog for the platform written *with BMAD playbooks* (dogfood from day 0); backlog converted to `stories.yaml`; **conformance test suite written from the prose FSM before any engine code** | Roadmap merged; unified schema fixed; ≥10 real stories importable; conformance suite red | S |
-| **1** | Minimal spine (~8 tables: actor, workspace, work_item, dependency, claim+fencing, event, evidence, gate_decision, flat grants), FSM engine passing conformance, MCP+HTTP tools (§2.2 list), `spine work` runner driving **unmodified dev-auto**, `spine inbox`/`approve`/`reject` for human gate-holders | ≥3 real platform stories end-to-end through the spine; negative tests pass (no-grant deny, race loses by constraint, zombie 409, fake-done deny, crash/adopt/suspend-resume recovery); a human approves a gate without opening YAML | L |
+| **1** | Minimal spine (~8 tables: actor, workspace, work_item, dependency, claim+fencing, event, evidence, gate_decision, flat grants), FSM engine passing conformance, MCP+HTTP tools (§2.2 list), `oahs work` runner driving **unmodified dev-auto**, `oahs inbox`/`approve`/`reject` for human gate-holders | ≥3 real platform stories end-to-end through the spine; negative tests pass (no-grant deny, race loses by constraint, zombie 409, fake-done deny, crash/adopt/suspend-resume recovery); a human approves a gate without opening YAML | L |
 | **2** | Full entitlements (§3): plan × governance × delivery, restrict-only layering, grant/revoke as gated writes | A reviewer-agent granted rejection-loopback but not done-approval: system allows the first, denies the second | M |
 | **3** | Chat (§5): threads, messages, mention router, notifications, WebSocket, first web UI; reconcile-diagnosis & next-task-suggester agents (read + post only) | A real feature discussed in-thread; PO mentions the dev agent; work round-trips; human approves through the gate, not the chat | L |
 | **4** | Non-coding teammates (§0.2 playbooks as PM/UX/architect/reviewer actors); non-code evidence rules | A PRD change drafted by the PM agent, reviewed by a reviewer agent, approved by a human PO — three actor kinds, one rails | M |

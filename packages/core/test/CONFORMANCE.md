@@ -2,7 +2,7 @@
 
 This suite is the **specification** of the spine engine. It was written *before* any engine code, translated from the prose rules in the BMAD source (`bmad-sprint-planning`, `bmad-dev-auto`, `bmad-quick-dev`, `stories-schema.md`) as arbitrated in [product-roadmap.md](../../../product-roadmap.md) §1. The engine (`src/`) is implemented to make this suite pass — never the other way around. **Do not edit tests to fit an implementation**; a test change is a spec change and needs the same review as a roadmap edit.
 
-Run: `pnpm test` (in `packages/core`). Expected state pre-engine: **113 red / 2 green** (the two green tests pin exported vocabulary constants). All red failures must be `NotImplementedError` — any other failure is a suite bug.
+Run: `pnpm test` (in `packages/core`). History: the suite was born **113 red / 2 green** against `NotImplementedError` stubs; the in-memory reference engine (story "1"–"10" domain, `src/engine.ts`) turned it **115/115 green**. Two inter-cluster contradictions surfaced during implementation and were arbitrated below (marked ⚖); each required editing exactly one pin, recorded here.
 
 Files: `fsm-transitions` (14) · `blocked-overlay` (9) · `epic-lift` (4) · `claims` (17) · `concurrency` (7) · `gates-evidence` (12) · `review-loop` (6) · `stories-import` (13) · `intent-hash` (12) · `checkpoints-dispatch` (12) · `reconcile` (9).
 
@@ -27,13 +27,14 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 - Items without `spec_checkpoint` may advance `draft→ready_for_dev` via plain `advanceState` (the gate is mandatory only when the checkpoint is set).
 
 ### Claims
+- ⚖ **Claims serialize the execution zone.** `ready_for_dev→in_progress` and `in_progress→in_review` demand a presented, live fencing token. Planning transitions (`backlog→draft`, `draft→ready_for_dev`) are **permission-only** — arbitrated when the claims cluster's pin ("backlog→draft needs a claim") contradicted four other clusters that advance planning transitions unclaimed. Majority + domain: claims exist to stop two *workers* colliding; the dispatch path (roadmap §2.3) always claims regardless of state, so dispatched drafting is still serialized. A **presented** token is always validated on every command (stale/foreign → `ConflictError` + audit event), even on planning transitions. One `claims.test.ts` test was rewritten to pin the arbitrated reading.
 - One claim may live across multiple transitions (claim at `backlog`, drive to `in_review` on one fencing token); claims are also valid at `backlog`, and at `in_progress`/`in_review` when no live claim exists (resume).
 - Heartbeat renews the full original TTL from the heartbeat moment.
 - A claim survives a rejection loopback (rework under the same lease).
 - Gate approvals by non-claim-holders work while someone else holds the claim.
 
 ### Evidence
-- `in_progress→in_review` requires a non-empty `git_diff` to exist (not merely rejecting a submitted empty one).
+- ⚖ `in_progress→in_review`: the **latest submitted `git_diff`, if any, must be non-empty** (the fake-done deny). Absence is not checked at this transition — arbitrated when claims/concurrency fixtures (which defer evidence semantics to the gates cluster) advance to review without a diff. The runner contract submits the diff before requesting review, and the done gate independently demands remote-reachable commit evidence, so absence cannot reach `done` unverified. No test was edited; the gates cluster's empty-diff deny keeps its meaning.
 - Dependency guard pinned only at `ready_for_dev→in_progress` (an item with unmet deps can still be drafted and spec-approved).
 
 ### Import / hash / reconcile
