@@ -1,0 +1,117 @@
+# Phase 1 backlog — stories run top to bottom (see ../../product-roadmap.md, Build phases).
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: '1'
+  title: FSM transition engine passing the transitions conformance tests
+  description: >-
+    Implement the versioned transition table and advanceState in @spine/core:
+    golden path, never-downgrade, idempotency, privileged downgrade,
+    dependency guard. Makes test/fsm-transitions.test.ts green.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Engine is pure in-memory TypeScript in packages/core/src; no I/O, no
+    Postgres yet. Do not modify test files — they are the specification.
+
+- id: '2'
+  title: Claim protocol with lease and fencing tokens
+  description: >-
+    Single live claim per work item, TTL lease with heartbeat, monotonic
+    fencing token required on every worker mutation. Makes claims.test.ts
+    and concurrency.test.ts green.
+  invoke_dev_with: >-
+    Races must lose by construction (single-writer in-memory now, unique
+    constraint in Postgres later) — never by best-effort checks.
+
+- id: '3'
+  title: Blocked overlay and blocking-condition taxonomy
+  description: >-
+    blockTask/unblockTask as an overlay that freezes transitions without
+    changing the base state; review_non_convergence release restricted to
+    review-gate holders. Makes blocked-overlay.test.ts green.
+
+- id: '4'
+  title: Gate decisions, pinned verification, and evidence verdicts
+  description: >-
+    approveGate/rejectGate with grant checks; verification commands pinned at
+    spec approval; verdicts computed in core from raw evidence only. Makes
+    gates-evidence.test.ts green.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Roadmap D7 is the law here: an LLM-authored command is never a guard.
+    Review reports are context, never conditions.
+
+- id: '5'
+  title: Review loop with system-effect loopback
+  description: >-
+    Gate rejection fires the loopback deterministically (system actor,
+    causation chain), exactly five loopbacks then review_non_convergence.
+    Makes review-loop.test.ts green.
+
+- id: '6'
+  title: Intent hash with dual-tag extraction and canonicalization
+  description: >-
+    extractIntentRegion for both intent-contract and frozen-after-approval
+    tags, canonicalization, versioned hash. Makes intent-hash.test.ts green.
+
+- id: '7'
+  title: Epic lift projector and feature lifecycle
+  description: >-
+    First child leaving backlog lifts the feature; idempotent on retry;
+    feature done is never automatic. Makes epic-lift.test.ts green.
+
+- id: '8'
+  title: stories.yaml importer with validity rules
+  description: >-
+    Parse and validate per stories-schema (unique prefix-free quoted ids, no
+    status field), idempotent re-import honoring id pinning. Makes
+    stories-import.test.ts green.
+
+- id: '9'
+  title: Checkpoint semantics and dispatch holds
+  description: >-
+    spec_checkpoint gates spec approval; done_checkpoint holds further
+    dispatch after completion; done items refuse dispatch. Makes
+    checkpoints-dispatch.test.ts green.
+
+- id: '10'
+  title: Detect-only reconciler
+  description: >-
+    Frontmatter-vs-DB divergence reports, excluding files under live claims,
+    normalizing legacy vocabulary and the blocked overlay. Makes
+    reconcile.test.ts green. Roadmap D6: never mutates.
+
+- id: '11'
+  title: Postgres persistence with transactional event log
+  description: >-
+    Drizzle schema for the ~8 Phase-1 tables; events and projections written
+    in one transaction; UNIQUE(stream_id, stream_seq) as the optimistic lock;
+    conformance suite runs against both memory and Postgres engines.
+  spec_checkpoint: true
+  done_checkpoint: true
+
+- id: '12'
+  title: Contracts package and HTTP plus MCP adapters
+  description: >-
+    zod command/query schemas emitting OpenAPI and MCP tool definitions; one
+    Fastify service mounting both adapters over the same command bus; ops
+    commands included from day one.
+  spec_checkpoint: true
+
+- id: '13'
+  title: Gate-holder CLI (spine inbox, approve, reject)
+  description: >-
+    Terminal surface for the human gate-holder: list items awaiting gates,
+    approve or reject through the rails; no YAML files opened.
+
+- id: '14'
+  title: Runner CLI (spine work) driving unmodified bmad-dev-auto
+  description: >-
+    Poll, claim, claim-named worktree, mirror-on-dispatch, invoke the coding
+    CLI, parse HALT and Auto Run Result, run pinned verification, push,
+    submit raw evidence; crash recovery adopts decently-finished runs.
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    The runner measures, core judges. Integrate with playbooks only through
+    customize.toml hooks (activation_steps, workflow.on_complete) — never
+    edit SKILL.md bodies.

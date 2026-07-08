@@ -1,0 +1,48 @@
+# Conformance suite
+
+This suite is the **specification** of the spine engine. It was written *before* any engine code, translated from the prose rules in the BMAD source (`bmad-sprint-planning`, `bmad-dev-auto`, `bmad-quick-dev`, `stories-schema.md`) as arbitrated in [product-roadmap.md](../../../product-roadmap.md) §1. The engine (`src/`) is implemented to make this suite pass — never the other way around. **Do not edit tests to fit an implementation**; a test change is a spec change and needs the same review as a roadmap edit.
+
+Run: `pnpm test` (in `packages/core`). Expected state pre-engine: **113 red / 2 green** (the two green tests pin exported vocabulary constants). All red failures must be `NotImplementedError` — any other failure is a suite bug.
+
+Files: `fsm-transitions` (14) · `blocked-overlay` (9) · `epic-lift` (4) · `claims` (17) · `concurrency` (7) · `gates-evidence` (12) · `review-loop` (6) · `stories-import` (13) · `intent-hash` (12) · `checkpoints-dispatch` (12) · `reconcile` (9).
+
+## Interpretation pins
+
+Where the prose was ambiguous or sources conflicted, the suite **pins one reading**. Changing a pin = changing the spec. The load-bearing ones:
+
+### Arbitrated conflicts (roadmap wins over playbook prose)
+- **Epic-lift trigger**: sprint-planning says "when first story is *created*"; roadmap §1.2 says "first child *leaving backlog*". Suite follows the roadmap: `createWorkItem` does not lift; `backlog→draft` does.
+- **Worker push**: dev-auto says "do not push"; roadmap §1.4 makes `final_revision_reachable_on_remote` a done-gate guard. Roadmap wins.
+- **Review-loop counter after the blocking 6th rejection**: stays at 5 (counts *performed* loopbacks; dev-auto's file-side "write 6 then halt" is not adopted — DB is the only counter, roadmap §1.1). The item stays `in_review` + blocked overlay `review_non_convergence`; `rejectGate` records the decision and returns the blocked item rather than throwing.
+
+### Error taxonomy
+- Missing claim / token not presented → `GuardFailedError` (a data guard failed). Token *presented* but stale/foreign/no-live-claim → `ConflictError` (409). The engine never infers a claim from the actor — the token must be presented.
+- Undeclared transition (incl. never-downgrade) → `InvalidTransitionError`, checked **before** claim/token/permission.
+
+### Gates & authorization
+- `approveGate` performs the gated forward transition itself (spec_approval: `draft→ready_for_dev`; review_approval: `in_review→done`); evidence guards are evaluated there. (`checkpoints-dispatch` accepts either shape; `gates-evidence` pins it.)
+- Grants decide, actor type never does: an *agent* with `gate.review.approve` approves. `required_actor_types` is Phase-2 gate-definition data, not an engine check.
+- `state.downgrade` alone suffices for privileged correction (no claim, no `task.advance`).
+- Generic unblock authz is deliberately **unpinned**; only `review_non_convergence` is pinned to `gate.review.approve` holders.
+- Items without `spec_checkpoint` may advance `draft→ready_for_dev` via plain `advanceState` (the gate is mandatory only when the checkpoint is set).
+
+### Claims
+- One claim may live across multiple transitions (claim at `backlog`, drive to `in_review` on one fencing token); claims are also valid at `backlog`, and at `in_progress`/`in_review` when no live claim exists (resume).
+- Heartbeat renews the full original TTL from the heartbeat moment.
+- A claim survives a rejection loopback (rework under the same lease).
+- Gate approvals by non-claim-holders work while someone else holds the claim.
+
+### Evidence
+- `in_progress→in_review` requires a non-empty `git_diff` to exist (not merely rejecting a submitted empty one).
+- Dependency guard pinned only at `ready_for_dev→in_progress` (an item with unmet deps can still be drafted and spec-approved).
+
+### Import / hash / reconcile
+- Imported stories start at `backlog`. Re-import is idempotent and non-destructive under renumbering; filesystem-aware id-pinning is a TODO (the engine API does not model the spec folder).
+- `getWorkItem(id)` must also resolve an `externalKey` handle — **forcing function**: if the engine team rejects this, add `getWorkItemByKey` to the API and update `stories-import.test.ts` imports section.
+- Canonicalization pins only invariants (CRLF≡LF, trailing-space-insensitive, 3-blank ≡ 5-blank runs, single blank preserved) — not an exact collapse width.
+- Reconcile: `done`-in-file vs `in_progress`-in-DB reports `file_ahead`; files under a live claim are excluded; `blocked` frontmatter vs overlay+base-state is *not* divergence; legacy vocab (`review`/`in-review`) normalizes to `in_review`.
+
+### Event log
+- `streamSeq` is 1-based and gap-free per stream; which setup commands emit work-item events is unpinned (tests count deltas, not absolutes).
+- System-actor authorship (epic-lift, loopback) is asserted structurally: event `actorId` differs from every fixture-created actor and carries a `causationId`.
+- `stateVersion` is pinned strictly monotonic, not +1-per-mutation.
