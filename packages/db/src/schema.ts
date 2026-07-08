@@ -1,0 +1,159 @@
+/**
+ * Drizzle pg-core schema for the oahs spine (Phase 1 story 11).
+ *
+ * Design (product-roadmap.md §1.3, §1.5 — "races lose by constraint, not by
+ * application logic"):
+ *  - claims: partial unique index ON (work_item_id) WHERE released = false —
+ *    the second concurrent claim loses at the constraint, leaving no row.
+ *  - events: UNIQUE (stream_id, stream_seq) doubles as the optimistic lock;
+ *    global_seq is a serial identity.
+ *  - work_items: state_version int — CAS via UPDATE ... WHERE state_version = $expected.
+ *
+ * Hand-maintained twin DDL lives in schema-sql.ts (runs on PGlite in the
+ * conformance harness); keep the two in lockstep.
+ */
+import { sql } from 'drizzle-orm';
+import {
+  bigint,
+  boolean,
+  integer,
+  jsonb,
+  pgTable,
+  primaryKey,
+  serial,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core';
+
+// ---------------------------------------------------------------------------
+// actors — users, agents, and the per-workspace system actor (roadmap §1.2)
+// ---------------------------------------------------------------------------
+export const actors = pgTable('actors', {
+  id: text('id').primaryKey(),
+  type: text('type').notNull(), // 'user' | 'agent' | 'system'
+  displayName: text('display_name').notNull(),
+});
+
+// ---------------------------------------------------------------------------
+// grants — flat Phase-1 permission set (scope becomes meaningful in Phase 2)
+// ---------------------------------------------------------------------------
+export const grants = pgTable(
+  'grants',
+  {
+    actorId: text('actor_id').notNull(),
+    permission: text('permission').notNull(),
+    scope: text('scope'),
+  },
+  (t) => [primaryKey({ columns: [t.actorId, t.permission] })],
+);
+
+// ---------------------------------------------------------------------------
+// features — epic-level projection (state + done_checkpoint dispatch hold)
+// ---------------------------------------------------------------------------
+export const features = pgTable('features', {
+  id: text('id').primaryKey(),
+  seq: serial('seq').notNull(),
+  state: text('state').notNull(), // 'backlog' | 'in_progress' | 'done'
+  dispatchHold: boolean('dispatch_hold').notNull().default(false),
+});
+
+// ---------------------------------------------------------------------------
+// work_items — the unified work-item model (roadmap §1.1)
+// ---------------------------------------------------------------------------
+export const workItems = pgTable('work_items', {
+  id: text('id').primaryKey(),
+  /** creation order — backs first-writer-wins externalKey resolution */
+  seq: serial('seq').notNull(),
+  featureId: text('feature_id').notNull(),
+  externalKey: text('external_key').notNull(),
+  title: text('title').notNull(),
+  state: text('state').notNull(),
+  blockedReason: text('blocked_reason'), // overlay, not a state (D8)
+  reviewLoopIteration: integer('review_loop_iteration').notNull().default(0),
+  intentHash: text('intent_hash'),
+  pinnedVerification: jsonb('pinned_verification').$type<string[]>(), // Rules-layer data (D7)
+  specCheckpoint: boolean('spec_checkpoint').notNull().default(false),
+  doneCheckpoint: boolean('done_checkpoint').notNull().default(false),
+  invokeDevWith: text('invoke_dev_with').notNull().default(''),
+  specPath: text('spec_path').notNull(),
+  /** optimistic concurrency: CAS by UPDATE ... WHERE state_version = expected */
+  stateVersion: integer('state_version').notNull().default(0),
+  /** dependency externalKeys within the same feature */
+  dependsOn: jsonb('depends_on').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  /** monotonic fencing counter per work item (roadmap §1.3) */
+  lastFencingToken: integer('last_fencing_token').notNull().default(0),
+});
+
+// ---------------------------------------------------------------------------
+// claims — leases + fencing tokens; ONE live claim per item BY CONSTRAINT
+// ---------------------------------------------------------------------------
+export const claims = pgTable(
+  'claims',
+  {
+    id: text('id').primaryKey(),
+    seq: serial('seq').notNull(),
+    workItemId: text('work_item_id').notNull(),
+    actorId: text('actor_id').notNull(),
+    fencingToken: integer('fencing_token').notNull(),
+    /** engine-clock milliseconds (JS field `now`), never SQL now() */
+    leaseExpiresAt: bigint('lease_expires_at', { mode: 'number' }).notNull(),
+    released: boolean('released').notNull().default(false),
+    ttlMs: bigint('ttl_ms', { mode: 'number' }).notNull(),
+  },
+  (t) => [
+    // roadmap §1.3: "One live claim per work item, enforced by a partial
+    // unique index — races lose by constraint, not by application logic."
+    uniqueIndex('claims_one_live_per_item').on(t.workItemId).where(sql`released = false`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// gate_decisions — permission snapshot + decision record (roadmap §1.4)
+// ---------------------------------------------------------------------------
+export const gateDecisions = pgTable('gate_decisions', {
+  seq: serial('seq').primaryKey(),
+  workItemId: text('work_item_id').notNull(),
+  gate: text('gate').notNull(), // 'spec_approval' | 'review_approval'
+  decision: text('decision').notNull(), // 'approved' | 'rejected'
+  actorId: text('actor_id').notNull(),
+});
+
+// ---------------------------------------------------------------------------
+// evidence — machine-collected facts; seq orders "latest" semantics
+// ---------------------------------------------------------------------------
+export const evidence = pgTable('evidence', {
+  seq: serial('seq').primaryKey(),
+  workItemId: text('work_item_id').notNull(),
+  kind: text('kind').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+});
+
+// ---------------------------------------------------------------------------
+// events — append-only log, same-transaction as projections (roadmap §1.5)
+// ---------------------------------------------------------------------------
+export const events = pgTable(
+  'events',
+  {
+    globalSeq: serial('global_seq').primaryKey(),
+    streamType: text('stream_type').notNull(), // 'workspace'|'feature'|'work_item'|'actor'
+    streamId: text('stream_id').notNull(),
+    streamSeq: integer('stream_seq').notNull(),
+    type: text('type').notNull(),
+    actorId: text('actor_id').notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    causationId: text('causation_id'),
+    idempotencyKey: text('idempotency_key'),
+  },
+  (t) => [
+    // §1.5: "UNIQUE(stream_id, stream_seq) doubles as the optimistic lock."
+    uniqueIndex('events_stream_id_stream_seq').on(t.streamId, t.streamSeq),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// idempotency_keys — keyed replay returns the recorded result, appends nothing
+// ---------------------------------------------------------------------------
+export const idempotencyKeys = pgTable('idempotency_keys', {
+  key: text('key').primaryKey(),
+  result: jsonb('result').$type<Record<string, unknown>>().notNull(),
+});

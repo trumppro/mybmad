@@ -19,6 +19,7 @@
 export class NotImplementedError extends Error {
   constructor(what: string) {
     super(`Not implemented: ${what}`);
+    this.name = 'NotImplementedError';
   }
 }
 
@@ -29,6 +30,7 @@ export class PermissionDeniedError extends Error {
     public readonly actorId: string,
   ) {
     super(`permission denied: ${permission} for actor ${actorId}`);
+    this.name = 'PermissionDeniedError';
   }
 }
 
@@ -36,6 +38,7 @@ export class PermissionDeniedError extends Error {
 export class GuardFailedError extends Error {
   constructor(public readonly guard: string) {
     super(`guard failed: ${guard}`);
+    this.name = 'GuardFailedError';
   }
 }
 
@@ -43,6 +46,7 @@ export class GuardFailedError extends Error {
 export class ConflictError extends Error {
   constructor(public readonly reason: string) {
     super(`conflict: ${reason}`);
+    this.name = 'ConflictError';
   }
 }
 
@@ -53,6 +57,7 @@ export class InvalidTransitionError extends Error {
     public readonly to: WorkItemState,
   ) {
     super(`invalid transition: ${from} -> ${to}`);
+    this.name = 'InvalidTransitionError';
   }
 }
 
@@ -60,6 +65,7 @@ export class InvalidTransitionError extends Error {
 export class StoriesValidationError extends Error {
   constructor(public readonly rule: string) {
     super(`stories.yaml invalid: ${rule}`);
+    this.name = 'StoriesValidationError';
   }
 }
 
@@ -269,5 +275,7 @@ export interface SpineEngine {
   getWorkItem(id: string): WorkItem;
   getFeature(id: string): Feature;
   getClaims(workItemId: string): Claim[];
+  /** Additive query surface (post-conformance): list/filter work items. */
+  listWorkItems(filter?: { state?: WorkItemState; featureId?: string; claimable?: boolean }): WorkItem[];
   events(streamId?: string): SpineEvent[];
 }

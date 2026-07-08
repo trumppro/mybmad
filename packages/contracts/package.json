@@ -1,0 +1,21 @@
+{
+  "name": "@oahs/contracts",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Single zod source of truth for every oahs command: HTTP routes, MCP tool definitions, and the typed client are all generated from this registry (product-roadmap.md D5, §2.1-§2.2).",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@oahs/core": "file:../core",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}

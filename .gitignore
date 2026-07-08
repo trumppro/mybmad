@@ -89,3 +89,9 @@ build/
 
 # Web bundle release artifacts
 dist/web-bundles/
+
+# oahs build artifacts
+packages/*/dist/
+apps/*/dist/
+*.tsbuildinfo
+.oahs/

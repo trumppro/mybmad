@@ -13,7 +13,28 @@
  *  - No LLM SDK import anywhere under packages/core.
  *  - No code path outside command handlers writes projections.
  */
+import { createEngine as createMemoryEngine } from './engine.js';
+import type { SpineEngine } from './types.js';
+
 export * from './types.js';
 export { extractIntentRegion, canonicalizeForHash, computeIntentHash } from './intent-hash.js';
 export { parseStories, type StoryEntry } from './stories.js';
-export { createEngine } from './engine.js';
+
+/**
+ * Engine factory indirection: the conformance suite always calls
+ * createEngine(); a persistence package (e.g. @oahs/db) registers its own
+ * factory in a vitest setup file to run the IDENTICAL suite against Postgres
+ * (story "11": "conformance suite runs against both memory and Postgres
+ * engines"). Default is the in-memory reference engine.
+ */
+let engineFactory: () => SpineEngine = createMemoryEngine;
+
+export function setEngineFactory(factory: () => SpineEngine): void {
+  engineFactory = factory;
+}
+
+export function createEngine(): SpineEngine {
+  return engineFactory();
+}
+
+export { createMemoryEngine };

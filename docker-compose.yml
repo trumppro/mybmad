@@ -1,0 +1,23 @@
+# oahs local stack — self-host-shaped from day 1 (product-roadmap.md §7).
+# Tests run on PGlite and need nothing; this is for a persistent dogfood spine.
+#   docker compose up -d postgres
+#   DATABASE_URL=postgres://oahs:oahs@localhost:5433/oahs oahs serve
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: oahs
+      POSTGRES_PASSWORD: oahs
+      POSTGRES_DB: oahs
+    ports:
+      - '5433:5432'
+    volumes:
+      - oahs-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U oahs']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  oahs-pgdata:

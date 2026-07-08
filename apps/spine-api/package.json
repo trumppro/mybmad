@@ -1,0 +1,24 @@
+{
+  "name": "@oahs/spine-api",
+  "version": "0.0.1",
+  "private": true,
+  "description": "HTTP + MCP adapters over the one command bus (product-roadmap.md §2.1-§2.2). Both surfaces are thin parsers in front of the same CommandBus — parity is structural, not disciplined.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "@oahs/contracts": "file:../../packages/contracts",
+    "@oahs/core": "file:../../packages/core",
+    "fastify": "^5.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}

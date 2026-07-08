@@ -1,0 +1,96 @@
+/**
+ * Hand-maintained DDL matching schema.ts 1-1 (drizzle-kit migration pipeline
+ * is later debt). Runs on PGlite in the conformance harness worker.
+ */
+export const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS actors (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  display_name TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS grants (
+  actor_id TEXT NOT NULL,
+  permission TEXT NOT NULL,
+  scope TEXT,
+  PRIMARY KEY (actor_id, permission)
+);
+
+CREATE TABLE IF NOT EXISTS features (
+  id TEXT PRIMARY KEY,
+  seq SERIAL NOT NULL,
+  state TEXT NOT NULL,
+  dispatch_hold BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS work_items (
+  id TEXT PRIMARY KEY,
+  seq SERIAL NOT NULL,
+  feature_id TEXT NOT NULL,
+  external_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL,
+  blocked_reason TEXT,
+  review_loop_iteration INTEGER NOT NULL DEFAULT 0,
+  intent_hash TEXT,
+  pinned_verification JSONB,
+  spec_checkpoint BOOLEAN NOT NULL DEFAULT FALSE,
+  done_checkpoint BOOLEAN NOT NULL DEFAULT FALSE,
+  invoke_dev_with TEXT NOT NULL DEFAULT '',
+  spec_path TEXT NOT NULL,
+  state_version INTEGER NOT NULL DEFAULT 0,
+  depends_on JSONB NOT NULL DEFAULT '[]'::jsonb,
+  last_fencing_token INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS claims (
+  id TEXT PRIMARY KEY,
+  seq SERIAL NOT NULL,
+  work_item_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  fencing_token INTEGER NOT NULL,
+  lease_expires_at BIGINT NOT NULL,
+  released BOOLEAN NOT NULL DEFAULT FALSE,
+  ttl_ms BIGINT NOT NULL
+);
+
+-- roadmap §1.3: one live claim per work item — races lose by constraint.
+CREATE UNIQUE INDEX IF NOT EXISTS claims_one_live_per_item
+  ON claims (work_item_id) WHERE released = false;
+
+CREATE TABLE IF NOT EXISTS gate_decisions (
+  seq SERIAL PRIMARY KEY,
+  work_item_id TEXT NOT NULL,
+  gate TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  actor_id TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evidence (
+  seq SERIAL PRIMARY KEY,
+  work_item_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  global_seq SERIAL PRIMARY KEY,
+  stream_type TEXT NOT NULL,
+  stream_id TEXT NOT NULL,
+  stream_seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  causation_id TEXT,
+  idempotency_key TEXT
+);
+
+-- §1.5: UNIQUE(stream_id, stream_seq) doubles as the optimistic lock.
+CREATE UNIQUE INDEX IF NOT EXISTS events_stream_id_stream_seq
+  ON events (stream_id, stream_seq);
+
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key TEXT PRIMARY KEY,
+  result JSONB NOT NULL
+);
+`;

@@ -792,6 +792,17 @@ class EngineImpl implements SpineEngine {
     return this.copyFeature(feature);
   }
 
+  listWorkItems(filter?: { state?: WorkItemState; featureId?: string; claimable?: boolean }): WorkItem[] {
+    return [...this.workItems.values()]
+      .filter((item) => {
+        if (filter?.state !== undefined && item.state !== filter.state) return false;
+        if (filter?.featureId !== undefined && item.featureId !== filter.featureId) return false;
+        if (filter?.claimable === true && this.liveClaim(item.id) !== null) return false;
+        return true;
+      })
+      .map((item) => this.copyItem(item));
+  }
+
   getClaims(workItemId: string): Claim[] {
     const item = this.mustGetItem(workItemId);
     return (this.claimsByItem.get(item.id) ?? []).flatMap((claimId) => {
