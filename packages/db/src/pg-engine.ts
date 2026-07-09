@@ -43,6 +43,7 @@ import {
   type ActorType,
   type AdvanceInput,
   type AgentJob,
+  type AgentMemory,
   type AuthzExplanation,
   type BlockedReason,
   type Claim,
@@ -54,6 +55,7 @@ import {
   type GateDecisionInput,
   type GatePolicy,
   type GovernanceRole,
+  type MemoryKind,
   type Mention,
   type MentionResolution,
   type Message,
@@ -75,6 +77,7 @@ import {
 import {
   actors,
   agentJobs,
+  agentMemories,
   claims,
   evidence as evidenceTable,
   events,
@@ -106,6 +109,7 @@ type WorkspaceStateRow = typeof workspaceState.$inferSelect;
 type ThreadRow = typeof threads.$inferSelect;
 type MessageRow = typeof messages.$inferSelect;
 type AgentJobRow = typeof agentJobs.$inferSelect;
+type AgentMemoryRow = typeof agentMemories.$inferSelect;
 
 /** The single workspace_state row key (and the workspace event-stream id). */
 const WORKSPACE_ID = 'workspace';
@@ -234,6 +238,8 @@ export class PgEngine {
     ids.push(...(await this.db.select({ id: messages.id }).from(messages)).map((r) => r.id));
     ids.push(...(await this.db.select({ id: agentJobs.id }).from(agentJobs)).map((r) => r.id));
     ids.push(...(await this.db.select({ id: notifications.id }).from(notifications)).map((r) => r.id));
+    // Phase 5 (roadmap §6): memory ids (mem_*) are durable too.
+    ids.push(...(await this.db.select({ id: agentMemories.id }).from(agentMemories)).map((r) => r.id));
     let max = 0;
     for (const id of ids) {
       const sep = id.lastIndexOf('_');
@@ -1882,6 +1888,103 @@ export class PgEngine {
       if (trigger) await this.pushNotificationTx(tx, trigger.authorId, 'job_completed', job.id);
       return this.publicJob({ ...job, status: input.status, note });
     });
+  }
+
+  // -- agent memory (Phase 5, roadmap §6) ----------------------------------------
+
+  async appendAgentMemory(input: {
+    actorId: string;
+    kind: MemoryKind;
+    content: string;
+    sourceThreadId?: string;
+  }): Promise<AgentMemory> {
+    const actor = await this.getActorRow(input.actorId);
+    if (!actor) throw new GuardFailedError(`unknown actor: ${input.actorId}`);
+    if (actor.type !== 'agent') {
+      throw new GuardFailedError('memory belongs to agent actors (roadmap §6)');
+    }
+    let sourceThreadId: string | null = null;
+    let sourceVisibility: AgentMemory['sourceVisibility'] = null;
+    if (input.sourceThreadId !== undefined) {
+      const thread = await this.mustGetThread(input.sourceThreadId);
+      // Learning from a private context requires having been in it.
+      if (thread.visibility === 'private' && !this.isParticipant(thread, input.actorId)) {
+        throw new PermissionDeniedError('thread.read', input.actorId);
+      }
+      sourceThreadId = thread.id;
+      sourceVisibility = thread.visibility as AgentMemory['sourceVisibility'];
+    }
+    const id = this.nextId('mem');
+    return this.db.transaction(async (tx) => {
+      // Per-agent seq computed IN the transaction; UNIQUE(agent_actor_id, seq)
+      // makes a concurrent duplicate lose by constraint.
+      const [row] = await tx
+        .select({ maxSeq: sql<number>`coalesce(max(${agentMemories.seq}), 0)` })
+        .from(agentMemories)
+        .where(eq(agentMemories.agentActorId, input.actorId));
+      const seq = Number(row?.maxSeq ?? 0) + 1;
+      await tx.insert(agentMemories).values({
+        id,
+        agentActorId: input.actorId,
+        kind: input.kind,
+        content: input.content,
+        sourceThreadId,
+        sourceVisibility,
+        seq,
+      });
+      // Content NEVER enters the shared event log — private learning must not
+      // leak into the audit stream (roadmap §6 pin).
+      await this.appendTx(tx, 'actor', input.actorId, 'memory.appended', input.actorId, {
+        memoryId: id,
+        kind: input.kind,
+        sourceThreadId,
+      });
+      return {
+        id,
+        agentActorId: input.actorId,
+        kind: input.kind,
+        content: input.content,
+        sourceThreadId,
+        sourceVisibility,
+        seq,
+      };
+    });
+  }
+
+  async searchAgentMemory(input: {
+    actorId: string;
+    contextThreadId?: string;
+    kind?: MemoryKind;
+    query?: string;
+  }): Promise<AgentMemory[]> {
+    // Owner-scoped by construction: there is no cross-actor parameter.
+    const rows = await this.db
+      .select()
+      .from(agentMemories)
+      .where(eq(agentMemories.agentActorId, input.actorId))
+      .orderBy(asc(agentMemories.seq));
+    return rows
+      .filter((m) => {
+        if (input.kind !== undefined && m.kind !== input.kind) return false;
+        if (input.query !== undefined && !m.content.toLowerCase().includes(input.query.toLowerCase())) return false;
+        // §6: nothing learned in a private thread surfaces outside its
+        // source thread.
+        if (m.sourceVisibility === 'private' && m.sourceThreadId !== input.contextThreadId) return false;
+        return true;
+      })
+      .map((m) => this.publicMemory(m));
+  }
+
+  private publicMemory(row: AgentMemoryRow): AgentMemory {
+    return {
+      id: row.id,
+      agentActorId: row.agentActorId,
+      kind: row.kind as MemoryKind,
+      content: row.content,
+      sourceThreadId: row.sourceThreadId,
+      sourceVisibility: row.sourceVisibility as AgentMemory['sourceVisibility'],
+      seq: row.seq,
+    };
   }
 
   /** Rails → chat narration (§5.2): state changes narrate into bound task threads. */

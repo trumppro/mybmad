@@ -16,6 +16,7 @@ import {
   type Evidence,
   type GateCode,
   type GovernanceRole,
+  type MemoryKind,
   type Permission,
   type PlanCode,
   type SpineEngine,
@@ -88,6 +89,12 @@ interface MarkNotificationReadIn { notificationId: string }
 interface ListAgentJobsIn { agentActorId?: string | undefined; status?: AgentJob['status'] | undefined }
 interface CompleteAgentJobIn { jobId: string; status: 'done' | 'blocked'; note?: string | undefined }
 interface ReconcileIn { files: Array<{ workItemId: string; frontmatterStatus: string }> }
+interface AppendAgentMemoryIn { kind: MemoryKind; content: string; sourceThreadId?: string | undefined }
+interface SearchAgentMemoryIn {
+  contextThreadId?: string | undefined;
+  kind?: MemoryKind | undefined;
+  query?: string | undefined;
+}
 
 /** Compact one-line summary of zod issues (duck-typed: zod copies may differ). */
 function zodMessage(error: unknown): string {
@@ -400,6 +407,28 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
           actorId: ctx.actorId,
           status: p.status,
           ...(p.note !== undefined ? { note: p.note } : {}),
+        });
+      }
+
+      // -- agent memory (Phase 5, roadmap §6) ------------------------------------
+      // The memory owner is ALWAYS the ctx actor — no cross-actor parameter
+      // exists on the wire, so owner-scoping is structural, not disciplined.
+      case 'append_agent_memory': {
+        const p = parsed as AppendAgentMemoryIn;
+        return engine.appendAgentMemory({
+          actorId: ctx.actorId,
+          kind: p.kind,
+          content: p.content,
+          ...(p.sourceThreadId !== undefined ? { sourceThreadId: p.sourceThreadId } : {}),
+        });
+      }
+      case 'search_agent_memory': {
+        const p = parsed as SearchAgentMemoryIn;
+        return engine.searchAgentMemory({
+          actorId: ctx.actorId,
+          ...(p.contextThreadId !== undefined ? { contextThreadId: p.contextThreadId } : {}),
+          ...(p.kind !== undefined ? { kind: p.kind } : {}),
+          ...(p.query !== undefined ? { query: p.query } : {}),
         });
       }
 

@@ -64,6 +64,11 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 - **Personas**: `provisionPersonas` is a gated, idempotent write creating the six BMAD persona agent actors (`personaCode` set); floor-state roles (Amelia→developer, others→contributor); zero gate authority anywhere by default — the exit-criterion flow grants the PM agent its bundle **explicitly**.
 - `listActors` exposes everyone, system actor included (audit/picker transparency).
 
+### Phase 5 — agent memory (`agent-memory.test.ts`, all additive)
+- **Memory is owner-scoped by construction**: recall takes no cross-actor parameter; another actor's search simply never sees it. Agent actors only.
+- **Source-visibility filter (§6)**: learning from a private thread requires having been a participant; a private-sourced memory surfaces **only** when recalled inside its source thread — never in an open context.
+- **Learning never becomes authority**: 50 memories change zero authz outcomes (`authzExplain` and the live checks agree); the memory API has no path to grants. Memory **events never carry content** — private learning stays out of the shared audit log.
+
 ### Event log
 - `streamSeq` is 1-based and gap-free per stream; which setup commands emit work-item events is unpinned (tests count deltas, not absolutes).
 - System-actor authorship (epic-lift, loopback) is asserted structurally: event `actorId` differs from every fixture-created actor and carries a `causationId`.

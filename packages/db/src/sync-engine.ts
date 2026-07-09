@@ -96,6 +96,8 @@ const METHODS: Array<keyof SpineEngine> = [
   'markNotificationRead',
   'listAgentJobs',
   'completeAgentJob',
+  'appendAgentMemory',
+  'searchAgentMemory',
   'getWorkItem',
   'getFeature',
   'getClaims',

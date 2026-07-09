@@ -105,6 +105,22 @@ oahs doclint draft.md --require-section Intent --require-section Rollout \
 
 The Phase 4 exit criterion is a live test (memory, PGlite, HTTP): a PRD change **drafted by the PM agent** (under explicitly granted authority), **reviewed by a reviewer agent** (report as context, rejection as its granted loopback), **approved by a human PO** through the gate — three actor kinds, one rails, all three visible in the item's audit trail.
 
+### Learning teammates (Phase 5 — roadmap §6, Hermes)
+
+The worker **deepens**: a teammate runtime polls the router-materialized agent jobs and answers through the rails, with a workspace-scoped, visibility-filtered **memory** the platform governs. A [maturity spike](delivery/phase-5-hermes/SPIKE.md) decided the integration: **build nothing Hermes-specific into the spine** — Hermes ([Nous Research](https://github.com/NousResearch/hermes-agent), MIT) is just one `--agent-cmd` profile and one MCP client with an agent bearer token; Claude Code is another. Two memory layers, deliberately: Hermes' own internal learning loop makes the worker better at its craft; the spine's memory is the auditable store.
+
+```bash
+# The teammate runtime — pluggable brain. The agent reads a context file
+# ({job, messages, recalled memories}) and writes a reply file; the runtime
+# posts it through the rails, completes the job, and records an episodic memory.
+OAHS_TOKEN=<agent-token> oahs work --jobs \
+  --agent-cmd 'node my-teammate.mjs'          # or: hermes --print < "$OAHS_CONTEXT_FILE" > "$OAHS_REPLY_FILE"
+oahs memory --query "verification"            # owner-scoped: only this token's agent
+oahs stats reviews                            # review-loop iterations per kind — the "improves week-over-week" metric
+```
+
+**The guardrail is architectural, not a prompt** (thesis; §6): the memory API has no cross-actor parameter and no path to grants; a memory-rich agent is not one grant richer; memory events never carry content (private learning stays out of the shared audit log); and the MCP tool registry is versioned spine code with no "agent registers a tool" endpoint (pinned by a before/after `tools/list` equality test). *Learning makes the worker better, never more authorized.*
+
 ## Invariants (machine-checked)
 
 - **No LLM SDK inside the spine** — grep-lint in CI; the spine never interprets, it checks.
@@ -130,4 +146,4 @@ Evidence collected on a developer machine is as strong as the honest-operator as
 
 ## Status
 
-Phase 0 ✅, Phase 1 stories 1–14 ✅, Phase 2 entitlements ✅, Phase 3 collaboration ✅, **Phase 4 non-coding teammates ✅** (work-item kinds with §1.4 non-code evidence rules, doclint measuring tool, six BMAD personas provisioned floor-state, three-actor exit criterion — **450 tests green** across memory/PGlite/HTTP/CLI/UI). Remaining operational step: run ≥3 real platform stories end-to-end with a real coding agent (`oahs work` + Claude Code), then enforce *no platform work outside the spine*. Next build phases: 5 (Hermes learning teammates — a second runtime behind the same dispatch contract) and 6 (model gateway + server-side sandboxes).
+Phases 0–4 ✅, **Phase 5 learning teammates ✅** (workspace-scoped agent memory with the learning-never-authority guardrail machine-pinned, teammate jobs runtime with a pluggable brain, `stats reviews` metric, tool-registry-is-code pin, Hermes integration via existing seams — **478 tests green** across memory/PGlite/HTTP/CLI). Remaining operational step: run ≥3 real platform stories end-to-end with a real coding agent (`oahs work` + Claude Code), then enforce *no platform work outside the spine*. Next build phase: 6 (model gateway + server-side sandboxes) — the last one, deliberately after BYO has proven value; then 7 (enterprise: SSO/SCIM, audit export + signatures, RLS multi-tenancy).

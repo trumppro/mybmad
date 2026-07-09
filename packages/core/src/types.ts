@@ -393,6 +393,29 @@ export interface AgentJob {
 /** Depth cap for agent-mention-agent chains (§5.4: "depth counter"). */
 export const AGENT_JOB_MAX_DEPTH = 2;
 
+// ---------------------------------------------------------------------------
+// Agent memory (Phase 5, roadmap §6): the worker DEEPENS. Memory makes the
+// worker better, never more authorized — authority comes only from grants,
+// and the memory API has no path to them. Enforced by architecture: owner-
+// scoped reads, no cross-actor parameter, content never enters the shared
+// event log.
+// ---------------------------------------------------------------------------
+
+export type MemoryKind = 'episodic' | 'procedural' | 'entity';
+
+export interface AgentMemory {
+  id: string;
+  agentActorId: string;
+  kind: MemoryKind;
+  content: string;
+  /** Thread the memory was learned in, when applicable. */
+  sourceThreadId: string | null;
+  /** Visibility of the source context at learn time — recall filters on it (§6). */
+  sourceVisibility: ThreadVisibility | null;
+  /** Per-agent, 1-based, append order. */
+  seq: number;
+}
+
 export interface DivergenceReport {
   workItemId: string;
   fileState: string;
@@ -534,6 +557,26 @@ export interface SpineEngine {
   listAgentJobs(filter?: { agentActorId?: string; status?: AgentJob['status'] }): AgentJob[];
   /** Only the job's agent may complete it; completion notifies the mentioner. */
   completeAgentJob(input: { jobId: string; actorId: string; status: 'done' | 'blocked'; note?: string }): AgentJob;
+
+  // -- agent memory (Phase 5, roadmap §6) ----------------------------------------
+  /** Agents only; learning from a private thread requires having been in it. */
+  appendAgentMemory(input: {
+    actorId: string;
+    kind: MemoryKind;
+    content: string;
+    sourceThreadId?: string;
+  }): AgentMemory;
+  /**
+   * Owner-scoped recall: always and only the caller's memories. Private-
+   * sourced memories surface ONLY when recalled inside their source thread —
+   * nothing learned in a private thread surfaces in an open context (§6).
+   */
+  searchAgentMemory(input: {
+    actorId: string;
+    contextThreadId?: string;
+    kind?: MemoryKind;
+    query?: string;
+  }): AgentMemory[];
 
   // -- queries -------------------------------------------------------------
   getWorkItem(id: string): WorkItem;

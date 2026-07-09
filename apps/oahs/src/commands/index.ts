@@ -29,6 +29,8 @@ import { renderTable, type Cell } from '../format.js';
 
 // Phase 3 collaboration + advisor bots (roadmap §5) live in collab.ts.
 export * from './collab.js';
+// Phase 5 memory + review-convergence stats (roadmap §6) live in phase5.ts.
+export * from './phase5.js';
 
 export const GATES = ['spec_approval', 'review_approval'] as const;
 

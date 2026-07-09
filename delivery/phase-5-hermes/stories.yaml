@@ -1,0 +1,38 @@
+# Phase 5 backlog — see ../../product-roadmap.md §6 and SPIKE.md (decision).
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: "1"
+  title: Hermes maturity spike and integration decision
+  description: >-
+    Assess hermes-agent (license, runtime shape, learning loop, skills
+    format, MCP) and decide the integration seams. Output SPIKE.md.
+  done_checkpoint: true
+
+- id: "2"
+  title: Agent memory vocabulary and guardrail specs
+  description: >-
+    MemoryKind and AgentMemory types plus the owner-scoping,
+    source-visibility, and learning-never-authority pins; 8 conformance
+    tests written before implementation.
+  spec_checkpoint: true
+
+- id: "3"
+  title: Memory engine implementation
+  description: >-
+    appendAgentMemory and searchAgentMemory in the memory engine with
+    content-free audit events. Makes agent-memory.test.ts green.
+
+- id: "4"
+  title: PgEngine memory parity
+  description: >-
+    agent_memories table and faithful port; same suite green on PGlite with
+    durable restarts.
+  done_checkpoint: true
+
+- id: "5"
+  title: Teammate jobs runtime and memory rails
+  description: >-
+    append/search_agent_memory commands; runner jobs mode (poll agent_jobs,
+    context+memory file, pluggable agent-cmd, reply through rails, episodic
+    memory); oahs work --jobs, memory, stats reviews; tool-registry-is-code
+    pin over MCP.

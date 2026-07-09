@@ -256,6 +256,26 @@ export const notifications = pgTable('notifications', {
 });
 
 // ---------------------------------------------------------------------------
+// agent_memories — Phase 5 (roadmap §6): owner-scoped agent memory. seq is
+// per-agent, 1-based, append order — UNIQUE(agent_actor_id, seq) makes the
+// ordering a constraint, not a convention. Content lives ONLY here; memory
+// events never carry it.
+// ---------------------------------------------------------------------------
+export const agentMemories = pgTable(
+  'agent_memories',
+  {
+    id: text('id').primaryKey(),
+    agentActorId: text('agent_actor_id').notNull(),
+    kind: text('kind').notNull(), // 'episodic' | 'procedural' | 'entity'
+    content: text('content').notNull(),
+    sourceThreadId: text('source_thread_id'),
+    sourceVisibility: text('source_visibility'), // 'open' | 'private' | NULL
+    seq: integer('seq').notNull(),
+  },
+  (t) => [uniqueIndex('agent_memories_agent_actor_id_seq').on(t.agentActorId, t.seq)],
+);
+
+// ---------------------------------------------------------------------------
 // agent_jobs — router-materialized, reply-only context (§5.4): NEVER a claim,
 // never lifecycle authority. depth counts agent-mention-agent hops.
 // ---------------------------------------------------------------------------

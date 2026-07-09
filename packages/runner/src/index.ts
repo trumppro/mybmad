@@ -29,6 +29,9 @@
  */
 // Phase 4 (roadmap §1.4): the deterministic document lint for non-code work.
 export { lintDoc, type DocLintResult, type LintDocOptions } from './doclint.js';
+// Phase 5 (roadmap §6): the teammate JOBS runtime — reply-only agent jobs
+// served through the rails with memory recall/learning, zero lifecycle calls.
+export { jobsLoop, runJobsOnce, type JobsOnceResult, type JobsRunnerOptions } from './jobs.js';
 
 import { spawnSync } from 'node:child_process';
 import {

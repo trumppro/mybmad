@@ -358,6 +358,39 @@ export const COMMANDS = [
     }),
   ),
 
+  // -- agent memory (Phase 5, roadmap §6) -----------------------------------------
+  // Owner-scoped BY CONSTRUCTION: neither command takes an actor parameter —
+  // the memory owner is ALWAYS the authenticated ctx actor. Learning never
+  // becomes authority: these commands touch the memory store only, never a
+  // grant, gate, or transition.
+  def(
+    'append_agent_memory',
+    'Append a memory for the ctx agent actor (agents only). Learning from a private thread requires participation; memory events never carry content (§6).',
+    z.object({
+      kind: z.enum(['episodic', 'procedural', 'entity']),
+      content: z.string().min(1),
+      sourceThreadId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Thread the memory was learned in — its visibility gates recall (§6)'),
+    }),
+  ),
+  def(
+    'search_agent_memory',
+    'Recall the ctx actor’s OWN memories. Private-sourced memories surface only when contextThreadId is their source thread (§6).',
+    z.object({
+      contextThreadId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Thread the recall happens in — gates private-sourced memories'),
+      kind: z.enum(['episodic', 'procedural', 'entity']).optional(),
+      query: z.string().min(1).optional().describe('Case-insensitive substring filter'),
+    }),
+    true,
+  ),
+
   // -- reconciliation (roadmap §1.6, D6: detect-only) -----------------------------
   def(
     'reconcile',

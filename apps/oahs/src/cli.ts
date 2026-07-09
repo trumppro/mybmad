@@ -31,6 +31,7 @@ import {
   itemCreateCommand,
   jobCompleteCommand,
   jobsCommand,
+  memoryCommand,
   messagesCommand,
   notificationsCommand,
   personasProvisionCommand,
@@ -42,6 +43,7 @@ import {
   roleListCommand,
   roleRevokeCommand,
   runToOutput,
+  statsReviewsCommand,
   statusCommand,
   threadCreateCommand,
   threadListCommand,
@@ -458,6 +460,27 @@ export function buildProgram(): Command {
       ),
     );
 
+  // -- Phase 5 (roadmap §6): learning teammates -----------------------------------
+  withClientFlags(program.command('memory'))
+    .description('your OWN agent memories (owner-scoped by construction — no cross-actor parameter exists)')
+    .option('--kind <kind>', 'episodic | procedural | entity')
+    .option('--query <text>', 'case-insensitive substring filter')
+    .option('--context <threadId>', 'recall context thread (gates private-sourced memories, §6)')
+    .action(async (opts: ClientFlags & { kind?: string; query?: string; context?: string }) =>
+      emit(() =>
+        memoryCommand(clientFrom(opts), {
+          ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+          ...(opts.query !== undefined ? { query: opts.query } : {}),
+          ...(opts.context !== undefined ? { contextThreadId: opts.context } : {}),
+        }),
+      ),
+    );
+
+  const stats = program.command('stats').description('deterministic delivery metrics (roadmap §6)');
+  withClientFlags(stats.command('reviews'))
+    .description('review-loop convergence per kind + per item — the improve-week-over-week measuring stick')
+    .action(async (opts: ClientFlags) => emit(() => statsReviewsCommand(clientFrom(opts))));
+
   withClientFlags(program.command('events [streamId]'))
     .description('audit query over the append-only event log')
     .action(async (streamId: string | undefined, opts: ClientFlags) =>
@@ -468,17 +491,22 @@ export function buildProgram(): Command {
 
   // -- work (runner handoff; @oahs/runner lands with story 14) -------------------
   withClientFlags(program.command('work'))
-    .description('run the BYO worker loop against this spine (requires @oahs/runner)')
-    .requiredOption('--repo <path>', 'target project git checkout')
-    .requiredOption('--spec-folder <rel>', 'spec folder relative to the repo root')
-    .requiredOption('--agent-cmd <template>', 'coding-agent command template ({SPEC_FOLDER} {STORY_ID} {INVOKE_WITH} {WORKTREE})')
-    .option('--once', 'dispatch at most one work item, then exit')
+    .description('run the BYO worker loop (coding) or --jobs: the teammate jobs loop (reply-only, roadmap §6)')
+    .option('--jobs', 'serve reply-only agent jobs for THIS token’s agent (mention-dispatch, zero lifecycle authority)')
+    .option('--repo <path>', 'target project git checkout (coding mode)')
+    .option('--spec-folder <rel>', 'spec folder relative to the repo root (coding mode)')
+    .requiredOption(
+      '--agent-cmd <template>',
+      'agent command template (coding: {SPEC_FOLDER} {STORY_ID} {INVOKE_WITH} {WORKTREE}; jobs: {CONTEXT_FILE} {REPLY_FILE} {THREAD_ID} {JOB_ID})',
+    )
+    .option('--once', 'run at most one dispatch/job cycle, then exit')
     .option('--poll <ms>', 'poll interval in milliseconds')
     .action(
       async (
         opts: ClientFlags & {
-          repo: string;
-          specFolder: string;
+          jobs?: boolean;
+          repo?: string;
+          specFolder?: string;
           agentCmd: string;
           once?: boolean;
           poll?: string;
@@ -489,6 +517,22 @@ export function buildProgram(): Command {
           // LAZY import: the runner is a fixed interface that may still be a
           // stub — the rest of the CLI must never pay for (or break on) it.
           const runner = await import('@oahs/runner');
+          if (opts.jobs === true) {
+            // The served agent is ALWAYS the authenticated token's actor —
+            // whoami, never a flag (owner-scoping mirrors the memory rails).
+            const me = await client.call<{ actorId: string }>('whoami');
+            await runner.jobsLoop({
+              client,
+              agentActorId: me.actorId,
+              agentCmd: opts.agentCmd,
+              ...(opts.poll !== undefined ? { pollMs: Number(opts.poll) } : {}),
+              ...(opts.once === true ? { once: true } : {}),
+            });
+            return;
+          }
+          if (opts.repo === undefined || opts.specFolder === undefined) {
+            throw new Error('coding mode requires --repo and --spec-folder (or pass --jobs)');
+          }
           await runner.workLoop({
             client,
             repoPath: resolve(opts.repo),

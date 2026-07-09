@@ -174,6 +174,22 @@ CREATE TABLE IF NOT EXISTS notifications (
   read BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+-- Phase 5 agent memory (roadmap §6). New table — IF NOT EXISTS upgrades
+-- durable Phase 1-4 data directories in place; no ALTER needed.
+CREATE TABLE IF NOT EXISTS agent_memories (
+  id TEXT PRIMARY KEY,
+  agent_actor_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content TEXT NOT NULL,
+  source_thread_id TEXT,
+  source_visibility TEXT,
+  seq INTEGER NOT NULL
+);
+
+-- §6: per-agent memory order is a CONSTRAINT (1-based append order).
+CREATE UNIQUE INDEX IF NOT EXISTS agent_memories_agent_actor_id_seq
+  ON agent_memories (agent_actor_id, seq);
+
 CREATE TABLE IF NOT EXISTS agent_jobs (
   id TEXT PRIMARY KEY,
   seq SERIAL NOT NULL,

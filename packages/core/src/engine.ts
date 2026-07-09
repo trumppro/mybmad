@@ -28,6 +28,8 @@ import {
   type AgentJob,
   type AuthzExplanation,
   type BlockedReason,
+  type AgentMemory,
+  type MemoryKind,
   type Mention,
   type Message,
   type Notification,
@@ -172,6 +174,9 @@ class EngineImpl implements SpineEngine {
   private readonly mentions: Mention[] = [];
   private readonly notifications: Notification[] = [];
   private readonly agentJobs = new Map<string, AgentJob>();
+
+  // -- agent memory state (Phase 5, roadmap §6) ----------------------------------
+  private readonly agentMemories: AgentMemory[] = [];
 
   readonly systemActorId: string;
 
@@ -1284,6 +1289,71 @@ class EngineImpl implements SpineEngine {
     const trigger = this.messages.find((m) => m.id === job.messageId);
     if (trigger) this.pushNotification(trigger.authorId, 'job_completed', job.id);
     return { ...job };
+  }
+
+  // -- agent memory (Phase 5, roadmap §6) ----------------------------------------
+
+  appendAgentMemory(input: {
+    actorId: string;
+    kind: MemoryKind;
+    content: string;
+    sourceThreadId?: string;
+  }): AgentMemory {
+    const actor = this.actors.get(input.actorId);
+    if (!actor) throw new GuardFailedError(`unknown actor: ${input.actorId}`);
+    if (actor.type !== 'agent') {
+      throw new GuardFailedError('memory belongs to agent actors (roadmap §6)');
+    }
+    let sourceThreadId: string | null = null;
+    let sourceVisibility: AgentMemory['sourceVisibility'] = null;
+    if (input.sourceThreadId !== undefined) {
+      const thread = this.mustGetThread(input.sourceThreadId);
+      // Learning from a private context requires having been in it.
+      if (thread.visibility === 'private' && !this.isParticipant(thread, input.actorId)) {
+        throw new PermissionDeniedError('thread.read', input.actorId);
+      }
+      sourceThreadId = thread.id;
+      sourceVisibility = thread.visibility;
+    }
+    const seq = this.agentMemories.filter((m) => m.agentActorId === input.actorId).length + 1;
+    const memory: AgentMemory = {
+      id: this.nextId('mem'),
+      agentActorId: input.actorId,
+      kind: input.kind,
+      content: input.content,
+      sourceThreadId,
+      sourceVisibility,
+      seq,
+    };
+    this.agentMemories.push(memory);
+    // Content NEVER enters the shared event log — private learning must not
+    // leak into the audit stream (roadmap §6 pin).
+    this.append('actor', input.actorId, 'memory.appended', input.actorId, {
+      memoryId: memory.id,
+      kind: memory.kind,
+      sourceThreadId,
+    });
+    return { ...memory };
+  }
+
+  searchAgentMemory(input: {
+    actorId: string;
+    contextThreadId?: string;
+    kind?: MemoryKind;
+    query?: string;
+  }): AgentMemory[] {
+    // Owner-scoped by construction: there is no cross-actor parameter.
+    return this.agentMemories
+      .filter((m) => {
+        if (m.agentActorId !== input.actorId) return false;
+        if (input.kind !== undefined && m.kind !== input.kind) return false;
+        if (input.query !== undefined && !m.content.toLowerCase().includes(input.query.toLowerCase())) return false;
+        // §6: nothing learned in a private thread surfaces outside its
+        // source thread.
+        if (m.sourceVisibility === 'private' && m.sourceThreadId !== input.contextThreadId) return false;
+        return true;
+      })
+      .map((m) => ({ ...m }));
   }
 
   /** Rails → chat narration (§5.2): state changes narrate into bound task threads. */
