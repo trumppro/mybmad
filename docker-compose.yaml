@@ -1,9 +1,47 @@
 # oahs local stack — self-host-shaped from day 1 (product-roadmap.md §7).
-# Tests run on PGlite and need nothing; this is for a persistent dogfood spine.
-#   docker compose up -d postgres
-#   DATABASE_URL=postgres://oahs:oahs@localhost:5433/oahs oahs serve
+#
+#   cp .env.example .env               # fill OAHS_MODEL_*; set OAHS_ADMIN_TOKEN
+#   docker compose up -d --build oahs  # → http://localhost:4521/ui
+#
+# The app persists to a durable PGlite volume (/data) — NO database service is
+# required to run. The postgres service is kept behind a profile for the future
+# DATABASE_URL path (roadmap §7); the spine does not use it yet.
+#   docker compose --profile postgres up -d postgres
 services:
+  oahs:
+    build:
+      context: .
+      dockerfile: apps/oahs/Dockerfile
+    image: oahs:local
+    # Gateway creds (OAHS_MODEL_*) live in .env; optional so `up` works without it.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OAHS_ADMIN_TOKEN: ${OAHS_ADMIN_TOKEN:-change-me}
+      OAHS_PORT: ${OAHS_PORT:-4521}
+    # `oahs serve` binds 0.0.0.0 by default (serve.ts) — no --host flag exists.
+    command: ["serve", "--data", "/data", "--port", "${OAHS_PORT:-4521}"]
+    ports:
+      - "${OAHS_PORT:-4521}:${OAHS_PORT:-4521}"
+    volumes:
+      - oahs-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:'+(process.env.OAHS_PORT||4521)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   postgres:
+    profiles: ["postgres"] # opt-in: the app does not use this yet (roadmap §7)
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: oahs
@@ -20,4 +58,5 @@ services:
       retries: 10
 
 volumes:
+  oahs-data: {}
   oahs-pgdata: {}

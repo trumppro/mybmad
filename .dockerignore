@@ -1,0 +1,40 @@
+# Keep the build context to the oahs workspace. NOTE: pnpm-lock.yaml and
+# pnpm-workspace.yaml are .gitignored but REQUIRED here — never exclude them.
+
+# Dependencies & build output (reinstalled / rebuilt in the image)
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+apps/oahs/bin
+apps/oahs/public
+apps/spine-api/public
+
+# VCS & local state
+.git
+.github
+.husky
+.vscode
+.oahs
+.playwright-mcp
+coverage
+test-output
+
+# Secrets & env (provided at runtime via compose env_file, never baked in)
+.env
+
+# BMAD-method content & docs — not part of the @oahs CLI build graph
+src
+tools
+website
+docs
+web-bundles
+delivery
+.augment
+.claude-plugin
+
+# Large assets & misc
+*.png
+*.md
+CHANGELOG.md
+LICENSE
+CNAME

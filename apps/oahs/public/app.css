@@ -1,4 +1,8 @@
-/* oahs chat UI — zero-framework, chat-first (roadmap §5). */
+/* oahs ops console — zero-framework (roadmap §5, D3).
+   Organised in layers: tokens → base → layout (shell/sidebar/content) →
+   components (card/badge/table/form) → chat view → rails → responsive. */
+
+/* ---- tokens ---- */
 :root {
   --bg: #0f1216;
   --panel: #171b21;
@@ -11,8 +15,10 @@
   --warn: #e0a93e;
   --danger: #e06055;
   --system: #9a86c8;
+  --radius: 6px;
 }
 
+/* ---- base ---- */
 * { box-sizing: border-box; }
 
 body {
@@ -35,6 +41,7 @@ button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #08131f; font-weight: 600; }
 button.approve { color: var(--ok); }
 button.reject { color: var(--danger); }
+button.danger { color: var(--danger); border-color: var(--danger); }
 button:disabled { opacity: 0.5; cursor: default; }
 
 input, textarea, select {
@@ -56,6 +63,7 @@ h2 {
   text-transform: uppercase;
   color: var(--muted);
 }
+h3 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
 
 /* ---- login ---- */
 #login {
@@ -72,16 +80,16 @@ h2 {
 #login h1 { margin: 0 0 4px; font-size: 18px; }
 #login p { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
 
-/* ---- shell ---- */
+/* ---- shell: topbar + sidebar + content ---- */
 #shell {
   display: grid;
-  grid-template-columns: 240px 1fr 320px;
+  grid-template-columns: 184px 1fr;
   grid-template-rows: 44px 1fr;
   height: 100vh;
 }
 
 #topbar {
-  grid-column: 1 / 4;
+  grid-column: 1 / 3;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -94,15 +102,84 @@ h2 {
 #topbar .spacer { flex: 1; }
 #status { font-size: 12px; color: var(--warn); max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ---- columns ---- */
-.col {
+#sidebar {
+  grid-row: 2;
+  grid-column: 1;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
   overflow-y: auto;
-  padding: 12px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
+.nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  color: var(--muted);
+}
+.nav-item:hover { background: var(--panel-2); border-color: transparent; }
+.nav-item.active { background: var(--panel-2); border-color: var(--accent); color: var(--text); }
+
+#content {
+  grid-row: 2;
+  grid-column: 2;
+  overflow: hidden;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---- generic ops view (M2) ---- */
+.view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.view-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.view-head h2 { margin: 0; }
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+/* Controls in toolbars/tables/action rows size to content, not full width. */
+.toolbar input, .toolbar select, .toolbar textarea { width: auto; min-width: 150px; }
+.data-table input, .data-table select,
+.c-actions input, .c-actions select { width: auto; min-width: 90px; }
+.field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.field-label { color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; }
+.section-body { display: flex; flex-direction: column; gap: 8px; }
+.board { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; align-items: start; }
+.board .col-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
+.board .col-card > h3 { color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* ---- data table ---- */
+.table-scroll { overflow-x: auto; width: 100%; }
+.data-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.data-table th, .data-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.data-table th { color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; font-weight: 600; }
+.data-table tbody tr:hover { background: var(--panel); }
+.data-table td.wrap { white-space: normal; word-break: break-word; }
+pre.trace { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; overflow-x: auto; font-size: 12px; white-space: pre; }
+
+/* ---- chat view: three columns inside content ---- */
+.chat-shell {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 240px 1fr 320px;
+  min-width: 0;
+  min-height: 0;
+}
+.col { overflow-y: auto; padding: 12px; min-height: 0; }
 #col-threads { background: var(--panel); border-right: 1px solid var(--border); }
 #col-rails { background: var(--panel); border-left: 1px solid var(--border); }
 
-/* threads */
 .thread-item {
   display: block;
   width: 100%;
@@ -121,8 +198,7 @@ h2 {
 
 .new-thread { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
 
-/* chat */
-#col-chat { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+#col-chat { display: flex; flex-direction: column; padding: 0; overflow: hidden; min-height: 0; }
 #chat-head {
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
@@ -130,13 +206,13 @@ h2 {
   color: var(--muted);
   min-height: 40px;
 }
-#messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+#messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .msg { max-width: 72ch; }
 .msg .m-meta { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
-.msg .m-body { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
+.msg .m-body { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
 .msg .m-mentions { font-size: 11px; color: var(--accent); margin-top: 2px; }
 
-/* system narration — visibly different: rails speaking into chat */
+/* system narration — visibly different: rails speaking into chat (§5.2) */
 .msg.system .m-body {
   background: transparent;
   border: none;
@@ -155,26 +231,26 @@ h2 {
 #composer .row select#mention-picker { flex: 1; min-height: 56px; }
 .hint { font-size: 11px; color: var(--muted); }
 
-/* rails column */
+/* ---- rails column + cards ---- */
 .rails-note {
   font-size: 11px;
   color: var(--muted);
   border: 1px dashed var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 6px 8px;
   margin-bottom: 12px;
 }
 .card {
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 8px 10px;
   margin-bottom: 8px;
   font-size: 12px;
 }
 .card .c-title { font-weight: 600; margin-bottom: 2px; }
 .card .c-sub { color: var(--muted); word-break: break-all; }
-.card .c-actions { display: flex; gap: 6px; margin-top: 6px; }
+.card .c-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .card.unread { border-color: var(--accent); }
 .empty { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
 section { margin-bottom: 18px; }
@@ -192,3 +268,23 @@ section { margin-bottom: 18px; }
 .badge.queued { color: var(--warn); border-color: var(--warn); }
 .badge.done { color: var(--ok); border-color: var(--ok); }
 .badge.blocked { color: var(--danger); border-color: var(--danger); }
+.badge.draft, .badge.spec_checkpoint { color: var(--muted); }
+.badge.ready_for_dev, .badge.in_progress { color: var(--accent); border-color: var(--accent); }
+.badge.in_review { color: var(--warn); border-color: var(--warn); }
+
+/* ---- responsive: collapse sidebar + stack chat on narrow screens ---- */
+@media (max-width: 900px) {
+  #shell { grid-template-columns: 1fr; grid-template-rows: 44px auto 1fr; }
+  #sidebar {
+    grid-row: 2;
+    grid-column: 1;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-item { white-space: nowrap; width: auto; }
+  #content { grid-row: 3; grid-column: 1; }
+  .chat-shell { grid-template-columns: 1fr; grid-auto-rows: minmax(0, 1fr); overflow-y: auto; }
+  #col-threads, #col-rails { border: none; border-bottom: 1px solid var(--border); }
+}
