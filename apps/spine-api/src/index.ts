@@ -13,6 +13,12 @@ export { TokenStore, type ResolvedToken } from './auth.js';
 export { createCommandBus } from './bus.js';
 export { buildServer, errorEnvelope, errorName, type BuildServerOptions } from './server.js';
 export { buildMcpServer, registerMcpRoute } from './mcp.js';
+export {
+  pollingEventTail,
+  registerEventStream,
+  type EventStreamOptions,
+  type EventTail,
+} from './sse.js';
 
 export async function start(): Promise<void> {
   const port = Number(process.env['PORT'] ?? '3000');

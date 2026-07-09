@@ -194,3 +194,76 @@ export const idempotencyKeys = pgTable('idempotency_keys', {
   key: text('key').primaryKey(),
   result: jsonb('result').$type<Record<string, unknown>>().notNull(),
 });
+
+// ---------------------------------------------------------------------------
+// threads — the chat SURFACE (Phase 3, roadmap §5.3). participants is jsonb:
+// enforced for private threads, informational for open ones.
+// ---------------------------------------------------------------------------
+export const threads = pgTable('threads', {
+  id: text('id').primaryKey(),
+  seq: serial('seq').notNull(),
+  featureId: text('feature_id'),
+  workItemId: text('work_item_id'),
+  kind: text('kind').notNull(), // 'spec' | 'design' | 'task' | 'general' | 'private'
+  visibility: text('visibility').notNull(), // 'open' | 'private'
+  createdBy: text('created_by').notNull(),
+  participants: jsonb('participants').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+});
+
+// ---------------------------------------------------------------------------
+// messages — one column, one table for user AND agent authors (§5.3);
+// UNIQUE(thread_id, seq) keeps the per-thread sequence gap-free by constraint.
+// ---------------------------------------------------------------------------
+export const messages = pgTable(
+  'messages',
+  {
+    id: text('id').primaryKey(),
+    threadId: text('thread_id').notNull(),
+    seq: integer('seq').notNull(), // per-thread, 1-based, gap-free
+    authorId: text('author_id').notNull(),
+    kind: text('kind').notNull(), // 'chat' | 'system'
+    body: text('body').notNull(),
+    replyTo: text('reply_to'),
+  },
+  (t) => [uniqueIndex('messages_thread_id_seq').on(t.threadId, t.seq)],
+);
+
+// ---------------------------------------------------------------------------
+// mentions — STRUCTURED mention records + the router's recorded resolution
+// (§5.4). The server never parses message bodies.
+// ---------------------------------------------------------------------------
+export const mentions = pgTable('mentions', {
+  seq: serial('seq').primaryKey(),
+  messageId: text('message_id').notNull(),
+  mentionedActorId: text('mentioned_actor_id').notNull(),
+  resolution: text('resolution').notNull(), // 'notified'|'job_created'|'denied_policy'|'denied_depth'
+});
+
+// ---------------------------------------------------------------------------
+// notifications — mention/job-completion inbox rows (§5.4)
+// ---------------------------------------------------------------------------
+export const notifications = pgTable('notifications', {
+  id: text('id').primaryKey(),
+  seq: serial('seq').notNull(),
+  actorId: text('actor_id').notNull(),
+  source: text('source').notNull(), // 'mention' | 'job_completed'
+  refId: text('ref_id').notNull(), // messageId for mentions, jobId for completions
+  read: boolean('read').notNull().default(false),
+});
+
+// ---------------------------------------------------------------------------
+// agent_jobs — router-materialized, reply-only context (§5.4): NEVER a claim,
+// never lifecycle authority. depth counts agent-mention-agent hops.
+// ---------------------------------------------------------------------------
+export const agentJobs = pgTable('agent_jobs', {
+  id: text('id').primaryKey(),
+  seq: serial('seq').notNull(),
+  agentActorId: text('agent_actor_id').notNull(),
+  threadId: text('thread_id').notNull(),
+  messageId: text('message_id').notNull(),
+  workItemId: text('work_item_id'),
+  featureId: text('feature_id'),
+  status: text('status').notNull(), // 'queued' | 'done' | 'blocked'
+  depth: integer('depth').notNull().default(0),
+  note: text('note'),
+});

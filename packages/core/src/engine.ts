@@ -9,6 +9,7 @@
  */
 import {
   AGENT_GATE_APPROVE_PERMISSIONS,
+  AGENT_JOB_MAX_DEPTH,
   BLOCKED_REASONS,
   ConflictError,
   DEFAULT_PLAN,
@@ -23,8 +24,15 @@ import {
   type Actor,
   type ActorType,
   type AdvanceInput,
+  type AgentJob,
   type AuthzExplanation,
   type BlockedReason,
+  type Mention,
+  type Message,
+  type Notification,
+  type Thread,
+  type ThreadKind,
+  type ThreadVisibility,
   type Claim,
   type CreateWorkItemInput,
   type DivergenceReport,
@@ -155,6 +163,13 @@ class EngineImpl implements SpineEngine {
   private workspacePolicy: WorkspacePolicy = {};
   private policyVersion = 1;
   private readonly gatePolicies = new Map<GateCode, GatePolicy>();
+
+  // -- collaboration state (Phase 3, roadmap §5) --------------------------------
+  private readonly threads = new Map<string, Thread>();
+  private readonly messages: Message[] = [];
+  private readonly mentions: Mention[] = [];
+  private readonly notifications: Notification[] = [];
+  private readonly agentJobs = new Map<string, AgentJob>();
 
   readonly systemActorId: string;
 
@@ -748,6 +763,9 @@ class EngineImpl implements SpineEngine {
       }
     }
 
+    // Rails → chat: narrate the transition into bound task threads (§5.2).
+    this.narrateWorkItem(item, `state: ${from} → ${to}`);
+
     const result = this.copyItem(item);
     if (idempotencyKey !== undefined) this.idempotencyCache.set(idempotencyKey, { ...result });
     return result;
@@ -967,6 +985,260 @@ class EngineImpl implements SpineEngine {
     // §1.2: the loopback is a system effect — no claim-holder participation.
     item.reviewLoopIteration += 1;
     return this.executeTransition(item, 'in_progress', this.systemActorId, undefined, String(decisionEvent.globalSeq));
+  }
+
+  // -- collaboration (Phase 3, roadmap §5) ---------------------------------------
+
+  private mustGetThread(threadId: string): Thread {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new GuardFailedError(`unknown thread: ${threadId}`);
+    return thread;
+  }
+
+  private isParticipant(thread: Thread, actorId: string): boolean {
+    return thread.createdBy === actorId || thread.participants.includes(actorId);
+  }
+
+  createThread(input: {
+    actorId: string;
+    kind: ThreadKind;
+    featureId?: string;
+    workItemId?: string;
+    visibility?: ThreadVisibility;
+  }): Thread {
+    if (input.featureId !== undefined && !this.features.has(input.featureId)) {
+      throw new GuardFailedError(`unknown feature: ${input.featureId}`);
+    }
+    let workItemId: string | null = null;
+    if (input.workItemId !== undefined) {
+      workItemId = this.mustGetItem(input.workItemId).id;
+    }
+    const thread: Thread = {
+      id: this.nextId('th'),
+      featureId: input.featureId ?? null,
+      workItemId,
+      kind: input.kind,
+      visibility: input.visibility ?? (input.kind === 'private' ? 'private' : 'open'),
+      createdBy: input.actorId,
+      participants: [input.actorId],
+    };
+    this.threads.set(thread.id, thread);
+    this.append('thread', thread.id, 'thread.created', input.actorId, {
+      kind: thread.kind,
+      featureId: thread.featureId,
+      workItemId: thread.workItemId,
+      visibility: thread.visibility,
+    });
+    return { ...thread, participants: [...thread.participants] };
+  }
+
+  addThreadParticipant(input: { threadId: string; actorId: string; byActorId: string }): Thread {
+    const thread = this.mustGetThread(input.threadId);
+    if (!this.isParticipant(thread, input.byActorId)) {
+      throw new PermissionDeniedError('thread.invite', input.byActorId);
+    }
+    if (!this.actors.has(input.actorId)) throw new GuardFailedError(`unknown actor: ${input.actorId}`);
+    if (!thread.participants.includes(input.actorId)) {
+      thread.participants.push(input.actorId);
+      this.append('thread', thread.id, 'thread.participant_added', input.byActorId, {
+        actorId: input.actorId,
+      });
+    }
+    return { ...thread, participants: [...thread.participants] };
+  }
+
+  /** Internal append that never runs the router — used for chat, narration alike. */
+  private appendMessage(
+    thread: Thread,
+    authorId: string,
+    kind: Message['kind'],
+    body: string,
+    replyTo: string | null,
+  ): Message {
+    const seq = this.messages.filter((m) => m.threadId === thread.id).length + 1;
+    const message: Message = {
+      id: this.nextId('msg'),
+      threadId: thread.id,
+      seq,
+      authorId,
+      kind,
+      body,
+      replyTo,
+    };
+    this.messages.push(message);
+    this.append('thread', thread.id, 'message.posted', authorId, { messageId: message.id, kind });
+    return { ...message };
+  }
+
+  /**
+   * §5.2: the server NEVER parses body text — `mentions` is structured actor
+   * ids. §5.4: the router is pure code, default-deny, policy-gated,
+   * depth-capped; a job is reply-only context, never a claim.
+   */
+  postMessage(input: {
+    threadId: string;
+    actorId: string;
+    body: string;
+    replyTo?: string;
+    mentions?: string[];
+  }): Message {
+    const thread = this.mustGetThread(input.threadId);
+    if (thread.visibility === 'private' && !this.isParticipant(thread, input.actorId)) {
+      throw new PermissionDeniedError('thread.post', input.actorId);
+    }
+    const message = this.appendMessage(thread, input.actorId, 'chat', input.body, input.replyTo ?? null);
+
+    for (const mentionedId of [...new Set(input.mentions ?? [])]) {
+      const mentioned = this.actors.get(mentionedId);
+      if (!mentioned) throw new GuardFailedError(`unknown mentioned actor: ${mentionedId}`);
+      const resolution = this.routeMention(thread, message, input.actorId, mentioned);
+      this.mentions.push({ messageId: message.id, mentionedActorId: mentionedId, resolution });
+      this.append('thread', thread.id, 'mention.recorded', input.actorId, {
+        messageId: message.id,
+        mentionedActorId: mentionedId,
+        resolution,
+      });
+    }
+    return message;
+  }
+
+  /** The deterministic mention router (§5.4). Returns the recorded resolution. */
+  private routeMention(
+    thread: Thread,
+    message: Message,
+    mentionerId: string,
+    mentioned: Actor,
+  ): Mention['resolution'] {
+    if (mentioned.type !== 'agent') {
+      this.pushNotification(mentioned.id, 'mention', message.id);
+      return 'notified';
+    }
+    // kill-switch applies to every job-materializing path
+    if (this.workspacePolicy.mentionDispatch === false) return 'denied_policy';
+
+    const mentioner = this.actors.get(mentionerId);
+    let depth = 0;
+    if (mentioner?.type === 'agent') {
+      // agent-mention-agent: explicit policy + depth cap (§5.4)
+      if (this.workspacePolicy.agentMentionAgent !== true) return 'denied_policy';
+      const mentionerJobs = [...this.agentJobs.values()].filter((j) => j.agentActorId === mentionerId);
+      depth = Math.max(0, ...mentionerJobs.map((j) => j.depth)) + 1;
+      if (depth > AGENT_JOB_MAX_DEPTH) return 'denied_depth';
+    } else {
+      // default-deny: the human mentioner must hold invoke authority —
+      // at least one active delivery role, or governance admin.
+      const hasRole = this.roleAssignments.some((a) => a.actorId === mentionerId && !a.revoked);
+      const isAdmin = this.governanceRoles.get(mentionerId) === 'admin' || mentionerId === this.systemActorId;
+      if (!hasRole && !isAdmin) return 'denied_policy';
+    }
+
+    const job: AgentJob = {
+      id: this.nextId('job'),
+      agentActorId: mentioned.id,
+      threadId: thread.id,
+      messageId: message.id,
+      workItemId: thread.workItemId,
+      featureId: thread.featureId,
+      status: 'queued',
+      depth,
+      note: null,
+    };
+    this.agentJobs.set(job.id, job);
+    this.append('agent_job', job.id, 'agent_job.created', mentionerId, {
+      agentActorId: mentioned.id,
+      threadId: thread.id,
+      messageId: message.id,
+      depth,
+    });
+    this.pushNotification(mentioned.id, 'mention', message.id);
+    return 'job_created';
+  }
+
+  private pushNotification(actorId: string, source: Notification['source'], refId: string): void {
+    this.notifications.push({ id: this.nextId('ntf'), actorId, source, refId, read: false });
+  }
+
+  listThreads(filter?: { featureId?: string; workItemId?: string; actorId?: string }): Thread[] {
+    return [...this.threads.values()]
+      .filter((t) => {
+        if (filter?.featureId !== undefined && t.featureId !== filter.featureId) return false;
+        if (filter?.workItemId !== undefined) {
+          const resolved = this.mustGetItem(filter.workItemId).id;
+          if (t.workItemId !== resolved) return false;
+        }
+        if (filter?.actorId !== undefined && t.visibility === 'private' && !this.isParticipant(t, filter.actorId)) {
+          return false;
+        }
+        return true;
+      })
+      .map((t) => ({ ...t, participants: [...t.participants] }));
+  }
+
+  listMessages(input: { threadId: string; actorId: string; sinceSeq?: number }): Message[] {
+    const thread = this.mustGetThread(input.threadId);
+    if (thread.visibility === 'private' && !this.isParticipant(thread, input.actorId)) {
+      throw new PermissionDeniedError('thread.read', input.actorId);
+    }
+    return this.messages
+      .filter((m) => m.threadId === thread.id && (input.sinceSeq === undefined || m.seq > input.sinceSeq))
+      .map((m) => ({ ...m }));
+  }
+
+  listMentions(messageId: string): Mention[] {
+    return this.mentions.filter((m) => m.messageId === messageId).map((m) => ({ ...m }));
+  }
+
+  listNotifications(input: { actorId: string; unreadOnly?: boolean }): Notification[] {
+    return this.notifications
+      .filter((n) => n.actorId === input.actorId && (input.unreadOnly !== true || !n.read))
+      .map((n) => ({ ...n }));
+  }
+
+  markNotificationRead(input: { notificationId: string; actorId: string }): void {
+    const notification = this.notifications.find((n) => n.id === input.notificationId);
+    if (!notification) throw new GuardFailedError(`unknown notification: ${input.notificationId}`);
+    if (notification.actorId !== input.actorId) {
+      throw new PermissionDeniedError('thread.read', input.actorId);
+    }
+    notification.read = true;
+  }
+
+  listAgentJobs(filter?: { agentActorId?: string; status?: AgentJob['status'] }): AgentJob[] {
+    return [...this.agentJobs.values()]
+      .filter(
+        (j) =>
+          (filter?.agentActorId === undefined || j.agentActorId === filter.agentActorId) &&
+          (filter?.status === undefined || j.status === filter.status),
+      )
+      .map((j) => ({ ...j }));
+  }
+
+  completeAgentJob(input: { jobId: string; actorId: string; status: 'done' | 'blocked'; note?: string }): AgentJob {
+    const job = this.agentJobs.get(input.jobId);
+    if (!job) throw new GuardFailedError(`unknown agent job: ${input.jobId}`);
+    if (job.agentActorId !== input.actorId) {
+      throw new PermissionDeniedError('agent_job.complete', input.actorId);
+    }
+    if (job.status !== 'queued') throw new GuardFailedError(`agent job ${job.id} is already ${job.status}`);
+    job.status = input.status;
+    job.note = input.note ?? null;
+    this.append('agent_job', job.id, 'agent_job.completed', input.actorId, {
+      status: input.status,
+      note: job.note,
+    });
+    // notify the mentioner — the reverse direction is a message + notification, nothing more (§5.4)
+    const trigger = this.messages.find((m) => m.id === job.messageId);
+    if (trigger) this.pushNotification(trigger.authorId, 'job_completed', job.id);
+    return { ...job };
+  }
+
+  /** Rails → chat narration (§5.2): state changes narrate into bound task threads. */
+  private narrateWorkItem(item: WorkItemRow, body: string): void {
+    for (const thread of this.threads.values()) {
+      if (thread.workItemId === item.id) {
+        this.appendMessage(thread, this.systemActorId, 'system', body, null);
+      }
+    }
   }
 
   // -- dispatch (roadmap §2.3) -----------------------------------------------

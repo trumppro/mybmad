@@ -25,6 +25,7 @@ import type { PgliteDatabase } from 'drizzle-orm/pglite';
 
 import {
   AGENT_GATE_APPROVE_PERMISSIONS,
+  AGENT_JOB_MAX_DEPTH,
   BLOCKED_REASONS,
   ConflictError,
   DEFAULT_PLAN,
@@ -40,6 +41,7 @@ import {
   type Actor,
   type ActorType,
   type AdvanceInput,
+  type AgentJob,
   type AuthzExplanation,
   type BlockedReason,
   type Claim,
@@ -51,11 +53,18 @@ import {
   type GateDecisionInput,
   type GatePolicy,
   type GovernanceRole,
+  type Mention,
+  type MentionResolution,
+  type Message,
+  type Notification,
   type Permission,
   type PlanCode,
   type RoleAssignment,
   type SpineEvent,
   type StoriesImportResult,
+  type Thread,
+  type ThreadKind,
+  type ThreadVisibility,
   type WorkItem,
   type WorkItemState,
   type WorkspacePolicy,
@@ -63,6 +72,7 @@ import {
 
 import {
   actors,
+  agentJobs,
   claims,
   evidence as evidenceTable,
   events,
@@ -71,7 +81,11 @@ import {
   gatePolicies,
   grants,
   idempotencyKeys,
+  mentions,
+  messages,
+  notifications,
   roleAssignments,
+  threads,
   workItems,
   workspaceState,
 } from './schema.js';
@@ -87,6 +101,9 @@ type FeatureRow = typeof features.$inferSelect;
 type EventRow = typeof events.$inferSelect;
 type ActorRow = typeof actors.$inferSelect;
 type WorkspaceStateRow = typeof workspaceState.$inferSelect;
+type ThreadRow = typeof threads.$inferSelect;
+type MessageRow = typeof messages.$inferSelect;
+type AgentJobRow = typeof agentJobs.$inferSelect;
 
 /** The single workspace_state row key (and the workspace event-stream id). */
 const WORKSPACE_ID = 'workspace';
@@ -210,6 +227,11 @@ export class PgEngine {
     ids.push(...(await this.db.select({ id: features.id }).from(features)).map((r) => r.id));
     ids.push(...(await this.db.select({ id: workItems.id }).from(workItems)).map((r) => r.id));
     ids.push(...(await this.db.select({ id: claims.id }).from(claims)).map((r) => r.id));
+    // Phase 3 (roadmap §5): threads/messages/jobs/notifications are durable too.
+    ids.push(...(await this.db.select({ id: threads.id }).from(threads)).map((r) => r.id));
+    ids.push(...(await this.db.select({ id: messages.id }).from(messages)).map((r) => r.id));
+    ids.push(...(await this.db.select({ id: agentJobs.id }).from(agentJobs)).map((r) => r.id));
+    ids.push(...(await this.db.select({ id: notifications.id }).from(notifications)).map((r) => r.id));
     let max = 0;
     for (const id of ids) {
       const sep = id.lastIndexOf('_');
@@ -292,8 +314,8 @@ export class PgEngine {
     return rows[0] ?? null;
   }
 
-  private async getActorRow(actorId: string): Promise<ActorRow | null> {
-    const rows = await this.db.select().from(actors).where(eq(actors.id, actorId)).limit(1);
+  private async getActorRow(actorId: string, tx: Queryable = this.db): Promise<ActorRow | null> {
+    const rows = await tx.select().from(actors).where(eq(actors.id, actorId)).limit(1);
     return rows[0] ?? null;
   }
 
@@ -1121,6 +1143,12 @@ export class PgEngine {
       }
     }
 
+    // Rails → chat: narrate the transition into bound task threads (§5.2).
+    // Mirror of the reference: EVERY executeTransition narrates (gate-fired,
+    // loopback included); privilegedDowngrade does NOT go through here and
+    // therefore does not narrate — exactly like the reference engine.
+    await this.narrateWorkItemTx(tx, item.id, `state: ${from} → ${to}`);
+
     const result = this.publicItem({ ...item, state: to, stateVersion: item.stateVersion + 1 });
     if (idempotencyKey !== undefined) {
       await tx
@@ -1393,6 +1421,394 @@ export class PgEngine {
         String(decisionEvent.globalSeq),
       );
     });
+  }
+
+  // -- collaboration (Phase 3, roadmap §5) ---------------------------------------
+
+  private async mustGetThread(threadId: string, tx: Queryable = this.db): Promise<ThreadRow> {
+    const rows = await tx.select().from(threads).where(eq(threads.id, threadId)).limit(1);
+    const row = rows[0];
+    if (!row) throw new GuardFailedError(`unknown thread: ${threadId}`);
+    return row;
+  }
+
+  private isParticipant(thread: ThreadRow, actorId: string): boolean {
+    return thread.createdBy === actorId || thread.participants.includes(actorId);
+  }
+
+  private publicThread(row: Omit<ThreadRow, 'seq'>): Thread {
+    return {
+      id: row.id,
+      featureId: row.featureId,
+      workItemId: row.workItemId,
+      kind: row.kind as ThreadKind,
+      visibility: row.visibility as ThreadVisibility,
+      createdBy: row.createdBy,
+      participants: [...row.participants],
+    };
+  }
+
+  private publicMessage(row: MessageRow): Message {
+    return {
+      id: row.id,
+      threadId: row.threadId,
+      seq: row.seq,
+      authorId: row.authorId,
+      kind: row.kind as Message['kind'],
+      body: row.body,
+      replyTo: row.replyTo,
+    };
+  }
+
+  private publicJob(row: Omit<AgentJobRow, 'seq'>): AgentJob {
+    return {
+      id: row.id,
+      agentActorId: row.agentActorId,
+      threadId: row.threadId,
+      messageId: row.messageId,
+      workItemId: row.workItemId,
+      featureId: row.featureId,
+      status: row.status as AgentJob['status'],
+      depth: row.depth,
+      note: row.note,
+    };
+  }
+
+  async createThread(input: {
+    actorId: string;
+    kind: ThreadKind;
+    featureId?: string;
+    workItemId?: string;
+    visibility?: ThreadVisibility;
+  }): Promise<Thread> {
+    if (input.featureId !== undefined && (await this.getFeatureRow(input.featureId)) === null) {
+      throw new GuardFailedError(`unknown feature: ${input.featureId}`);
+    }
+    let workItemId: string | null = null;
+    if (input.workItemId !== undefined) {
+      workItemId = (await this.mustGetItem(input.workItemId)).id;
+    }
+    const thread = {
+      id: this.nextId('th'),
+      featureId: input.featureId ?? null,
+      workItemId,
+      kind: input.kind,
+      visibility: input.visibility ?? (input.kind === 'private' ? 'private' : 'open'),
+      createdBy: input.actorId,
+      participants: [input.actorId],
+    };
+    return this.db.transaction(async (tx) => {
+      await tx.insert(threads).values(thread);
+      await this.appendTx(tx, 'thread', thread.id, 'thread.created', input.actorId, {
+        kind: thread.kind,
+        featureId: thread.featureId,
+        workItemId: thread.workItemId,
+        visibility: thread.visibility,
+      });
+      return this.publicThread(thread);
+    });
+  }
+
+  async addThreadParticipant(input: { threadId: string; actorId: string; byActorId: string }): Promise<Thread> {
+    const thread = await this.mustGetThread(input.threadId);
+    if (!this.isParticipant(thread, input.byActorId)) {
+      throw new PermissionDeniedError('thread.invite', input.byActorId);
+    }
+    if ((await this.getActorRow(input.actorId)) === null) {
+      throw new GuardFailedError(`unknown actor: ${input.actorId}`);
+    }
+    if (thread.participants.includes(input.actorId)) return this.publicThread(thread);
+    const participants = [...thread.participants, input.actorId];
+    return this.db.transaction(async (tx) => {
+      await tx.update(threads).set({ participants }).where(eq(threads.id, thread.id));
+      await this.appendTx(tx, 'thread', thread.id, 'thread.participant_added', input.byActorId, {
+        actorId: input.actorId,
+      });
+      return this.publicThread({ ...thread, participants });
+    });
+  }
+
+  /** Internal append that never runs the router — used for chat, narration alike. */
+  private async appendMessageTx(
+    tx: Queryable,
+    thread: ThreadRow | Omit<ThreadRow, 'seq'>,
+    authorId: string,
+    kind: Message['kind'],
+    body: string,
+    replyTo: string | null,
+  ): Promise<Message> {
+    // Per-thread, 1-based, gap-free — UNIQUE(thread_id, seq) enforces it, the
+    // same-transaction max() computes it (mirrors the reference count+1).
+    const [row] = await tx
+      .select({ maxSeq: sql<number>`coalesce(max(${messages.seq}), 0)` })
+      .from(messages)
+      .where(eq(messages.threadId, thread.id));
+    const seq = Number(row?.maxSeq ?? 0) + 1;
+    const message: Message = {
+      id: this.nextId('msg'),
+      threadId: thread.id,
+      seq,
+      authorId,
+      kind,
+      body,
+      replyTo,
+    };
+    await tx.insert(messages).values(message);
+    await this.appendTx(tx, 'thread', thread.id, 'message.posted', authorId, {
+      messageId: message.id,
+      kind,
+    });
+    return { ...message };
+  }
+
+  /**
+   * §5.2: the server NEVER parses body text — `mentions` is structured actor
+   * ids. §5.4: the router is pure code, default-deny, policy-gated,
+   * depth-capped; a job is reply-only context, never a claim.
+   */
+  async postMessage(input: {
+    threadId: string;
+    actorId: string;
+    body: string;
+    replyTo?: string;
+    mentions?: string[];
+  }): Promise<Message> {
+    const thread = await this.mustGetThread(input.threadId);
+    if (thread.visibility === 'private' && !this.isParticipant(thread, input.actorId)) {
+      throw new PermissionDeniedError('thread.post', input.actorId);
+    }
+    const mentionIds = [...new Set(input.mentions ?? [])];
+    return this.db.transaction(async (tx) => {
+      const message = await this.appendMessageTx(tx, thread, input.actorId, 'chat', input.body, input.replyTo ?? null);
+      for (const mentionedId of mentionIds) {
+        const mentioned = await this.getActorRow(mentionedId, tx);
+        if (!mentioned) throw new GuardFailedError(`unknown mentioned actor: ${mentionedId}`);
+        const resolution = await this.routeMentionTx(tx, thread, message, input.actorId, mentioned);
+        await tx.insert(mentions).values({
+          messageId: message.id,
+          mentionedActorId: mentionedId,
+          resolution,
+        });
+        await this.appendTx(tx, 'thread', thread.id, 'mention.recorded', input.actorId, {
+          messageId: message.id,
+          mentionedActorId: mentionedId,
+          resolution,
+        });
+      }
+      return message;
+    });
+  }
+
+  /** The deterministic mention router (§5.4). Returns the recorded resolution. */
+  private async routeMentionTx(
+    tx: Tx,
+    thread: ThreadRow,
+    message: Message,
+    mentionerId: string,
+    mentioned: ActorRow,
+  ): Promise<MentionResolution> {
+    if (mentioned.type !== 'agent') {
+      await this.pushNotificationTx(tx, mentioned.id, 'mention', message.id);
+      return 'notified';
+    }
+    const policy = (await this.workspaceRow(tx)).policy as WorkspacePolicy;
+    // kill-switch applies to every job-materializing path
+    if (policy.mentionDispatch === false) return 'denied_policy';
+
+    const mentioner = await this.getActorRow(mentionerId, tx);
+    let depth = 0;
+    if (mentioner?.type === 'agent') {
+      // agent-mention-agent: explicit policy + depth cap (§5.4)
+      if (policy.agentMentionAgent !== true) return 'denied_policy';
+      const mentionerJobs = await tx
+        .select({ depth: agentJobs.depth })
+        .from(agentJobs)
+        .where(eq(agentJobs.agentActorId, mentionerId));
+      depth = Math.max(0, ...mentionerJobs.map((j) => j.depth)) + 1;
+      if (depth > AGENT_JOB_MAX_DEPTH) return 'denied_depth';
+    } else {
+      // default-deny: the human mentioner must hold invoke authority —
+      // at least one active delivery role, or governance admin.
+      const hasRole =
+        (
+          await tx
+            .select({ seq: roleAssignments.seq })
+            .from(roleAssignments)
+            .where(and(eq(roleAssignments.actorId, mentionerId), eq(roleAssignments.revoked, false)))
+            .limit(1)
+        ).length > 0;
+      const isAdmin = mentioner?.governanceRole === 'admin' || mentionerId === this.systemActorId;
+      if (!hasRole && !isAdmin) return 'denied_policy';
+    }
+
+    const job = {
+      id: this.nextId('job'),
+      agentActorId: mentioned.id,
+      threadId: thread.id,
+      messageId: message.id,
+      workItemId: thread.workItemId,
+      featureId: thread.featureId,
+      status: 'queued' as const,
+      depth,
+      note: null,
+    };
+    await tx.insert(agentJobs).values(job);
+    await this.appendTx(tx, 'agent_job', job.id, 'agent_job.created', mentionerId, {
+      agentActorId: mentioned.id,
+      threadId: thread.id,
+      messageId: message.id,
+      depth,
+    });
+    await this.pushNotificationTx(tx, mentioned.id, 'mention', message.id);
+    return 'job_created';
+  }
+
+  private async pushNotificationTx(
+    tx: Queryable,
+    actorId: string,
+    source: Notification['source'],
+    refId: string,
+  ): Promise<void> {
+    await tx.insert(notifications).values({
+      id: this.nextId('ntf'),
+      actorId,
+      source,
+      refId,
+      read: false,
+    });
+  }
+
+  async listThreads(filter?: { featureId?: string; workItemId?: string; actorId?: string }): Promise<Thread[]> {
+    const rows = await this.db.select().from(threads).orderBy(asc(threads.seq));
+    // Lazily resolved like the reference: an unknown workItemId only throws
+    // when at least one thread is examined (mustGetItem inside the filter).
+    let resolvedWorkItemId: string | undefined;
+    if (filter?.workItemId !== undefined && rows.length > 0) {
+      resolvedWorkItemId = (await this.mustGetItem(filter.workItemId)).id;
+    }
+    const result: Thread[] = [];
+    for (const row of rows) {
+      if (filter?.featureId !== undefined && row.featureId !== filter.featureId) continue;
+      if (resolvedWorkItemId !== undefined && row.workItemId !== resolvedWorkItemId) continue;
+      if (
+        filter?.actorId !== undefined &&
+        row.visibility === 'private' &&
+        !this.isParticipant(row, filter.actorId)
+      ) {
+        continue;
+      }
+      result.push(this.publicThread(row));
+    }
+    return result;
+  }
+
+  async listMessages(input: { threadId: string; actorId: string; sinceSeq?: number }): Promise<Message[]> {
+    const thread = await this.mustGetThread(input.threadId);
+    if (thread.visibility === 'private' && !this.isParticipant(thread, input.actorId)) {
+      throw new PermissionDeniedError('thread.read', input.actorId);
+    }
+    const rows = await this.db
+      .select()
+      .from(messages)
+      .where(eq(messages.threadId, thread.id))
+      .orderBy(asc(messages.seq));
+    return rows
+      .filter((m) => input.sinceSeq === undefined || m.seq > input.sinceSeq)
+      .map((m) => this.publicMessage(m));
+  }
+
+  async listMentions(messageId: string): Promise<Mention[]> {
+    const rows = await this.db
+      .select()
+      .from(mentions)
+      .where(eq(mentions.messageId, messageId))
+      .orderBy(asc(mentions.seq));
+    return rows.map((row) => ({
+      messageId: row.messageId,
+      mentionedActorId: row.mentionedActorId,
+      resolution: row.resolution as MentionResolution,
+    }));
+  }
+
+  async listNotifications(input: { actorId: string; unreadOnly?: boolean }): Promise<Notification[]> {
+    const rows = await this.db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.actorId, input.actorId))
+      .orderBy(asc(notifications.seq));
+    return rows
+      .filter((n) => input.unreadOnly !== true || !n.read)
+      .map((n) => ({ id: n.id, actorId: n.actorId, source: n.source as Notification['source'], refId: n.refId, read: n.read }));
+  }
+
+  async markNotificationRead(input: { notificationId: string; actorId: string }): Promise<void> {
+    const rows = await this.db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.id, input.notificationId))
+      .limit(1);
+    const notification = rows[0];
+    if (!notification) throw new GuardFailedError(`unknown notification: ${input.notificationId}`);
+    if (notification.actorId !== input.actorId) {
+      throw new PermissionDeniedError('thread.read', input.actorId);
+    }
+    await this.db.update(notifications).set({ read: true }).where(eq(notifications.id, notification.id));
+  }
+
+  async listAgentJobs(filter?: { agentActorId?: string; status?: AgentJob['status'] }): Promise<AgentJob[]> {
+    const rows = await this.db.select().from(agentJobs).orderBy(asc(agentJobs.seq));
+    return rows
+      .filter(
+        (j) =>
+          (filter?.agentActorId === undefined || j.agentActorId === filter.agentActorId) &&
+          (filter?.status === undefined || j.status === filter.status),
+      )
+      .map((j) => this.publicJob(j));
+  }
+
+  async completeAgentJob(input: {
+    jobId: string;
+    actorId: string;
+    status: 'done' | 'blocked';
+    note?: string;
+  }): Promise<AgentJob> {
+    const rows = await this.db.select().from(agentJobs).where(eq(agentJobs.id, input.jobId)).limit(1);
+    const job = rows[0];
+    if (!job) throw new GuardFailedError(`unknown agent job: ${input.jobId}`);
+    if (job.agentActorId !== input.actorId) {
+      throw new PermissionDeniedError('agent_job.complete', input.actorId);
+    }
+    if (job.status !== 'queued') throw new GuardFailedError(`agent job ${job.id} is already ${job.status}`);
+    const note = input.note ?? null;
+    return this.db.transaction(async (tx) => {
+      await tx.update(agentJobs).set({ status: input.status, note }).where(eq(agentJobs.id, job.id));
+      await this.appendTx(tx, 'agent_job', job.id, 'agent_job.completed', input.actorId, {
+        status: input.status,
+        note,
+      });
+      // notify the mentioner — the reverse direction is a message + notification, nothing more (§5.4)
+      const trigger = (
+        await tx
+          .select({ authorId: messages.authorId })
+          .from(messages)
+          .where(eq(messages.id, job.messageId))
+          .limit(1)
+      )[0];
+      if (trigger) await this.pushNotificationTx(tx, trigger.authorId, 'job_completed', job.id);
+      return this.publicJob({ ...job, status: input.status, note });
+    });
+  }
+
+  /** Rails → chat narration (§5.2): state changes narrate into bound task threads. */
+  private async narrateWorkItemTx(tx: Tx, workItemId: string, body: string): Promise<void> {
+    const bound = await tx
+      .select()
+      .from(threads)
+      .where(eq(threads.workItemId, workItemId))
+      .orderBy(asc(threads.seq));
+    for (const thread of bound) {
+      await this.appendMessageTx(tx, thread, this.systemActorId, 'system', body, null);
+    }
   }
 
   // -- dispatch (roadmap §2.3) -----------------------------------------------

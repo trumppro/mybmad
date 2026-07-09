@@ -22,12 +22,16 @@ import {
 import type { TokenStore } from './auth.js';
 import { createCommandBus } from './bus.js';
 import { registerMcpRoute } from './mcp.js';
+import { pollingEventTail, registerEventStream, type EventStreamOptions } from './sse.js';
+import { registerUiRoutes } from './ui.js';
 
 export interface BuildServerOptions {
   engine: SpineEngine;
   tokenStore: TokenStore;
   /** Bootstrap admin credential — passed in, never read from env here. */
   adminToken: string;
+  /** SSE relay knobs (poll/heartbeat intervals) — defaults are production values. */
+  eventStream?: EventStreamOptions;
 }
 
 /** Map a thrown core error onto the wire error taxonomy. */
@@ -119,6 +123,8 @@ export async function buildServer(options: BuildServerOptions): Promise<FastifyI
   });
 
   registerMcpRoute(app, bus, authenticate);
+  registerEventStream(app, pollingEventTail(engine), authenticate, options.eventStream ?? {});
+  registerUiRoutes(app);
 
   return app;
 }

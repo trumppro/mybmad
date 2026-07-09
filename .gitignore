@@ -95,3 +95,4 @@ packages/*/dist/
 apps/*/dist/
 *.tsbuildinfo
 .oahs/
+.playwright-mcp/

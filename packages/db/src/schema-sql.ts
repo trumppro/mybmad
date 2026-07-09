@@ -122,4 +122,61 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   key TEXT PRIMARY KEY,
   result JSONB NOT NULL
 );
+
+-- Phase 3 collaboration (roadmap §5). IF NOT EXISTS keeps durable Phase-1/2
+-- data directories upgrading in place (story 13).
+
+CREATE TABLE IF NOT EXISTS threads (
+  id TEXT PRIMARY KEY,
+  seq SERIAL NOT NULL,
+  feature_id TEXT,
+  work_item_id TEXT,
+  kind TEXT NOT NULL,
+  visibility TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  participants JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  author_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  body TEXT NOT NULL,
+  reply_to TEXT
+);
+
+-- §5.3: the per-thread message sequence is gap-free BY CONSTRAINT.
+CREATE UNIQUE INDEX IF NOT EXISTS messages_thread_id_seq
+  ON messages (thread_id, seq);
+
+CREATE TABLE IF NOT EXISTS mentions (
+  seq SERIAL PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  mentioned_actor_id TEXT NOT NULL,
+  resolution TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  seq SERIAL NOT NULL,
+  actor_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  ref_id TEXT NOT NULL,
+  read BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS agent_jobs (
+  id TEXT PRIMARY KEY,
+  seq SERIAL NOT NULL,
+  agent_actor_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  work_item_id TEXT,
+  feature_id TEXT,
+  status TEXT NOT NULL,
+  depth INTEGER NOT NULL DEFAULT 0,
+  note TEXT
+);
 `;

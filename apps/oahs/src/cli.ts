@@ -15,6 +15,8 @@ import { makeClient, type OahsClient } from '@oahs/contracts';
 import {
   actorCreateCommand,
   advanceCommand,
+  adviseNextTaskCommand,
+  adviseReconcileCommand,
   approveCommand,
   authzCommand,
   eventsCommand,
@@ -24,14 +26,21 @@ import {
   grantCommand,
   importStoriesCommand,
   inboxCommand,
+  jobCompleteCommand,
+  jobsCommand,
+  messagesCommand,
+  notificationsCommand,
   planSetCommand,
   policySetCommand,
+  postCommand,
   rejectCommand,
   roleAssignCommand,
   roleListCommand,
   roleRevokeCommand,
   runToOutput,
   statusCommand,
+  threadCreateCommand,
+  threadListCommand,
 } from './commands/index.js';
 import { DEFAULT_PORT, startServe } from './serve.js';
 
@@ -242,6 +251,123 @@ export function buildProgram(): Command {
     .description('import a stories.yaml file into a feature (idempotent)')
     .action(async (featureId: string, storiesYamlPath: string, opts: ClientFlags) =>
       emit(() => importStoriesCommand(clientFrom(opts), { featureId, path: storiesYamlPath })),
+    );
+
+  // -- collaboration (Phase 3, roadmap §5) ---------------------------------------
+  const thread = program.command('thread').description('conversation threads (Phase 3, roadmap §5)');
+  withClientFlags(thread.command('create'))
+    .description('create a thread, optionally bound to a feature/work item')
+    .requiredOption('--kind <kind>', 'spec | design | task | general | private')
+    .option('--feature <featureId>', 'bind to a feature')
+    .option('--work-item <workItemId>', 'bind to a work item (id or externalKey)')
+    .option('--visibility <visibility>', 'open | private')
+    .action(
+      async (
+        opts: ClientFlags & { kind: string; feature?: string; workItem?: string; visibility?: string },
+      ) =>
+        emit(() =>
+          threadCreateCommand(clientFrom(opts), {
+            kind: opts.kind,
+            ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),
+            ...(opts.workItem !== undefined ? { workItemId: opts.workItem } : {}),
+            ...(opts.visibility !== undefined ? { visibility: opts.visibility } : {}),
+          }),
+        ),
+    );
+  withClientFlags(thread.command('list'))
+    .description('list threads (private ones only when you participate)')
+    .option('--feature <featureId>', 'filter by feature')
+    .option('--work-item <workItemId>', 'filter by work item')
+    .action(async (opts: ClientFlags & { feature?: string; workItem?: string }) =>
+      emit(() =>
+        threadListCommand(clientFrom(opts), {
+          ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),
+          ...(opts.workItem !== undefined ? { workItemId: opts.workItem } : {}),
+        }),
+      ),
+    );
+
+  withClientFlags(program.command('post <threadId> <body>'))
+    .description('post a message; --mention takes STRUCTURED actor ids (body text is never parsed)')
+    .option('--mention <actorId>', 'mention an actor by id (repeatable)', collect, [])
+    .option('--reply-to <messageId>', 'reply to a message')
+    .action(
+      async (threadId: string, body: string, opts: ClientFlags & { mention: string[]; replyTo?: string }) =>
+        emit(() =>
+          postCommand(clientFrom(opts), {
+            threadId,
+            body,
+            ...(opts.mention.length > 0 ? { mentions: opts.mention } : {}),
+            ...(opts.replyTo !== undefined ? { replyTo: opts.replyTo } : {}),
+          }),
+        ),
+    );
+
+  withClientFlags(program.command('messages <threadId>'))
+    .description('list messages of a thread (raw authorId; system narration included)')
+    .option('--since <seq>', 'only messages with seq greater than this', (v: string) => Number(v))
+    .action(async (threadId: string, opts: ClientFlags & { since?: number }) =>
+      emit(() =>
+        messagesCommand(clientFrom(opts), {
+          threadId,
+          ...(opts.since !== undefined ? { sinceSeq: opts.since } : {}),
+        }),
+      ),
+    );
+
+  withClientFlags(program.command('notifications'))
+    .description('your own notifications (mentions + agent-job completions)')
+    .option('--unread', 'only unread notifications')
+    .action(async (opts: ClientFlags & { unread?: boolean }) =>
+      emit(() =>
+        notificationsCommand(clientFrom(opts), opts.unread === true ? { unreadOnly: true } : {}),
+      ),
+    );
+
+  const job = program.command('job').description('router-materialized agent jobs (reply-only, §5.4)');
+  withClientFlags(program.command('jobs'))
+    .description('list agent jobs')
+    .option('--agent <actorId>', 'filter by agent actor')
+    .option('--status <status>', 'queued | done | blocked')
+    .action(async (opts: ClientFlags & { agent?: string; status?: string }) =>
+      emit(() =>
+        jobsCommand(clientFrom(opts), {
+          ...(opts.agent !== undefined ? { agentActorId: opts.agent } : {}),
+          ...(opts.status !== undefined ? { status: opts.status } : {}),
+        }),
+      ),
+    );
+  withClientFlags(job.command('done <jobId>'))
+    .description('complete a job as its agent (notifies the mentioner — nothing else moves)')
+    .option('--note <note>', 'completion note')
+    .action(async (jobId: string, opts: ClientFlags & { note?: string }) =>
+      emit(() =>
+        jobCompleteCommand(clientFrom(opts), {
+          jobId,
+          status: 'done',
+          ...(opts.note !== undefined ? { note: opts.note } : {}),
+        }),
+      ),
+    );
+
+  // -- advisor bots (read + post only, deterministic, no LLM) --------------------
+  const advise = program
+    .command('advise')
+    .description('deterministic advisor bots — read + post only, never a lifecycle mutation');
+  withClientFlags(advise.command('next-task'))
+    .description('post the suggested claim order (claimable ready_for_dev) into a thread')
+    .requiredOption('--thread <threadId>', 'thread to post the advice into')
+    .action(async (opts: ClientFlags & { thread: string }) =>
+      emit(() => adviseNextTaskCommand(clientFrom(opts), { threadId: opts.thread })),
+    );
+  withClientFlags(advise.command('reconcile'))
+    .description('post the detect-only file↔DB divergence report into a thread')
+    .requiredOption('--thread <threadId>', 'thread to post the advice into')
+    .requiredOption('--file <pair>', 'one <workItemId>=<frontmatterStatus> pair (repeatable)', collect, [])
+    .action(async (opts: ClientFlags & { thread: string; file: string[] }) =>
+      emit(() =>
+        adviseReconcileCommand(clientFrom(opts), { threadId: opts.thread, files: opts.file }),
+      ),
     );
 
   withClientFlags(program.command('events [streamId]'))

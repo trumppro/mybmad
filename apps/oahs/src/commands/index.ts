@@ -25,6 +25,9 @@ import {
 
 import { renderTable, type Cell } from '../format.js';
 
+// Phase 3 collaboration + advisor bots (roadmap §5) live in collab.ts.
+export * from './collab.js';
+
 export const GATES = ['spec_approval', 'review_approval'] as const;
 
 function assertGate(gate: string): asserts gate is GateCode {

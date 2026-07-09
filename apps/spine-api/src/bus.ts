@@ -11,6 +11,7 @@ import {
   GuardFailedError,
   PermissionDeniedError,
   type ActorType,
+  type AgentJob,
   type BlockedReason,
   type Evidence,
   type GateCode,
@@ -18,6 +19,8 @@ import {
   type Permission,
   type PlanCode,
   type SpineEngine,
+  type ThreadKind,
+  type ThreadVisibility,
   type WorkItemState,
 } from '@oahs/core';
 import { COMMAND_MAP, type ActorContext, type CommandBus, type CommandName } from '@oahs/contracts';
@@ -53,6 +56,27 @@ interface RejectGateIn { workItemId: string; gate: GateCode }
 interface FeatureIn { featureId: string }
 interface ListWorkItemsIn { state?: WorkItemState | undefined; featureId?: string | undefined; claimable?: boolean | undefined }
 interface QueryEventsIn { streamId?: string | undefined }
+interface CreateThreadIn {
+  kind: ThreadKind;
+  featureId?: string | undefined;
+  workItemId?: string | undefined;
+  visibility?: ThreadVisibility | undefined;
+}
+interface AddThreadParticipantIn { threadId: string; actorId: string }
+interface PostMessageIn {
+  threadId: string;
+  body: string;
+  replyTo?: string | undefined;
+  mentions?: string[] | undefined;
+}
+interface ListThreadsIn { featureId?: string | undefined; workItemId?: string | undefined }
+interface ListMessagesIn { threadId: string; sinceSeq?: number | undefined }
+interface ListMentionsIn { messageId: string }
+interface ListNotificationsIn { unreadOnly?: boolean | undefined }
+interface MarkNotificationReadIn { notificationId: string }
+interface ListAgentJobsIn { agentActorId?: string | undefined; status?: AgentJob['status'] | undefined }
+interface CompleteAgentJobIn { jobId: string; status: 'done' | 'blocked'; note?: string | undefined }
+interface ReconcileIn { files: Array<{ workItemId: string; frontmatterStatus: string }> }
 
 /** Compact one-line summary of zod issues (duck-typed: zod copies may differ). */
 function zodMessage(error: unknown): string {
@@ -263,6 +287,92 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
       case 'release_dispatch_hold': {
         const p = parsed as FeatureIn;
         return engine.releaseDispatchHold({ featureId: p.featureId, actorId: ctx.actorId });
+      }
+
+      // -- collaboration (Phase 3, roadmap §5) ----------------------------------
+      // Actor identity ALWAYS from ctx: the poster, reader, notification owner
+      // and job completer are the authenticated actor — never a body field.
+      case 'create_thread': {
+        const p = parsed as CreateThreadIn;
+        return engine.createThread({
+          actorId: ctx.actorId,
+          kind: p.kind,
+          ...(p.featureId !== undefined ? { featureId: p.featureId } : {}),
+          ...(p.workItemId !== undefined ? { workItemId: p.workItemId } : {}),
+          ...(p.visibility !== undefined ? { visibility: p.visibility } : {}),
+        });
+      }
+      case 'add_thread_participant': {
+        const p = parsed as AddThreadParticipantIn;
+        return engine.addThreadParticipant({
+          threadId: p.threadId,
+          actorId: p.actorId,
+          byActorId: ctx.actorId,
+        });
+      }
+      case 'post_message': {
+        const p = parsed as PostMessageIn;
+        return engine.postMessage({
+          threadId: p.threadId,
+          actorId: ctx.actorId,
+          body: p.body,
+          ...(p.replyTo !== undefined ? { replyTo: p.replyTo } : {}),
+          ...(p.mentions !== undefined ? { mentions: p.mentions } : {}),
+        });
+      }
+      case 'list_threads': {
+        const p = parsed as ListThreadsIn;
+        return engine.listThreads({
+          actorId: ctx.actorId, // private threads stay invisible to non-participants
+          ...(p.featureId !== undefined ? { featureId: p.featureId } : {}),
+          ...(p.workItemId !== undefined ? { workItemId: p.workItemId } : {}),
+        });
+      }
+      case 'list_messages': {
+        const p = parsed as ListMessagesIn;
+        return engine.listMessages({
+          threadId: p.threadId,
+          actorId: ctx.actorId,
+          ...(p.sinceSeq !== undefined ? { sinceSeq: p.sinceSeq } : {}),
+        });
+      }
+      case 'list_mentions': {
+        const p = parsed as ListMentionsIn;
+        return engine.listMentions(p.messageId);
+      }
+      case 'list_notifications': {
+        const p = parsed as ListNotificationsIn;
+        return engine.listNotifications({
+          actorId: ctx.actorId,
+          ...(p.unreadOnly !== undefined ? { unreadOnly: p.unreadOnly } : {}),
+        });
+      }
+      case 'mark_notification_read': {
+        const p = parsed as MarkNotificationReadIn;
+        engine.markNotificationRead({ notificationId: p.notificationId, actorId: ctx.actorId });
+        return { read: true };
+      }
+      case 'list_agent_jobs': {
+        const p = parsed as ListAgentJobsIn;
+        return engine.listAgentJobs({
+          ...(p.agentActorId !== undefined ? { agentActorId: p.agentActorId } : {}),
+          ...(p.status !== undefined ? { status: p.status } : {}),
+        });
+      }
+      case 'complete_agent_job': {
+        const p = parsed as CompleteAgentJobIn;
+        return engine.completeAgentJob({
+          jobId: p.jobId,
+          actorId: ctx.actorId,
+          status: p.status,
+          ...(p.note !== undefined ? { note: p.note } : {}),
+        });
+      }
+
+      // -- reconciliation (roadmap §1.6, detect-only) ----------------------------
+      case 'reconcile': {
+        const p = parsed as ReconcileIn;
+        return engine.reconcile({ files: p.files });
       }
 
       // -- ops ---------------------------------------------------------------------

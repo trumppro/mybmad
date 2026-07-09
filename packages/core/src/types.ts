@@ -113,7 +113,12 @@ export type Permission =
   | 'intent.edit'
   | 'state.downgrade'
   | 'ops.force_release_claim'
-  | 'governance.admin'; // Phase 2: authority over gated entitlement writes (held via governance role, not grants)
+  | 'governance.admin' // Phase 2: authority over gated entitlement writes (held via governance role, not grants)
+  // Phase 3 identity/visibility authorities (checked structurally, not via grants):
+  | 'thread.post'
+  | 'thread.read'
+  | 'thread.invite'
+  | 'agent_job.complete';
 
 // ---------------------------------------------------------------------------
 // Entitlements (Phase 2, roadmap §3): plan × governance role × delivery role.
@@ -173,6 +178,10 @@ export interface WorkspacePolicy {
   agentGateApprovals?: boolean;
   /** false ⇒ agents cannot claim tasks on their own (mention-dispatch only, Phase 3) */
   agentSelfDispatch?: boolean;
+  /** false ⇒ mentions of agents never materialize jobs (Phase 3 router kill-switch) */
+  mentionDispatch?: boolean;
+  /** true ⇒ an agent's mention of another agent may materialize a job (depth-capped); default OFF (§5.4) */
+  agentMentionAgent?: boolean;
 }
 
 /** Gate definitions are data (roadmap §3): quorum + actor-type requirements. */
@@ -271,7 +280,7 @@ export interface Claim {
 
 export interface SpineEvent {
   globalSeq: number;
-  streamType: 'workspace' | 'feature' | 'work_item' | 'actor';
+  streamType: 'workspace' | 'feature' | 'work_item' | 'actor' | 'thread' | 'agent_job';
   streamId: string;
   streamSeq: number;
   type: string;
@@ -279,6 +288,77 @@ export interface SpineEvent {
   payload: Record<string, unknown>;
   causationId?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Collaboration (Phase 3, roadmap §5): the chat SURFACE. Sacred boundary
+// (§5.2): a message NEVER mutates lifecycle; the only cross-direction is
+// rails → chat (system narration). Mentions are STRUCTURED data — the server
+// never parses message text.
+// ---------------------------------------------------------------------------
+
+export type ThreadKind = 'spec' | 'design' | 'task' | 'general' | 'private';
+export type ThreadVisibility = 'open' | 'private';
+
+export interface Thread {
+  id: string;
+  featureId: string | null;
+  workItemId: string | null;
+  kind: ThreadKind;
+  visibility: ThreadVisibility;
+  createdBy: string;
+  participants: string[]; // enforced for private threads; informational for open ones
+}
+
+export interface Message {
+  id: string;
+  threadId: string;
+  seq: number; // per-thread, 1-based, gap-free
+  authorId: string; // a user OR an agent (thesis §5.3) — or the system actor for narration
+  kind: 'chat' | 'system';
+  body: string;
+  replyTo: string | null;
+}
+
+/** Why a mention did or did not materialize an agent job (§5.4 router — pure code). */
+export type MentionResolution =
+  | 'notified' // human mentioned → notification only
+  | 'job_created' // agent mentioned, router policy allows → agent_job queued
+  | 'denied_policy' // default-deny: mentioner lacks invoke authority, or policy off
+  | 'denied_depth'; // agent-mention-agent chain exceeded the depth cap
+
+export interface Mention {
+  messageId: string;
+  mentionedActorId: string;
+  resolution: MentionResolution;
+}
+
+export interface Notification {
+  id: string;
+  actorId: string;
+  source: 'mention' | 'job_completed';
+  refId: string; // messageId for mentions, jobId for completions
+  read: boolean;
+}
+
+/**
+ * Router-materialized work for an agent (§5.4). Reply-only context: the job
+ * NEVER carries a claim or pre-authorized lifecycle authority — the agent
+ * mutates state only through its own grants, or not at all.
+ */
+export interface AgentJob {
+  id: string;
+  agentActorId: string;
+  threadId: string;
+  messageId: string; // the triggering mention
+  workItemId: string | null; // context when the thread is task-bound
+  featureId: string | null;
+  status: 'queued' | 'done' | 'blocked';
+  depth: number; // 0 = human-triggered; +1 per agent-mention-agent hop
+  note: string | null;
+}
+
+/** Depth cap for agent-mention-agent chains (§5.4: "depth counter"). */
+export const AGENT_JOB_MAX_DEPTH = 2;
 
 export interface DivergenceReport {
   workItemId: string;
@@ -385,6 +465,36 @@ export interface SpineEngine {
   getGatePolicy(gate: GateCode): GatePolicy;
   /** Pure decision trace — replayable by an auditor. Never mutates. */
   authzExplain(input: { actorId: string; permission: Permission }): AuthzExplanation;
+
+  // -- collaboration (Phase 3, roadmap §5) -------------------------------------
+  createThread(input: {
+    actorId: string;
+    kind: ThreadKind;
+    featureId?: string;
+    workItemId?: string;
+    visibility?: ThreadVisibility;
+  }): Thread;
+  addThreadParticipant(input: { threadId: string; actorId: string; byActorId: string }): Thread;
+  /**
+   * Post a message. `mentions` is STRUCTURED (actor ids) — the server never
+   * parses body text (§5.2). Mentioning an agent runs the deterministic
+   * router (§5.4): default-deny, policy-gated, depth-capped.
+   */
+  postMessage(input: {
+    threadId: string;
+    actorId: string;
+    body: string;
+    replyTo?: string;
+    mentions?: string[];
+  }): Message;
+  listThreads(filter?: { featureId?: string; workItemId?: string; actorId?: string }): Thread[];
+  listMessages(input: { threadId: string; actorId: string; sinceSeq?: number }): Message[];
+  listMentions(messageId: string): Mention[];
+  listNotifications(input: { actorId: string; unreadOnly?: boolean }): Notification[];
+  markNotificationRead(input: { notificationId: string; actorId: string }): void;
+  listAgentJobs(filter?: { agentActorId?: string; status?: AgentJob['status'] }): AgentJob[];
+  /** Only the job's agent may complete it; completion notifies the mentioner. */
+  completeAgentJob(input: { jobId: string; actorId: string; status: 'done' | 'blocked'; note?: string }): AgentJob;
 
   // -- queries -------------------------------------------------------------
   getWorkItem(id: string): WorkItem;

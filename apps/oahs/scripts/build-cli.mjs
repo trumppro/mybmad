@@ -11,8 +11,9 @@
 //                     join(dirname(import.meta.url), '..', 'dist', 'worker.mjs');
 //                     bundled into bin/oahs.mjs that is apps/oahs/dist/, so the
 //                     durable engine works from the binary too.
+import { execFileSync } from 'node:child_process';
 import { build } from 'esbuild';
-import { chmodSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -73,4 +74,17 @@ await build({
   banner: { js: requireShim },
 });
 
-console.log('cli bundled -> bin/oahs.mjs (+ dist/worker.mjs)');
+// The web UI (apps/spine-api/public, built by its build-ui.mjs) is resolved
+// by src/ui.ts as <bundle dir>/../public — for bin/oahs.mjs that is
+// apps/oahs/public. Build it (if the script exists) and copy it alongside.
+const spineApi = join(mono, 'apps/spine-api');
+const buildUiScript = join(spineApi, 'scripts/build-ui.mjs');
+if (existsSync(buildUiScript)) {
+  execFileSync('node', [buildUiScript], { stdio: 'inherit' });
+  const uiSrc = join(spineApi, 'public');
+  const uiDest = join(root, 'public');
+  mkdirSync(uiDest, { recursive: true });
+  cpSync(uiSrc, uiDest, { recursive: true });
+}
+
+console.log('cli bundled -> bin/oahs.mjs (+ dist/worker.mjs + public/ ui)');

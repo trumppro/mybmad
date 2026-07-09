@@ -51,6 +51,13 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 - Governance authority (`setPlan`/`setWorkspacePolicy`/`setGatePolicy`/`assignRole`/`setGovernanceRole`) = the system actor or `governanceRole='admin'` holders; `createActor` takes an optional bootstrap `governanceRole` (plumbing, like `createActor` itself).
 - `grant`/`revoke`/role/plan/policy changes are audited events (actor stream / `workspace` stream).
 
+### Phase 3 — collaboration (`collaboration.test.ts`, all additive)
+- **Sacred boundary is machine-pinned**: posting "approve" (even by a gate-holder) changes no state and emits no `state_changed` event; the server never parses body text — mentions are **structured actor ids** ("@name" in text creates nothing).
+- **Rails → chat one-way**: every work-item state change appends a `kind='system'` narration message (author = system actor) to threads bound to that item. There is no chat → rails path.
+- **Mention router (pure code)**: human mentioner needs ≥1 active delivery role or governance admin (default-deny `who_may_invoke`); `mentionDispatch=false` is a global kill-switch; mentioning a human notifies only. Agent-mention-agent requires `agentMentionAgent=true` and carries depth = max(mentioner's job depths)+1, capped at `AGENT_JOB_MAX_DEPTH` (2) → `denied_depth`.
+- **Agent jobs are reply-only context**: no claim is pre-issued (§5.4); completion is restricted to the job's agent (`PermissionDeniedError('agent_job.complete')`) and notifies the mentioner; a completed job leaves lifecycle untouched. The mention path is independent of `agentSelfDispatch`.
+- **Private threads**: participants only, for post AND read AND invite; creator is a participant; message `seq` is per-thread, 1-based, gap-free.
+
 ### Event log
 - `streamSeq` is 1-based and gap-free per stream; which setup commands emit work-item events is unpinned (tests count deltas, not absolutes).
 - System-actor authorship (epic-lift, loopback) is asserted structurally: event `actorId` differs from every fixture-created actor and carries a `causationId`.

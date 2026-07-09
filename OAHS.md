@@ -67,6 +67,26 @@ oahs authz <actorId> gate.review.approve     # ALLOWED/DENIED + source + plan/po
 
 The Phase 2 exit criterion is a live test in three places (memory, PGlite, HTTP): an agent granted **only** `gate.review.reject` can fire the rejection loopback but is denied done-approval — same actor, same deterministic check, different grant.
 
+### Collaboration (Phase 3 — roadmap §5)
+
+Threads, messages, mentions, notifications, agent jobs — with the sacred boundary machine-pinned: **chat never mutates lifecycle**; the server never parses message text (mentions are structured actor ids); the only cross-direction is rails → chat (system narration of every state change into bound task threads).
+
+```bash
+oahs thread create --kind task --work-item <id> --feature <fid>
+oahs post <threadId> "please pick this up" --mention <agentActorId>
+                       # deterministic mention router: default-deny who_may_invoke,
+                       # policy kill-switch, agent-mention-agent depth cap — a job is
+                       # reply-only context, never a claim
+oahs messages <threadId>      # system narration renders inline (kind=system)
+oahs jobs --status queued     # what the router materialized
+oahs job done <jobId>         # only the job's agent may complete; mentioner notified
+oahs notifications --unread
+oahs advise next-task --thread <id>   # deterministic advisor bots: read + post only —
+oahs advise reconcile --thread <id> --file <wi>=<status>  # zero gates in their audit trail
+```
+
+**Web UI** (first surface): `oahs serve` then open `http://localhost:4517/ui` — threads, live messages over SSE (`/events/stream`, cursor resume), a composer with structured mentions, and a gate inbox whose Approve/Reject buttons call `/rpc/approve_gate|reject_gate` directly ("gates pass through rails, not chat").
+
 ## Invariants (machine-checked)
 
 - **No LLM SDK inside the spine** — grep-lint in CI; the spine never interprets, it checks.
@@ -92,4 +112,4 @@ Evidence collected on a developer machine is as strong as the honest-operator as
 
 ## Status
 
-Phase 0 ✅, Phase 1 stories 1–14 ✅, **Phase 2 entitlements ✅** (delivery roles, governance-gated writes, plan ceilings, restrict-only policy, gate quorum as data, `authz.explain` — 340 tests green across memory/PGlite/HTTP/CLI). The remaining Phase 1→2 exit criterion is operational, not mechanical: run ≥3 real platform stories end-to-end through the spine with a real coding agent (`oahs work` + Claude Code), then enforce the dogfood policy — *no platform work outside the spine*. Next build phase: 3 (collaborative chat: threads, mention router, first web UI).
+Phase 0 ✅, Phase 1 stories 1–14 ✅, Phase 2 entitlements ✅, **Phase 3 collaboration ✅** (threads/messages/mentions with the sacred boundary machine-pinned, deterministic mention router, notifications, agent jobs, SSE stream, first web UI at `/ui`, advisor bots — **406 tests green** across memory/PGlite/HTTP/CLI/UI). Remaining operational step: run ≥3 real platform stories end-to-end with a real coding agent (`oahs work` + Claude Code), then enforce *no platform work outside the spine*. Next build phase: 4 (non-coding teammates: BMAD personas as PM/UX/architect/reviewer actors with non-code evidence rules).

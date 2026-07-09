@@ -245,6 +245,108 @@ export const COMMANDS = [
     true,
   ),
 
+  // -- collaboration (Phase 3, roadmap §5) ---------------------------------------
+  // The chat SURFACE over the same rails. Sacred boundary (§5.2): a message
+  // NEVER mutates lifecycle; mentions are STRUCTURED actor ids — no server
+  // code path ever parses message body text. Actor identity for every command
+  // here comes from ctx (the authenticated token), never from the input.
+  def(
+    'create_thread',
+    'Create a conversation thread, optionally bound to a feature/work item. kind=private defaults visibility to private.',
+    z.object({
+      kind: z.enum(['spec', 'design', 'task', 'general', 'private']),
+      featureId: z.string().min(1).optional(),
+      workItemId: workItemId.optional(),
+      visibility: z.enum(['open', 'private']).optional(),
+    }),
+  ),
+  def(
+    'add_thread_participant',
+    'Invite an actor into a thread (private threads: only existing participants may invite).',
+    z.object({
+      threadId: z.string().min(1),
+      actorId: z.string().min(1),
+    }),
+  ),
+  def(
+    'post_message',
+    'Post a chat message. `mentions` is structured actor ids (§5.2 — body text is never parsed); mentioning an agent runs the deterministic default-deny router (§5.4).',
+    z.object({
+      threadId: z.string().min(1),
+      body: z.string().min(1),
+      replyTo: z.string().min(1).optional(),
+      mentions: z.array(z.string().min(1)).optional(),
+    }),
+  ),
+  def(
+    'list_threads',
+    'List threads, optionally filtered by feature / work item. Private threads are visible only to their participants (ctx actor).',
+    z.object({
+      featureId: z.string().min(1).optional(),
+      workItemId: workItemId.optional(),
+    }),
+    true,
+  ),
+  def(
+    'list_messages',
+    'List messages of a thread (optionally after a seq). Private threads require participation — the reader is ALWAYS the ctx actor.',
+    z.object({
+      threadId: z.string().min(1),
+      sinceSeq: z.number().int().nonnegative().optional(),
+    }),
+    true,
+  ),
+  def(
+    'list_mentions',
+    'List the recorded mentions of a message with their router resolutions (notified | job_created | denied_policy | denied_depth).',
+    z.object({ messageId: z.string().min(1) }),
+    true,
+  ),
+  def(
+    'list_notifications',
+    'List the ctx actor’s OWN notifications (mentions + job completions).',
+    z.object({ unreadOnly: z.boolean().optional() }),
+    true,
+  ),
+  def(
+    'mark_notification_read',
+    'Mark one of the ctx actor’s own notifications as read.',
+    z.object({ notificationId: z.string().min(1) }),
+  ),
+  def(
+    'list_agent_jobs',
+    'List router-materialized agent jobs (reply-only context — a job never carries a claim or lifecycle authority, §5.4).',
+    z.object({
+      agentActorId: z.string().min(1).optional(),
+      status: z.enum(['queued', 'done', 'blocked']).optional(),
+    }),
+    true,
+  ),
+  def(
+    'complete_agent_job',
+    'Complete an agent job (only the job’s agent may). Completion notifies the mentioner — nothing else moves.',
+    z.object({
+      jobId: z.string().min(1),
+      status: z.enum(['done', 'blocked']),
+      note: z.string().optional(),
+    }),
+  ),
+
+  // -- reconciliation (roadmap §1.6, D6: detect-only) -----------------------------
+  def(
+    'reconcile',
+    'Detect-only divergence report between file frontmatter statuses and DB states (never mutates; live-claimed items are excluded).',
+    z.object({
+      files: z.array(
+        z.object({
+          workItemId,
+          frontmatterStatus: z.string().min(1),
+        }),
+      ),
+    }),
+    true,
+  ),
+
   // -- ops (so nobody ever needs to touch the DB by hand) -----------------------
   def(
     'force_release_claim',

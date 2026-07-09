@@ -1,0 +1,37 @@
+# Phase 3 backlog — see ../../product-roadmap.md §5 and Build phases Phase 3.
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: "1"
+  title: Collaboration vocabulary and spec tests
+  description: >-
+    Thread, message, mention, notification, agent job types plus the sacred
+    boundary, router, and visibility pins; 20 conformance tests written
+    before implementation.
+  spec_checkpoint: true
+
+- id: "2"
+  title: Memory engine collaboration
+  description: >-
+    Threads, per-thread message sequences, structured mentions with the
+    deterministic router, notifications, reply-only agent jobs, and rails to
+    chat narration. Makes collaboration.test.ts green in memory.
+
+- id: "3"
+  title: PgEngine collaboration parity
+  description: >-
+    Five new tables and the faithful port so the same suite passes on PGlite
+    with durable restarts.
+  done_checkpoint: true
+
+- id: "4"
+  title: Chat commands, SSE stream, and CLI
+  description: >-
+    Contracts commands for threads, messages, notifications and jobs; SSE
+    event stream with cursor resume; oahs thread/post/messages/notifications/
+    jobs commands and the two deterministic advisor bots.
+
+- id: "5"
+  title: First web UI (chat-first)
+  description: >-
+    Static bundle served at /ui: threads, live messages over SSE, composer
+    with structured mentions, and gate buttons calling the rails directly.
