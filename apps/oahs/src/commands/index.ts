@@ -8,7 +8,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import type { OahsClient } from '@oahs/contracts';
+import { lintDoc } from '@oahs/runner';
 import {
+  WORK_ITEM_KINDS,
   WORK_ITEM_STATES,
   type Actor,
   type AuthzExplanation,
@@ -438,6 +440,117 @@ export async function authzCommand(client: OahsClient, opts: AuthzOptions): Prom
     `  policyAllows: ${explanation.policyAllows}`,
     `  versions: plan v${explanation.versions.plan}, policy v${explanation.versions.policy}`,
   ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 (roadmap Build phases + §1.4): non-coding teammates on the same
+// rails — actors picker data, persona provisioning, direct work-item
+// creation with a kind, and the deterministic document lint.
+// ---------------------------------------------------------------------------
+
+/** `oahs actors` — everyone on the rails: humans, agents, personas, system. */
+export async function actorsCommand(client: OahsClient): Promise<string> {
+  const actors = await client.call<Actor[]>('list_actors');
+  return renderTable(
+    ['id', 'type', 'displayName', 'personaCode'],
+    actors.map((actor) => [actor.id, actor.type, actor.displayName, actor.personaCode]),
+  );
+}
+
+/** `oahs personas provision` — idempotent, engine-governance-gated. */
+export async function personasProvisionCommand(client: OahsClient): Promise<string> {
+  const personas = await client.call<Actor[]>('provision_personas');
+  return [
+    `provisioned ${personas.length} personas (idempotent; floor-state roles, zero gate authority):`,
+    renderTable(
+      ['id', 'displayName', 'personaCode'],
+      personas.map((actor) => [actor.id, actor.displayName, actor.personaCode]),
+    ),
+  ].join('\n');
+}
+
+export interface ItemCreateOptions {
+  featureId: string;
+  externalKey: string;
+  title: string;
+  /** Work-item kind; default 'code'. Selects evidence guards, never gate authority. */
+  kind?: string;
+  specCheckpoint?: boolean;
+  doneCheckpoint?: boolean;
+  invokeDevWith?: string;
+  dependsOn?: string[];
+}
+
+export async function itemCreateCommand(
+  client: OahsClient,
+  opts: ItemCreateOptions,
+): Promise<string> {
+  if (opts.kind !== undefined && !(WORK_ITEM_KINDS as readonly string[]).includes(opts.kind)) {
+    throw new Error(`invalid --kind "${opts.kind}" (expected ${WORK_ITEM_KINDS.join(' | ')})`);
+  }
+  const item = await client.call<WorkItem>('create_work_item', {
+    featureId: opts.featureId,
+    externalKey: opts.externalKey,
+    title: opts.title,
+    ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+    ...(opts.specCheckpoint !== undefined ? { specCheckpoint: opts.specCheckpoint } : {}),
+    ...(opts.doneCheckpoint !== undefined ? { doneCheckpoint: opts.doneCheckpoint } : {}),
+    ...(opts.invokeDevWith !== undefined ? { invokeDevWith: opts.invokeDevWith } : {}),
+    ...(opts.dependsOn !== undefined && opts.dependsOn.length > 0
+      ? { dependsOn: opts.dependsOn }
+      : {}),
+  });
+  return [
+    `created ${item.externalKey} (${item.id})`,
+    `kind: ${item.kind}`,
+    `state: ${item.state}`,
+    `specCheckpoint: ${item.specCheckpoint}`,
+  ].join('\n');
+}
+
+export interface DoclintOptions {
+  /** Path of the document to lint. */
+  path: string;
+  /** Required `## <name>` sections (repeatable flag). */
+  requireSections?: string[];
+  /** Submit the result as doc_lint evidence on this work item. */
+  workItemId?: string;
+  submit?: boolean;
+  fencingToken?: number;
+}
+
+/**
+ * `oahs doclint <file>` — run the deterministic lint (a MEASURING tool, no
+ * LLM); with --submit the raw {schemaValid, findings} goes onto the rails as
+ * doc_lint evidence and the CORE decides what it gates. Exit 1 on a failing
+ * lint so scripts can chain on it.
+ */
+export async function doclintCommand(
+  client: OahsClient | null,
+  opts: DoclintOptions,
+): Promise<CommandOutput> {
+  const content = readFileSync(resolve(opts.path), 'utf8');
+  const result = lintDoc(content, {
+    ...(opts.requireSections !== undefined ? { requiredSections: opts.requireSections } : {}),
+  });
+  const lines = [
+    `doclint ${opts.path}: ${result.schemaValid ? 'schema-valid' : 'NOT schema-valid'}`,
+    ...result.findings.map((finding) => `  - ${finding}`),
+  ];
+  if (opts.submit === true) {
+    if (opts.workItemId === undefined) throw new Error('--submit requires --work-item <id>');
+    if (client === null) throw new Error('--submit requires a client (token + url)');
+    await client.call('submit_evidence', {
+      workItemId: opts.workItemId,
+      evidence: {
+        kind: 'doc_lint',
+        payload: { schemaValid: result.schemaValid, findings: result.findings },
+      },
+      ...(opts.fencingToken !== undefined ? { fencingToken: opts.fencingToken } : {}),
+    });
+    lines.push(`submitted doc_lint evidence on ${opts.workItemId}`);
+  }
+  return { text: lines.join('\n'), exitCode: result.schemaValid ? 0 : 1 };
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,32 @@
+# Phase 4 backlog — see ../../product-roadmap.md Build phases Phase 4 and §1.4.
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: "1"
+  title: Work-item kinds and non-code evidence specs
+  description: >-
+    Kind catalog, doc-kind guard rules, persona provisioning pins, and the
+    three-actor exit criterion; 13 conformance tests written before
+    implementation.
+  spec_checkpoint: true
+
+- id: "2"
+  title: Memory engine doc-work rules
+  description: >-
+    Kind-aware evidence guards (doc_lint gate to review, no commit
+    requirement for docs), listActors, idempotent gated provisionPersonas.
+    Makes doc-work.test.ts green in memory.
+
+- id: "3"
+  title: PgEngine doc-work parity
+  description: >-
+    Kind and persona_code columns with upgrade path; faithful port so the
+    same suite passes on PGlite with durable restarts.
+  done_checkpoint: true
+
+- id: "4"
+  title: Doclint tool and Phase 4 rails
+  description: >-
+    Deterministic lintDoc in the runner; create_work_item, list_actors,
+    provision_personas commands; oahs actors, personas provision, item
+    create, doclint --submit; UI mention picker from list_actors; HTTP
+    exit-criterion test.

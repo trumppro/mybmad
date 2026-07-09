@@ -20,6 +20,7 @@
 
 // Type-only imports: erased by esbuild, so no server code lands in the bundle.
 import type {
+  Actor,
   AgentJob,
   Message,
   Notification,
@@ -55,6 +56,7 @@ interface AppState {
   inbox: InboxResult;
   notifications: Notification[];
   jobs: AgentJob[];
+  actors: Actor[];
   abort: AbortController | null;
 }
 
@@ -70,6 +72,7 @@ const state: AppState = {
   inbox: { awaitingSpec: [], awaitingReview: [] },
   notifications: [],
   jobs: [],
+  actors: [],
   abort: null,
 };
 
@@ -168,8 +171,21 @@ async function loadJobs(): Promise<void> {
   renderJobs();
 }
 
+/** Everyone on the rails (Phase 4 list_actors) — feeds the mention picker. */
+async function loadActors(): Promise<void> {
+  state.actors = await rpc<Actor[]>('list_actors');
+  renderMentionPicker();
+}
+
 async function refreshAll(): Promise<void> {
-  await Promise.all([loadThreads(), loadMessages(), loadInbox(), loadNotifications(), loadJobs()]);
+  await Promise.all([
+    loadThreads(),
+    loadMessages(),
+    loadInbox(),
+    loadNotifications(),
+    loadJobs(),
+    loadActors(),
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +198,7 @@ function handleEvents(events: SpineEvent[]): void {
   let refetchJobs = false;
   let refetchNotifications = false;
   let refetchInbox = false;
+  let refetchActors = false;
 
   for (const event of events) {
     if (event.globalSeq > state.lastSeq) state.lastSeq = event.globalSeq;
@@ -198,6 +215,8 @@ function handleEvents(events: SpineEvent[]): void {
       refetchNotifications = true;
     } else if (event.streamType === 'work_item') {
       refetchInbox = true; // gate/lifecycle movement changes the gate-holder inbox
+    } else if (event.streamType === 'actor') {
+      refetchActors = true; // new actors/personas appear in the mention picker
     }
   }
 
@@ -206,6 +225,7 @@ function handleEvents(events: SpineEvent[]): void {
   if (refetchJobs) run(loadJobs);
   if (refetchNotifications) run(loadNotifications);
   if (refetchInbox) run(loadInbox);
+  if (refetchActors) run(loadActors);
 }
 
 function parseSseFrames(buffer: string): { events: SpineEvent[]; rest: string } {
@@ -397,6 +417,26 @@ function renderNotifications(): void {
   }
 }
 
+/**
+ * Mention picker (Phase 4): a multi-select fed by list_actors, showing
+ * `displayName (id)` per option but submitting STRUCTURED actor ids — the
+ * §5.2 boundary stays intact: message text is never parsed, and mentions
+ * remain data the user explicitly picked.
+ */
+function renderMentionPicker(): void {
+  const picker = document.getElementById('mention-picker') as HTMLSelectElement | null;
+  if (picker === null) return; // login screen — no composer yet
+  const selected = new Set(Array.from(picker.selectedOptions).map((option) => option.value));
+  clear(picker);
+  for (const actor of state.actors) {
+    if (actor.type === 'system') continue; // narration target, not a teammate
+    const option = el('option', undefined, `${actor.displayName} (${actor.id})`);
+    option.value = actor.id;
+    if (selected.has(actor.id)) option.selected = true;
+    picker.appendChild(option);
+  }
+}
+
 function renderJobs(): void {
   const container = byId<HTMLDivElement>('job-list');
   clear(container);
@@ -542,27 +582,29 @@ function buildShell(root: HTMLElement): void {
   const body = el('textarea');
   body.placeholder = 'Message — plain text, never parsed by the server';
   const row = el('div', 'row');
-  const mentionsInput = el('input');
-  mentionsInput.placeholder = 'mention actor ids, comma-separated (structured — not parsed from text)';
+  // Mention picker (Phase 4): multi-select over list_actors — the options
+  // show displayName (id), the submitted mentions are structured actor ids.
+  const mentionPicker = el('select');
+  mentionPicker.id = 'mention-picker';
+  mentionPicker.multiple = true;
+  mentionPicker.size = 3;
+  mentionPicker.title = 'mention actors (structured ids — not parsed from text)';
   const send = el('button', 'primary', 'Send');
   send.addEventListener('click', () => {
     run(async () => {
       if (state.currentThreadId === null) throw new Error('select a thread first');
       const text = body.value.trim();
       if (text === '') throw new Error('message body is empty');
-      const mentions = mentionsInput.value
-        .split(',')
-        .map((id) => id.trim())
-        .filter((id) => id !== '');
+      const mentions = Array.from(mentionPicker.selectedOptions).map((option) => option.value);
       const input: Record<string, unknown> = { threadId: state.currentThreadId, body: text };
       if (mentions.length > 0) input.mentions = mentions;
       await rpc('post_message', input);
       body.value = '';
-      mentionsInput.value = '';
+      for (const option of Array.from(mentionPicker.options)) option.selected = false;
       await loadMessages();
     });
   });
-  row.appendChild(mentionsInput);
+  row.appendChild(mentionPicker);
   row.appendChild(send);
   composer.appendChild(body);
   composer.appendChild(row);

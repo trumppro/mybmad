@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import {
   BLOCKED_REASONS,
+  WORK_ITEM_KINDS,
   WORK_ITEM_STATES,
   type SpineEngine,
 } from '@oahs/core';
@@ -91,6 +92,31 @@ export const COMMANDS = [
     }),
   ),
   def('create_feature', 'Create a feature (maps a BMAD epic).', z.object({})),
+  def(
+    'create_work_item',
+    'Create a single work item. kind selects WHICH machine-evidence guards apply (Phase 4) — never WHO may pass a gate.',
+    z.object({
+      featureId: z.string().min(1),
+      externalKey: z.string().min(1),
+      title: z.string().min(1),
+      kind: z.enum(WORK_ITEM_KINDS).optional().describe("Work-item kind; default 'code'"),
+      specCheckpoint: z.boolean().optional(),
+      doneCheckpoint: z.boolean().optional(),
+      invokeDevWith: z.string().optional(),
+      dependsOn: z.array(z.string().min(1)).optional().describe('externalKeys this item depends on'),
+    }),
+  ),
+  def(
+    'list_actors',
+    'List ALL actors — humans, agents, personas, and the system actor (transparency for pickers/audit).',
+    z.object({}),
+    true,
+  ),
+  def(
+    'provision_personas',
+    'Idempotently provision the six BMAD personas as agent actors with floor-state roles (gated by engine governance; zero gate authority).',
+    z.object({}),
+  ),
   def(
     'import_stories',
     'Import a stories.yaml file into a feature (idempotent re-import; validity rules from stories-schema.md).',

@@ -14,11 +14,13 @@ import { makeClient, type OahsClient } from '@oahs/contracts';
 
 import {
   actorCreateCommand,
+  actorsCommand,
   advanceCommand,
   adviseNextTaskCommand,
   adviseReconcileCommand,
   approveCommand,
   authzCommand,
+  doclintCommand,
   eventsCommand,
   featureCreateCommand,
   gatePolicySetCommand,
@@ -26,10 +28,12 @@ import {
   grantCommand,
   importStoriesCommand,
   inboxCommand,
+  itemCreateCommand,
   jobCompleteCommand,
   jobsCommand,
   messagesCommand,
   notificationsCommand,
+  personasProvisionCommand,
   planSetCommand,
   policySetCommand,
   postCommand,
@@ -167,6 +171,90 @@ export function buildProgram(): Command {
           ...(opts.governanceRole !== undefined ? { governanceRole: opts.governanceRole } : {}),
         }),
       ),
+    );
+
+  // -- Phase 4: non-coding teammates on the same rails ---------------------------
+  withClientFlags(program.command('actors'))
+    .description('list ALL actors — humans, agents, personas, and the system actor')
+    .action(async (opts: ClientFlags) => emit(() => actorsCommand(clientFrom(opts))));
+
+  const personas = program.command('personas').description('BMAD persona agent actors (roadmap §3)');
+  withClientFlags(personas.command('provision'))
+    .description('idempotently provision the six BMAD personas (governance-admin only, engine-gated)')
+    .action(async (opts: ClientFlags) => emit(() => personasProvisionCommand(clientFrom(opts))));
+
+  const item = program.command('item').description('single work items (Phase 4: non-code kinds)');
+  withClientFlags(item.command('create'))
+    .description('create one work item; --kind selects evidence guards, never gate authority')
+    .requiredOption('--feature <featureId>', 'feature to create the item in')
+    .requiredOption('--key <externalKey>', 'external key (stories.yaml id vocabulary)')
+    .requiredOption('--title <title>', 'work item title')
+    .option('--kind <kind>', 'code | spec_draft | design_review | qa_report | doc (default code)')
+    .option('--spec-checkpoint', 'require spec_approval before ready_for_dev')
+    .option('--done-checkpoint', 'hold feature dispatch after this item is done')
+    .option('--invoke-dev-with <text>', 'agent invocation hint')
+    .option('--depends-on <externalKey>', 'dependency external key (repeatable)', collect, [])
+    .action(
+      async (
+        opts: ClientFlags & {
+          feature: string;
+          key: string;
+          title: string;
+          kind?: string;
+          specCheckpoint?: boolean;
+          doneCheckpoint?: boolean;
+          invokeDevWith?: string;
+          dependsOn: string[];
+        },
+      ) =>
+        emit(() =>
+          itemCreateCommand(clientFrom(opts), {
+            featureId: opts.feature,
+            externalKey: opts.key,
+            title: opts.title,
+            ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+            ...(opts.specCheckpoint === true ? { specCheckpoint: true } : {}),
+            ...(opts.doneCheckpoint === true ? { doneCheckpoint: true } : {}),
+            ...(opts.invokeDevWith !== undefined ? { invokeDevWith: opts.invokeDevWith } : {}),
+            ...(opts.dependsOn.length > 0 ? { dependsOn: opts.dependsOn } : {}),
+          }),
+        ),
+    );
+
+  withClientFlags(program.command('doclint <file>'))
+    .description('deterministic document lint (no LLM); --submit sends doc_lint evidence; exit 1 when not schema-valid')
+    .option('--require-section <name>', 'required ## section (repeatable)', collect, [])
+    .option('--work-item <workItemId>', 'work item to submit doc_lint evidence on')
+    .option('--submit', 'submit {schemaValid, findings} as doc_lint evidence via the rails')
+    .option('--fencing-token <n>', 'fencing token when acting under a claim', (v: string) => Number(v))
+    .action(
+      async (
+        file: string,
+        opts: ClientFlags & {
+          requireSection: string[];
+          workItem?: string;
+          submit?: boolean;
+          fencingToken?: number;
+        },
+      ) => {
+        try {
+          // The lint itself needs no server; a client exists only for --submit.
+          const client = opts.submit === true ? clientFrom(opts) : null;
+          const { text, exitCode } = await doclintCommand(client, {
+            path: file,
+            ...(opts.requireSection.length > 0 ? { requireSections: opts.requireSection } : {}),
+            ...(opts.workItem !== undefined ? { workItemId: opts.workItem } : {}),
+            ...(opts.submit === true ? { submit: true } : {}),
+            ...(opts.fencingToken !== undefined ? { fencingToken: opts.fencingToken } : {}),
+          });
+          process.stdout.write(`${text}\n`);
+          process.exitCode = exitCode;
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          process.stderr.write(`${err.name}: ${err.message}\n`);
+          process.exitCode = 1;
+        }
+      },
     );
 
   withClientFlags(program.command('grant <actorId> <permission>'))

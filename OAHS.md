@@ -87,6 +87,24 @@ oahs advise reconcile --thread <id> --file <wi>=<status>  # zero gates in their 
 
 **Web UI** (first surface): `oahs serve` then open `http://localhost:4517/ui` — threads, live messages over SSE (`/events/stream`, cursor resume), a composer with structured mentions, and a gate inbox whose Approve/Reject buttons call `/rpc/approve_gate|reject_gate` directly ("gates pass through rails, not chat").
 
+### Non-coding teammates (Phase 4 — roadmap §1.4)
+
+The worker broadens: work items carry a **kind** (`code | spec_draft | design_review | qa_report | doc`) that selects which machine-evidence guards apply — never who may pass a gate. Doc kinds gate on **document lint** instead of diffs, and their done gate needs no commit — completion is machine-checkable doc evidence plus the permitted decision. *A checklist an LLM ticked is neither.*
+
+```bash
+oahs personas provision      # the six BMAD personas as agent actors — floor-state:
+                             # Amelia holds developer, everyone else contributor,
+                             # NOBODY holds a gate until explicitly granted
+oahs actors                  # everyone, personaCode included
+oahs item create --feature <fid> --key prd-change-1 --kind spec_draft \
+  --title "PRD change: rate limits"
+oahs doclint draft.md --require-section Intent --require-section Rollout \
+  --work-item prd-change-1 --submit    # deterministic measuring tool: frontmatter,
+                                       # sections, placeholder scan → doc_lint evidence
+```
+
+The Phase 4 exit criterion is a live test (memory, PGlite, HTTP): a PRD change **drafted by the PM agent** (under explicitly granted authority), **reviewed by a reviewer agent** (report as context, rejection as its granted loopback), **approved by a human PO** through the gate — three actor kinds, one rails, all three visible in the item's audit trail.
+
 ## Invariants (machine-checked)
 
 - **No LLM SDK inside the spine** — grep-lint in CI; the spine never interprets, it checks.
@@ -112,4 +130,4 @@ Evidence collected on a developer machine is as strong as the honest-operator as
 
 ## Status
 
-Phase 0 ✅, Phase 1 stories 1–14 ✅, Phase 2 entitlements ✅, **Phase 3 collaboration ✅** (threads/messages/mentions with the sacred boundary machine-pinned, deterministic mention router, notifications, agent jobs, SSE stream, first web UI at `/ui`, advisor bots — **406 tests green** across memory/PGlite/HTTP/CLI/UI). Remaining operational step: run ≥3 real platform stories end-to-end with a real coding agent (`oahs work` + Claude Code), then enforce *no platform work outside the spine*. Next build phase: 4 (non-coding teammates: BMAD personas as PM/UX/architect/reviewer actors with non-code evidence rules).
+Phase 0 ✅, Phase 1 stories 1–14 ✅, Phase 2 entitlements ✅, Phase 3 collaboration ✅, **Phase 4 non-coding teammates ✅** (work-item kinds with §1.4 non-code evidence rules, doclint measuring tool, six BMAD personas provisioned floor-state, three-actor exit criterion — **450 tests green** across memory/PGlite/HTTP/CLI/UI). Remaining operational step: run ≥3 real platform stories end-to-end with a real coding agent (`oahs work` + Claude Code), then enforce *no platform work outside the spine*. Next build phases: 5 (Hermes learning teammates — a second runtime behind the same dispatch contract) and 6 (model gateway + server-side sandboxes).

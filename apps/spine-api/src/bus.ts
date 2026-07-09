@@ -21,6 +21,7 @@ import {
   type SpineEngine,
   type ThreadKind,
   type ThreadVisibility,
+  type WorkItemKind,
   type WorkItemState,
 } from '@oahs/core';
 import { COMMAND_MAP, type ActorContext, type CommandBus, type CommandName } from '@oahs/contracts';
@@ -44,6 +45,16 @@ interface SetGatePolicyIn {
 }
 interface AuthzExplainIn { actorId: string; permission: string }
 interface ImportStoriesIn { featureId: string; yaml: string }
+interface CreateWorkItemIn {
+  featureId: string;
+  externalKey: string;
+  title: string;
+  kind?: WorkItemKind | undefined;
+  specCheckpoint?: boolean | undefined;
+  doneCheckpoint?: boolean | undefined;
+  invokeDevWith?: string | undefined;
+  dependsOn?: string[] | undefined;
+}
 interface ClaimTaskIn { workItemId: string; ttlMs?: number | undefined }
 interface HeartbeatIn { claimId: string }
 interface ReleaseClaimIn { claimId: string; reason?: string | undefined }
@@ -145,6 +156,29 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
       }
       case 'create_feature': {
         return engine.createFeature({ actorId: ctx.actorId });
+      }
+      case 'create_work_item': {
+        // Creator identity from ctx; kind defaults to 'code' in the engine.
+        const p = parsed as CreateWorkItemIn;
+        return engine.createWorkItem({
+          featureId: p.featureId,
+          externalKey: p.externalKey,
+          title: p.title,
+          actorId: ctx.actorId,
+          ...(p.kind !== undefined ? { kind: p.kind } : {}),
+          ...(p.specCheckpoint !== undefined ? { specCheckpoint: p.specCheckpoint } : {}),
+          ...(p.doneCheckpoint !== undefined ? { doneCheckpoint: p.doneCheckpoint } : {}),
+          ...(p.invokeDevWith !== undefined ? { invokeDevWith: p.invokeDevWith } : {}),
+          ...(p.dependsOn !== undefined ? { dependsOn: p.dependsOn } : {}),
+        });
+      }
+      case 'list_actors': {
+        return engine.listActors();
+      }
+      case 'provision_personas': {
+        // Gated by ENGINE governance (requireGovernanceAdmin on byActorId) —
+        // the bus never pre-checks admin here, mirroring the §3 group.
+        return engine.provisionPersonas({ byActorId: ctx.actorId });
       }
 
       // -- entitlements (Phase 2, roadmap §3) ----------------------------------

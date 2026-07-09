@@ -17,6 +17,7 @@ import {
   GuardFailedError,
   InvalidTransitionError,
   PermissionDeniedError,
+  PERSONAS,
   PLAN_CEILINGS,
   REVIEW_LOOP_LIMIT,
   StoriesValidationError,
@@ -49,6 +50,7 @@ import {
   type SpineEvent,
   type StoriesImportResult,
   type WorkItem,
+  type WorkItemKind,
   type WorkItemState,
   type WorkspacePolicy,
 } from './types.js';
@@ -179,6 +181,7 @@ class EngineImpl implements SpineEngine {
       id: this.systemActorId,
       type: 'system',
       displayName: 'system',
+      personaCode: null,
     });
   }
 
@@ -334,8 +337,14 @@ class EngineImpl implements SpineEngine {
     type: Exclude<ActorType, 'system'>;
     displayName: string;
     governanceRole?: GovernanceRole;
+    personaCode?: string;
   }): Actor {
-    const actor: Actor = { id: this.nextId('actor'), type: input.type, displayName: input.displayName };
+    const actor: Actor = {
+      id: this.nextId('actor'),
+      type: input.type,
+      displayName: input.displayName,
+      personaCode: input.personaCode ?? null,
+    };
     this.actors.set(actor.id, actor);
     this.governanceRoles.set(actor.id, input.governanceRole ?? 'member');
     return { ...actor };
@@ -453,6 +462,32 @@ class EngineImpl implements SpineEngine {
     return { ...(this.gatePolicies.get(gate) ?? {}) };
   }
 
+  listActors(): Actor[] {
+    return [...this.actors.values()].map((a) => ({ ...a }));
+  }
+
+  provisionPersonas(input: { byActorId: string }): Actor[] {
+    this.requireGovernanceAdmin(input.byActorId);
+    const provisioned: Actor[] = [];
+    for (const persona of PERSONAS) {
+      let actor = [...this.actors.values()].find((a) => a.personaCode === persona.personaCode);
+      if (!actor) {
+        actor = this.createActor({
+          type: 'agent',
+          displayName: persona.displayName,
+          personaCode: persona.personaCode,
+        });
+        this.append('actor', actor.id, 'actor.provisioned', input.byActorId, {
+          personaCode: persona.personaCode,
+        });
+      }
+      // Floor-state role (thesis): assignRole is idempotent.
+      this.assignRole({ actorId: actor.id, roleCode: persona.defaultRole, byActorId: input.byActorId });
+      provisioned.push({ ...actor });
+    }
+    return provisioned;
+  }
+
   authzExplain(input: { actorId: string; permission: Permission }): AuthzExplanation {
     const source = this.grantSource(input.actorId, input.permission);
     const allows = this.agentCeilingAllows(this.actors.get(input.actorId), input.permission);
@@ -485,6 +520,7 @@ class EngineImpl implements SpineEngine {
       id: this.nextId('wi'),
       featureId: input.featureId,
       externalKey: input.externalKey,
+      kind: input.kind ?? 'code',
       title: input.title,
       state: 'backlog',
       blockedReason: null,
@@ -677,6 +713,19 @@ class EngineImpl implements SpineEngine {
         return;
       }
       case 'nonempty_diff': {
+        // Phase 4 (roadmap §1.4): kind selects WHICH machine evidence applies.
+        if (item.kind !== 'code') {
+          // Doc kinds: the latest doc_lint (if any) must be schema-valid;
+          // git_diff is never consulted for non-code deliverables.
+          const lints = this.evidenceRows.filter(
+            (row) => row.workItemId === item.id && row.evidence.kind === 'doc_lint',
+          );
+          const latestLint = lints[lints.length - 1];
+          if (latestLint && latestLint.evidence.payload['schemaValid'] !== true) {
+            throw new GuardFailedError('the latest doc_lint evidence failed — document is not schema-valid');
+          }
+          return;
+        }
         // Arbitrated (CONFORMANCE.md "Evidence"): the LATEST submitted
         // git_diff, if any, must be non-empty — an empty diff is the
         // fake-done deny. Absence is not checked at this transition (the
@@ -930,11 +979,16 @@ class EngineImpl implements SpineEngine {
         throw new GuardFailedError(`pinned verification did not pass: ${command}`);
       }
     }
-    const commitOk = rows.some(
-      (row) => row.evidence.kind === 'commit' && row.evidence.payload['reachableOnRemote'] === true,
-    );
-    if (!commitOk) {
-      throw new GuardFailedError('final revision must be reachable on the remote (push is part of the HALT contract)');
+    if (item.kind === 'code') {
+      // Non-code deliverables carry no commit requirement (roadmap §1.4):
+      // their completion rests on machine-checkable doc evidence plus the
+      // permitted actor's decision.
+      const commitOk = rows.some(
+        (row) => row.evidence.kind === 'commit' && row.evidence.payload['reachableOnRemote'] === true,
+      );
+      if (!commitOk) {
+        throw new GuardFailedError('final revision must be reachable on the remote (push is part of the HALT contract)');
+      }
     }
   }
 

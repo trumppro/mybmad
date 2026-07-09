@@ -27,6 +27,9 @@
  *   OAHS_SPEC_FILE — absolute path of the story spec file inside the worktree
  *   OAHS_STORY_ID  — the work item externalKey (stories.yaml id)
  */
+// Phase 4 (roadmap §1.4): the deterministic document lint for non-code work.
+export { lintDoc, type DocLintResult, type LintDocOptions } from './doclint.js';
+
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,

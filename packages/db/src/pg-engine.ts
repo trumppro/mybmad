@@ -33,6 +33,7 @@ import {
   GuardFailedError,
   InvalidTransitionError,
   PermissionDeniedError,
+  PERSONAS,
   PLAN_CEILINGS,
   REVIEW_LOOP_LIMIT,
   StoriesValidationError,
@@ -66,6 +67,7 @@ import {
   type ThreadKind,
   type ThreadVisibility,
   type WorkItem,
+  type WorkItemKind,
   type WorkItemState,
   type WorkspacePolicy,
 } from '@oahs/core';
@@ -452,6 +454,7 @@ export class PgEngine {
       id: row.id,
       featureId: row.featureId,
       externalKey: row.externalKey,
+      kind: row.kind as WorkItemKind,
       title: row.title,
       state: row.state as WorkItemState,
       blockedReason: (row.blockedReason as BlockedReason | null) ?? null,
@@ -504,15 +507,75 @@ export class PgEngine {
     type: Exclude<ActorType, 'system'>;
     displayName: string;
     governanceRole?: GovernanceRole;
+    personaCode?: string;
   }): Promise<Actor> {
-    const actor: Actor = { id: this.nextId('actor'), type: input.type, displayName: input.displayName };
+    const actor: Actor = {
+      id: this.nextId('actor'),
+      type: input.type,
+      displayName: input.displayName,
+      personaCode: input.personaCode ?? null,
+    };
     await this.db.insert(actors).values({
       id: actor.id,
       type: actor.type,
       displayName: actor.displayName,
       governanceRole: input.governanceRole ?? 'member',
+      personaCode: actor.personaCode,
     });
     return actor;
+  }
+
+  private publicActor(row: ActorRow): Actor {
+    return {
+      id: row.id,
+      type: row.type as ActorType,
+      displayName: row.displayName,
+      personaCode: row.personaCode ?? null,
+    };
+  }
+
+  /** All actors, personas and system included (transparency for pickers/audit). */
+  async listActors(): Promise<Actor[]> {
+    const rows = await this.db.select().from(actors).orderBy(asc(actors.id));
+    return rows.map((row) => this.publicActor(row));
+  }
+
+  /**
+   * Idempotently create the six BMAD persona agent actors with floor-state
+   * roles (Phase 4, roadmap §3). Gated write. Idempotency is DURABLE: the
+   * lookup keys on the persisted persona_code column, so a restart over an
+   * existing data directory re-provisions nothing.
+   */
+  async provisionPersonas(input: { byActorId: string }): Promise<Actor[]> {
+    await this.requireGovernanceAdmin(input.byActorId);
+    const provisioned: Actor[] = [];
+    for (const persona of PERSONAS) {
+      const existing = await this.db
+        .select()
+        .from(actors)
+        .where(eq(actors.personaCode, persona.personaCode))
+        .orderBy(asc(actors.id))
+        .limit(1);
+      let actor: Actor;
+      if (existing[0]) {
+        actor = this.publicActor(existing[0]);
+      } else {
+        actor = await this.createActor({
+          type: 'agent',
+          displayName: persona.displayName,
+          personaCode: persona.personaCode,
+        });
+        await this.db.transaction(async (tx) => {
+          await this.appendTx(tx, 'actor', actor.id, 'actor.provisioned', input.byActorId, {
+            personaCode: persona.personaCode,
+          });
+        });
+      }
+      // Floor-state role (thesis): assignRole is idempotent.
+      await this.assignRole({ actorId: actor.id, roleCode: persona.defaultRole, byActorId: input.byActorId });
+      provisioned.push({ ...actor });
+    }
+    return provisioned;
   }
 
   async grant(input: { actorId: string; permission: Permission; scope?: string }): Promise<void> {
@@ -738,6 +801,7 @@ export class PgEngine {
       seq: 0, // assigned by the serial; placeholder for the local copy only
       featureId: input.featureId,
       externalKey: input.externalKey,
+      kind: input.kind ?? 'code',
       title: input.title,
       state: 'backlog',
       blockedReason: null,
@@ -756,6 +820,7 @@ export class PgEngine {
       id: row.id,
       featureId: row.featureId,
       externalKey: row.externalKey,
+      kind: row.kind,
       title: row.title,
       state: row.state,
       blockedReason: row.blockedReason,
@@ -1024,6 +1089,21 @@ export class PgEngine {
         return;
       }
       case 'nonempty_diff': {
+        // Phase 4 (roadmap §1.4): kind selects WHICH machine evidence applies.
+        if (item.kind !== 'code') {
+          // Doc kinds: the latest doc_lint (if any) must be schema-valid;
+          // git_diff is never consulted for non-code deliverables.
+          const lints = await this.db
+            .select()
+            .from(evidenceTable)
+            .where(and(eq(evidenceTable.workItemId, item.id), eq(evidenceTable.kind, 'doc_lint')))
+            .orderBy(asc(evidenceTable.seq));
+          const latestLint = lints[lints.length - 1];
+          if (latestLint && latestLint.payload['schemaValid'] !== true) {
+            throw new GuardFailedError('the latest doc_lint evidence failed — document is not schema-valid');
+          }
+          return;
+        }
         // The LATEST submitted git_diff, if any, must be non-empty — the
         // fake-done deny. Absence is not checked here (CONFORMANCE.md pin).
         const rows = await this.db
@@ -1346,11 +1426,16 @@ export class PgEngine {
         throw new GuardFailedError(`pinned verification did not pass: ${command}`);
       }
     }
-    const commitOk = rows.some((row) => row.kind === 'commit' && row.payload['reachableOnRemote'] === true);
-    if (!commitOk) {
-      throw new GuardFailedError(
-        'final revision must be reachable on the remote (push is part of the HALT contract)',
-      );
+    if (item.kind === 'code') {
+      // Non-code deliverables carry no commit requirement (roadmap §1.4):
+      // their completion rests on machine-checkable doc evidence plus the
+      // permitted actor's decision.
+      const commitOk = rows.some((row) => row.kind === 'commit' && row.payload['reachableOnRemote'] === true);
+      if (!commitOk) {
+        throw new GuardFailedError(
+          'final revision must be reachable on the remote (push is part of the HALT contract)',
+        );
+      }
     }
   }
 

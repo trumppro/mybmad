@@ -58,6 +58,12 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 - **Agent jobs are reply-only context**: no claim is pre-issued (§5.4); completion is restricted to the job's agent (`PermissionDeniedError('agent_job.complete')`) and notifies the mentioner; a completed job leaves lifecycle untouched. The mention path is independent of `agentSelfDispatch`.
 - **Private threads**: participants only, for post AND read AND invite; creator is a participant; message `seq` is per-thread, 1-based, gap-free.
 
+### Phase 4 — non-coding teammates (`doc-work.test.ts`, all additive)
+- **`work_item.kind` selects WHICH machine-evidence guards apply, never WHO may pass a gate.** Default `'code'` keeps every prior pin intact; imported stories are always `code`.
+- Doc kinds (`spec_draft`/`design_review`/`qa_report`/`doc`): entering review requires the **latest `doc_lint` (if any) to be schema-valid**; `git_diff` is never consulted; the done gate **drops the commit-reachable requirement** — completion rests on machine-checkable doc evidence plus the permitted decision (roadmap §1.4). Pinned verification (D7) and the review_report-is-never-a-guard rule bind doc work exactly as code work.
+- **Personas**: `provisionPersonas` is a gated, idempotent write creating the six BMAD persona agent actors (`personaCode` set); floor-state roles (Amelia→developer, others→contributor); zero gate authority anywhere by default — the exit-criterion flow grants the PM agent its bundle **explicitly**.
+- `listActors` exposes everyone, system actor included (audit/picker transparency).
+
 ### Event log
 - `streamSeq` is 1-based and gap-free per stream; which setup commands emit work-item events is unpinned (tests count deltas, not absolutes).
 - System-actor authorship (epic-lift, loopback) is asserted structurally: event `actorId` differs from every fixture-created actor and carries a `causationId`.

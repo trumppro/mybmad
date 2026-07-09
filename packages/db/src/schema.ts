@@ -34,6 +34,8 @@ export const actors = pgTable('actors', {
   displayName: text('display_name').notNull(),
   /** Phase 2 (roadmap §3): 'admin' | 'member' | 'auditor' — gated-write authority */
   governanceRole: text('governance_role').notNull().default('member'),
+  /** Phase 4 (roadmap §3): BMAD playbook persona (e.g. 'bmad-agent-pm'); NULL for humans and plain agents */
+  personaCode: text('persona_code'),
 });
 
 // ---------------------------------------------------------------------------
@@ -101,6 +103,8 @@ export const workItems = pgTable('work_items', {
   seq: serial('seq').notNull(),
   featureId: text('feature_id').notNull(),
   externalKey: text('external_key').notNull(),
+  /** Phase 4 (roadmap §1.4): selects WHICH machine-evidence guards apply — never WHO passes a gate */
+  kind: text('kind').notNull().default('code'),
   title: text('title').notNull(),
   state: text('state').notNull(),
   blockedReason: text('blocked_reason'), // overlay, not a state (D8)

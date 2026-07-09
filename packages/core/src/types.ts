@@ -243,7 +243,39 @@ export interface Actor {
   id: string;
   type: ActorType;
   displayName: string;
+  /** Playbook persona this agent embodies (e.g. 'bmad-agent-pm'); null for humans and plain agents. */
+  personaCode: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Work-item kinds (Phase 4, roadmap Build phases): the worker broadens.
+// Kind selects WHICH machine-evidence guards apply — never WHO may pass a
+// gate (that stays grants + gate policy).
+// ---------------------------------------------------------------------------
+
+export const WORK_ITEM_KINDS = ['code', 'spec_draft', 'design_review', 'qa_report', 'doc'] as const;
+export type WorkItemKind = (typeof WORK_ITEM_KINDS)[number];
+
+/**
+ * The six BMAD personas provision as default agent actors per workspace
+ * (roadmap §3). Floor-state defaults (thesis): Amelia holds `developer`;
+ * everyone else `contributor`; NO persona holds a gate until a permitted
+ * actor grants one.
+ */
+export interface PersonaDef {
+  personaCode: string; // BMAD playbook skill
+  displayName: string;
+  defaultRole: keyof typeof DELIVERY_ROLES;
+}
+
+export const PERSONAS: readonly PersonaDef[] = [
+  { personaCode: 'bmad-agent-analyst', displayName: 'Mary (Analyst)', defaultRole: 'contributor' },
+  { personaCode: 'bmad-agent-tech-writer', displayName: 'Paige (Tech Writer)', defaultRole: 'contributor' },
+  { personaCode: 'bmad-agent-pm', displayName: 'John (PM)', defaultRole: 'contributor' },
+  { personaCode: 'bmad-agent-ux-designer', displayName: 'Sally (UX)', defaultRole: 'contributor' },
+  { personaCode: 'bmad-agent-architect', displayName: 'Winston (Architect)', defaultRole: 'contributor' },
+  { personaCode: 'bmad-agent-dev', displayName: 'Amelia (Dev)', defaultRole: 'developer' },
+];
 
 export interface Feature {
   id: string;
@@ -256,6 +288,7 @@ export interface WorkItem {
   id: string;
   featureId: string;
   externalKey: string; // id from stories.yaml, e.g. "3-2"
+  kind: WorkItemKind; // 'code' unless created otherwise — selects evidence guards (Phase 4)
   title: string;
   state: WorkItemState;
   blockedReason: BlockedReason | null;
@@ -381,6 +414,7 @@ export interface CreateWorkItemInput {
   featureId: string;
   externalKey: string;
   title: string;
+  kind?: WorkItemKind; // default 'code'
   specCheckpoint?: boolean;
   doneCheckpoint?: boolean;
   invokeDevWith?: string;
@@ -410,7 +444,12 @@ export interface SpineEngine {
     displayName: string;
     /** bootstrap plumbing (like createActor itself); default 'member' */
     governanceRole?: GovernanceRole;
+    personaCode?: string;
   }): Actor;
+  /** All actors, personas and system included (transparency for pickers/audit). */
+  listActors(): Actor[];
+  /** Idempotently create the six BMAD persona agent actors with floor-state roles (gated write). */
+  provisionPersonas(input: { byActorId: string }): Actor[];
   grant(input: { actorId: string; permission: Permission; scope?: string }): void;
   revoke(input: { actorId: string; permission: Permission; scope?: string }): void;
   createFeature(input: { actorId: string }): Feature;

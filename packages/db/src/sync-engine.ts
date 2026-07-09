@@ -54,6 +54,8 @@ function unwrap(result: WireResult): unknown {
 
 const METHODS: Array<keyof SpineEngine> = [
   'createActor',
+  'listActors',
+  'provisionPersonas',
   'grant',
   'revoke',
   'createFeature',

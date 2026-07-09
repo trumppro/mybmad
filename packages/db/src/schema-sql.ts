@@ -7,11 +7,14 @@ CREATE TABLE IF NOT EXISTS actors (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   display_name TEXT NOT NULL,
-  governance_role TEXT NOT NULL DEFAULT 'member'
+  governance_role TEXT NOT NULL DEFAULT 'member',
+  persona_code TEXT
 );
 
 -- Phase 2 upgrade path for durable data dirs created under Phase 1 (story 13).
 ALTER TABLE actors ADD COLUMN IF NOT EXISTS governance_role TEXT NOT NULL DEFAULT 'member';
+-- Phase 4 upgrade path (roadmap §3): persona actors on durable Phase 1-3 dirs.
+ALTER TABLE actors ADD COLUMN IF NOT EXISTS persona_code TEXT;
 
 CREATE TABLE IF NOT EXISTS grants (
   actor_id TEXT NOT NULL,
@@ -53,6 +56,7 @@ CREATE TABLE IF NOT EXISTS work_items (
   seq SERIAL NOT NULL,
   feature_id TEXT NOT NULL,
   external_key TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'code',
   title TEXT NOT NULL,
   state TEXT NOT NULL,
   blocked_reason TEXT,
@@ -67,6 +71,9 @@ CREATE TABLE IF NOT EXISTS work_items (
   depends_on JSONB NOT NULL DEFAULT '[]'::jsonb,
   last_fencing_token INTEGER NOT NULL DEFAULT 0
 );
+
+-- Phase 4 upgrade path (roadmap §1.4): kind on durable Phase 1-3 dirs stays 'code'.
+ALTER TABLE work_items ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'code';
 
 CREATE TABLE IF NOT EXISTS claims (
   id TEXT PRIMARY KEY,

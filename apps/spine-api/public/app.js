@@ -13,6 +13,7 @@
     inbox: { awaitingSpec: [], awaitingReview: [] },
     notifications: [],
     jobs: [],
+    actors: [],
     abort: null
   };
   var LS_URL = "oahs.ui.url";
@@ -82,8 +83,19 @@
     state.jobs = await rpc("list_agent_jobs");
     renderJobs();
   }
+  async function loadActors() {
+    state.actors = await rpc("list_actors");
+    renderMentionPicker();
+  }
   async function refreshAll() {
-    await Promise.all([loadThreads(), loadMessages(), loadInbox(), loadNotifications(), loadJobs()]);
+    await Promise.all([
+      loadThreads(),
+      loadMessages(),
+      loadInbox(),
+      loadNotifications(),
+      loadJobs(),
+      loadActors()
+    ]);
   }
   function handleEvents(events) {
     let refetchMessages = false;
@@ -91,6 +103,7 @@
     let refetchJobs = false;
     let refetchNotifications = false;
     let refetchInbox = false;
+    let refetchActors = false;
     for (const event of events) {
       if (event.globalSeq > state.lastSeq) state.lastSeq = event.globalSeq;
       if (event.streamType === "thread") {
@@ -106,6 +119,8 @@
         refetchNotifications = true;
       } else if (event.streamType === "work_item") {
         refetchInbox = true;
+      } else if (event.streamType === "actor") {
+        refetchActors = true;
       }
     }
     if (refetchThreads) run(loadThreads);
@@ -113,6 +128,7 @@
     if (refetchJobs) run(loadJobs);
     if (refetchNotifications) run(loadNotifications);
     if (refetchInbox) run(loadInbox);
+    if (refetchActors) run(loadActors);
   }
   function parseSseFrames(buffer) {
     const frames = buffer.split("\n\n");
@@ -278,6 +294,19 @@
       container.appendChild(card);
     }
   }
+  function renderMentionPicker() {
+    const picker = document.getElementById("mention-picker");
+    if (picker === null) return;
+    const selected = new Set(Array.from(picker.selectedOptions).map((option) => option.value));
+    clear(picker);
+    for (const actor of state.actors) {
+      if (actor.type === "system") continue;
+      const option = el("option", void 0, `${actor.displayName} (${actor.id})`);
+      option.value = actor.id;
+      if (selected.has(actor.id)) option.selected = true;
+      picker.appendChild(option);
+    }
+  }
   function renderJobs() {
     const container = byId("job-list");
     clear(container);
@@ -405,24 +434,27 @@
     const body = el("textarea");
     body.placeholder = "Message \u2014 plain text, never parsed by the server";
     const row = el("div", "row");
-    const mentionsInput = el("input");
-    mentionsInput.placeholder = "mention actor ids, comma-separated (structured \u2014 not parsed from text)";
+    const mentionPicker = el("select");
+    mentionPicker.id = "mention-picker";
+    mentionPicker.multiple = true;
+    mentionPicker.size = 3;
+    mentionPicker.title = "mention actors (structured ids \u2014 not parsed from text)";
     const send = el("button", "primary", "Send");
     send.addEventListener("click", () => {
       run(async () => {
         if (state.currentThreadId === null) throw new Error("select a thread first");
         const text = body.value.trim();
         if (text === "") throw new Error("message body is empty");
-        const mentions = mentionsInput.value.split(",").map((id) => id.trim()).filter((id) => id !== "");
+        const mentions = Array.from(mentionPicker.selectedOptions).map((option) => option.value);
         const input = { threadId: state.currentThreadId, body: text };
         if (mentions.length > 0) input.mentions = mentions;
         await rpc("post_message", input);
         body.value = "";
-        mentionsInput.value = "";
+        for (const option of Array.from(mentionPicker.options)) option.selected = false;
         await loadMessages();
       });
     });
-    row.appendChild(mentionsInput);
+    row.appendChild(mentionPicker);
     row.appendChild(send);
     composer.appendChild(body);
     composer.appendChild(row);
