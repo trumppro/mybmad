@@ -1,0 +1,17 @@
+{
+  "name": "@oahs/gateway",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Model gateway (Phase 6, roadmap §2.5) — the RUNTIME-LAYER, provider-agnostic bridge between agent runtimes and LLM providers. OpenAI-compatible provider, per-persona routing, token metering for billing. The spine is NEVER a client of the gateway (no LLM in the control loop, §0.1); this package imports no spine package.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}

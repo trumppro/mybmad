@@ -24,6 +24,7 @@ const alias = {
   '@oahs/core': join(mono, 'packages/core/src/index.ts'),
   '@oahs/contracts': join(mono, 'packages/contracts/src/index.ts'),
   '@oahs/db': join(mono, 'packages/db/src/index.ts'),
+  '@oahs/gateway': join(mono, 'packages/gateway/src/index.ts'),
   '@oahs/runner': join(mono, 'packages/runner/src/index.ts'),
   '@oahs/spine-api': join(mono, 'apps/spine-api/src/index.ts'),
 };
@@ -67,6 +68,18 @@ await build({
 });
 chmodSync(binPath, 0o755);
 
+// The `oahs-brain` binary (Phase 6, roadmap §2.5): the jobs-runtime agent-cmd
+// that reads OAHS_CONTEXT_FILE, calls the model gateway, and writes
+// OAHS_REPLY_FILE. A single runnable file is what an agent-cmd needs.
+const brainBinPath = join(root, 'bin/oahs-brain.mjs');
+await build({
+  ...shared,
+  entryPoints: [join(root, 'src/agent-brain-cli.ts')],
+  outfile: brainBinPath,
+  banner: { js: `#!/usr/bin/env node\n${requireShim}` },
+});
+chmodSync(brainBinPath, 0o755);
+
 await build({
   ...shared,
   entryPoints: [join(mono, 'packages/db/src/worker.ts')],
@@ -87,4 +100,6 @@ if (existsSync(buildUiScript)) {
   cpSync(uiSrc, uiDest, { recursive: true });
 }
 
-console.log('cli bundled -> bin/oahs.mjs (+ dist/worker.mjs + public/ ui)');
+console.log(
+  'cli bundled -> bin/oahs.mjs (+ bin/oahs-brain.mjs + dist/worker.mjs + public/ ui)',
+);

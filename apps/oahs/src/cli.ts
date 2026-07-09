@@ -33,7 +33,9 @@ import {
   jobsCommand,
   memoryCommand,
   messagesCommand,
+  modelsCommand,
   notificationsCommand,
+  pingCommand,
   personasProvisionCommand,
   planSetCommand,
   policySetCommand,
@@ -48,6 +50,7 @@ import {
   threadCreateCommand,
   threadListCommand,
 } from './commands/index.js';
+import { runBrain } from './agent-brain.js';
 import { DEFAULT_PORT, startServe } from './serve.js';
 
 const DEFAULT_URL = `http://localhost:${DEFAULT_PORT}`;
@@ -548,6 +551,52 @@ export function buildProgram(): Command {
         }
       },
     );
+
+  // -- Phase 6 (roadmap §2.5): model gateway ------------------------------------
+  // These commands are gateway clients, NOT spine clients (§0.1). Config comes
+  // from env (OAHS_MODEL_BASE_URL / OAHS_MODEL_API_KEY / OAHS_MODEL_DEFAULT).
+  program
+    .command('models')
+    .description('list the models the configured model gateway can reach (roadmap §2.5)')
+    .action(async () => emit(() => modelsCommand()));
+
+  program
+    .command('ping')
+    .description('send one short prompt through the gateway; print reply + token usage')
+    .option('--message <text>', 'the prompt to send')
+    .option('--route <route>', 'persona route to resolve to a model')
+    .option('--model <model>', 'explicit model id (overrides the route)')
+    .action(async (opts: { message?: string; route?: string; model?: string }) =>
+      emit(() =>
+        pingCommand({
+          ...(opts.message !== undefined ? { message: opts.message } : {}),
+          ...(opts.route !== undefined ? { route: opts.route } : {}),
+          ...(opts.model !== undefined ? { model: opts.model } : {}),
+        }),
+      ),
+    );
+
+  program
+    .command('brain')
+    .description(
+      'teammate BRAIN: read OAHS_CONTEXT_FILE (job/messages/memories), ask the gateway, write OAHS_REPLY_FILE (the jobs-runtime agent-cmd; roadmap §2.5/§6)',
+    )
+    .option('--context-file <path>', 'context JSON (default: env OAHS_CONTEXT_FILE)')
+    .option('--reply-file <path>', 'reply text out (default: env OAHS_REPLY_FILE)')
+    .option('--route <route>', 'persona route to resolve to a model')
+    .action(async (opts: { contextFile?: string; replyFile?: string; route?: string }) => {
+      try {
+        await runBrain({
+          ...(opts.contextFile !== undefined ? { contextFile: opts.contextFile } : {}),
+          ...(opts.replyFile !== undefined ? { replyFile: opts.replyFile } : {}),
+          ...(opts.route !== undefined ? { route: opts.route } : {}),
+        });
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        process.stderr.write(`oahs brain failed — ${err.name}: ${err.message}\n`);
+        process.exitCode = 1;
+      }
+    });
 
   return program;
 }

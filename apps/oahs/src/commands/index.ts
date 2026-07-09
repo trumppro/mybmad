@@ -31,6 +31,8 @@ import { renderTable, type Cell } from '../format.js';
 export * from './collab.js';
 // Phase 5 memory + review-convergence stats (roadmap §6) live in phase5.ts.
 export * from './phase5.js';
+// Phase 6 model gateway (roadmap §2.5) — `oahs models` / `oahs ping`.
+export * from './gateway.js';
 
 export const GATES = ['spec_approval', 'review_approval'] as const;
 

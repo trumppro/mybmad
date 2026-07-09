@@ -1,0 +1,23 @@
+# Phase 6 (part 1) backlog — see ../../product-roadmap.md §2.5 and SPEC.md.
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: "1"
+  title: Model gateway package
+  description: >-
+    OpenAI-compatible provider client, model routing, token metering, config
+    from env; unit tests on mocked fetch, live smoke gated on env.
+  spec_checkpoint: true
+
+- id: "2"
+  title: Gateway CLI and real LLM brain
+  description: >-
+    oahs models/ping; oahs brain and bin/oahs-brain.mjs as a pluggable
+    agent-cmd for the teammate jobs runtime; invariant grep keeps the gateway
+    out of the spine.
+  done_checkpoint: true
+
+- id: "3"
+  title: Real end-to-end run
+  description: >-
+    A real story flows through the spine driven by a real model via the
+    gateway, with a human holding the gate — the operational proof.

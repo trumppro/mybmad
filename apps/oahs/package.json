@@ -5,7 +5,8 @@
   "description": "The oahs CLI binary (Phase 1 story 13): `oahs serve` boots the spine-api (in-memory or durable PGlite via --data), the gate-holder commands (inbox/approve/reject/status/actor/grant/import/feature/events) drive the same /rpc rails through the typed contracts client, and `oahs work` hands off to the @oahs/runner work loop.",
   "type": "module",
   "bin": {
-    "oahs": "./bin/oahs.mjs"
+    "oahs": "./bin/oahs.mjs",
+    "oahs-brain": "./bin/oahs-brain.mjs"
   },
   "main": "src/cli.ts",
   "scripts": {
@@ -21,6 +22,7 @@
     "@oahs/contracts": "file:../../packages/contracts",
     "@oahs/core": "file:../../packages/core",
     "@oahs/db": "file:../../packages/db",
+    "@oahs/gateway": "file:../../packages/gateway",
     "@oahs/runner": "file:../../packages/runner",
     "@oahs/spine-api": "file:../spine-api",
     "commander": "^13.1.0",

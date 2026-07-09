@@ -121,6 +121,23 @@ oahs stats reviews                            # review-loop iterations per kind 
 
 **The guardrail is architectural, not a prompt** (thesis; §6): the memory API has no cross-actor parameter and no path to grants; a memory-rich agent is not one grant richer; memory events never carry content (private learning stays out of the shared audit log); and the MCP tool registry is versioned spine code with no "agent registers a tool" endpoint (pinned by a before/after `tools/list` equality test). *Learning makes the worker better, never more authorized.*
 
+### Model gateway (Phase 6 §2.5)
+
+A multi-provider gateway at the **runtime layer** — between agent runtimes and providers. `@oahs/gateway` speaks the OpenAI-compatible protocol (works with 9router, OpenRouter, or any compatible endpoint), routes friendly names to provider model ids, and meters token usage. **The deterministic spine is never a client of it** — a CI grep keeps `@oahs/gateway` out of `core`, `db`, `contracts`, and `spine-api` (§0.1). Config comes from env, never hardcoded:
+
+```bash
+cp .env.example .env    # OAHS_MODEL_BASE_URL, OAHS_MODEL_API_KEY, OAHS_MODEL_DEFAULT
+oahs models             # list the router's models
+oahs ping --message "…" # a real completion, with token usage
+
+# The real-LLM teammate brain — a pluggable agent-cmd. It reads the job
+# context ({messages, memories}), calls the gateway, writes the reply.
+OAHS_TOKEN=<agent-token> oahs work --jobs \
+  --agent-cmd "node $(pwd)/bin/oahs-brain.mjs"
+```
+
+**Verified end-to-end against a live router**: a teammate driven by a real model read a mention, drafted a genuine PRD rate-limiting analysis, asked the PO a clarifying question back — all through the rails — recorded an episodic memory, and (audited) touched **zero** lifecycle events, holding no gate it wasn't granted. *AI does the work; rules run the process; permissioned actors hold the gates — now with a real AI.*
+
 ## Invariants (machine-checked)
 
 - **No LLM SDK inside the spine** — grep-lint in CI; the spine never interprets, it checks.
@@ -146,4 +163,4 @@ Evidence collected on a developer machine is as strong as the honest-operator as
 
 ## Status
 
-Phases 0–4 ✅, **Phase 5 learning teammates ✅** (workspace-scoped agent memory with the learning-never-authority guardrail machine-pinned, teammate jobs runtime with a pluggable brain, `stats reviews` metric, tool-registry-is-code pin, Hermes integration via existing seams — **478 tests green** across memory/PGlite/HTTP/CLI). Remaining operational step: run ≥3 real platform stories end-to-end with a real coding agent (`oahs work` + Claude Code), then enforce *no platform work outside the spine*. Next build phase: 6 (model gateway + server-side sandboxes) — the last one, deliberately after BYO has proven value; then 7 (enterprise: SSO/SCIM, audit export + signatures, RLS multi-tenancy).
+Phases 0–5 ✅, **Phase 6 model gateway ✅ (part 1)** — `@oahs/gateway` connects a live OpenAI-compatible router, a real-LLM teammate brain runs through the rails, verified end-to-end (**490 tests green**; the gateway's live test is env-gated). Server-side sandboxes (the rest of Phase 6) and Phase 7 (enterprise: SSO/SCIM, audit export + hash-chain signatures, RLS multi-tenancy) remain — the vault-ready gateway config and the workspace_id-on-every-table / append-only-event-log groundwork slot them in without a rewrite. The one remaining operational habit is dogfood discipline: keep running platform stories through the spine and enforce *no platform work outside the spine*.
