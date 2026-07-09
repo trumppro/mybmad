@@ -3,8 +3,13 @@
 # Auto-fix changed files and stage them
 npx --no-install lint-staged
 
-# Validate everything
-npm test
+# BMAD's own validation suite — only when BMAD-owned areas change.
+# The oahs platform workspaces (packages/, apps/) carry their own vitest
+# suites (run per-package); scoping keeps upstream protection where it
+# applies without running installer E2E on every platform commit.
+if git diff --cached --name-only | grep -Eq '^(src/|tools/|test/|bmad-modules\.yaml|package\.json)'; then
+  npm test
+fi
 
 # Validate docs links only when docs change
 if command -v rg >/dev/null 2>&1; then

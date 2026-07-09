@@ -16,12 +16,20 @@ import {
   actorCreateCommand,
   advanceCommand,
   approveCommand,
+  authzCommand,
   eventsCommand,
   featureCreateCommand,
+  gatePolicySetCommand,
+  governanceSetCommand,
   grantCommand,
   importStoriesCommand,
   inboxCommand,
+  planSetCommand,
+  policySetCommand,
   rejectCommand,
+  roleAssignCommand,
+  roleListCommand,
+  roleRevokeCommand,
   runToOutput,
   statusCommand,
 } from './commands/index.js';
@@ -141,14 +149,88 @@ export function buildProgram(): Command {
     .description('create a user or agent actor; prints actorId + token (admin only)')
     .requiredOption('--type <type>', 'user | agent')
     .requiredOption('--name <name>', 'display name')
-    .action(async (opts: ClientFlags & { type: string; name: string }) =>
-      emit(() => actorCreateCommand(clientFrom(opts), { type: opts.type, name: opts.name })),
+    .option('--governance-role <role>', 'admin | member | auditor (bootstrap plumbing, admin only)')
+    .action(async (opts: ClientFlags & { type: string; name: string; governanceRole?: string }) =>
+      emit(() =>
+        actorCreateCommand(clientFrom(opts), {
+          type: opts.type,
+          name: opts.name,
+          ...(opts.governanceRole !== undefined ? { governanceRole: opts.governanceRole } : {}),
+        }),
+      ),
     );
 
   withClientFlags(program.command('grant <actorId> <permission>'))
     .description('grant a permission to an actor (admin only)')
     .action(async (actorId: string, permission: string, opts: ClientFlags) =>
       emit(() => grantCommand(clientFrom(opts), { actorId, permission })),
+    );
+
+  // -- entitlements (Phase 2, roadmap §3) ---------------------------------------
+  const role = program.command('role').description('delivery roles — permission bundles (roadmap §3)');
+  withClientFlags(role.command('assign <actorId> <roleCode>'))
+    .description('assign a delivery role to an actor (governance-admin only, engine-gated)')
+    .action(async (actorId: string, roleCode: string, opts: ClientFlags) =>
+      emit(() => roleAssignCommand(clientFrom(opts), { actorId, roleCode })),
+    );
+  withClientFlags(role.command('revoke <actorId> <roleCode>'))
+    .description('revoke a delivery role from an actor (governance-admin only, engine-gated)')
+    .action(async (actorId: string, roleCode: string, opts: ClientFlags) =>
+      emit(() => roleRevokeCommand(clientFrom(opts), { actorId, roleCode })),
+    );
+  withClientFlags(role.command('list [actorId]'))
+    .description('list delivery-role assignments (all, or one actor)')
+    .action(async (actorId: string | undefined, opts: ClientFlags) =>
+      emit(() => roleListCommand(clientFrom(opts), actorId !== undefined ? { actorId } : {})),
+    );
+
+  const plan = program.command('plan').description('workspace plan — a ceiling, never a grant (roadmap §3)');
+  withClientFlags(plan.command('set <plan>'))
+    .description('set the workspace plan: free | team | enterprise (governance-admin only)')
+    .action(async (planCode: string, opts: ClientFlags) =>
+      emit(() => planSetCommand(clientFrom(opts), { plan: planCode })),
+    );
+
+  const policy = program.command('policy').description('restrict-only workspace policy (roadmap §3)');
+  withClientFlags(policy.command('set'))
+    .description('set restrict-only policy keys (governance-admin only)')
+    .option('--agent-gate-approvals <bool>', 'true | false — may agents exercise gate approvals?')
+    .option('--agent-self-dispatch <bool>', 'true | false — may agents claim tasks on their own?')
+    .action(async (opts: ClientFlags & { agentGateApprovals?: string; agentSelfDispatch?: string }) =>
+      emit(() =>
+        policySetCommand(clientFrom(opts), {
+          ...(opts.agentGateApprovals !== undefined ? { agentGateApprovals: opts.agentGateApprovals } : {}),
+          ...(opts.agentSelfDispatch !== undefined ? { agentSelfDispatch: opts.agentSelfDispatch } : {}),
+        }),
+      ),
+    );
+
+  const gatePolicy = program.command('gate-policy').description('gate definitions as data (roadmap §3)');
+  withClientFlags(gatePolicy.command('set <gate>'))
+    .description('set quorum/actor-type requirements of a gate (governance-admin only)')
+    .option('--min-approvals <n>', 'distinct approvers required per review round')
+    .option('--require-type <type>', 'require at least one approver of this type (repeatable)', collect, [])
+    .action(async (gate: string, opts: ClientFlags & { minApprovals?: string; requireType: string[] }) =>
+      emit(() =>
+        gatePolicySetCommand(clientFrom(opts), {
+          gate,
+          ...(opts.minApprovals !== undefined ? { minApprovals: opts.minApprovals } : {}),
+          ...(opts.requireType.length > 0 ? { requireTypes: opts.requireType } : {}),
+        }),
+      ),
+    );
+
+  const governance = program.command('governance').description('governance roles (roadmap §3)');
+  withClientFlags(governance.command('set <actorId> <role>'))
+    .description('set an actor governance role: admin | member | auditor (governance-admin only)')
+    .action(async (actorId: string, roleCode: string, opts: ClientFlags) =>
+      emit(() => governanceSetCommand(clientFrom(opts), { actorId, role: roleCode })),
+    );
+
+  withClientFlags(program.command('authz <actorId> <permission>'))
+    .description('print the replayable authz decision trace for an actor × permission (roadmap §3)')
+    .action(async (actorId: string, permission: string, opts: ClientFlags) =>
+      emit(() => authzCommand(clientFrom(opts), { actorId, permission })),
     );
 
   const feature = program.command('feature').description('feature management');

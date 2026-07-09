@@ -66,6 +66,10 @@ export const COMMANDS = [
     z.object({
       type: z.enum(['user', 'agent']),
       displayName: z.string().min(1),
+      governanceRole: z
+        .enum(['admin', 'member', 'auditor'])
+        .optional()
+        .describe('Bootstrap plumbing (roadmap §3): initial governance role — admin context only'),
     }),
   ),
   def(
@@ -159,6 +163,86 @@ export const COMMANDS = [
     'release_dispatch_hold',
     'Release a done_checkpoint dispatch hold on a feature (permitted actors only).',
     z.object({ featureId: z.string().min(1) }),
+  ),
+
+  // -- entitlements (Phase 2, roadmap §3) ---------------------------------------
+  // Authority for this group is decided by the ENGINE from the caller's
+  // governance role ("entitlement = plan × governance role × delivery role,
+  // resolved by a pure function over versioned config/data") — the bus never
+  // pre-checks admin here.
+  def(
+    'assign_role',
+    'Assign a delivery role (permission bundle, roadmap §3) to an actor. Gated write: requires governance-admin authority; audited.',
+    z.object({
+      actorId: z.string().min(1),
+      roleCode: z.string().min(1).describe('Delivery role code, e.g. reviewer | developer | product_owner'),
+    }),
+  ),
+  def(
+    'revoke_role',
+    'Revoke a delivery role assignment from an actor. Gated write: requires governance-admin authority; audited.',
+    z.object({
+      actorId: z.string().min(1),
+      roleCode: z.string().min(1),
+    }),
+  ),
+  def(
+    'list_role_assignments',
+    'List delivery-role assignments (all, or one actor’s), including revoked rows for audit.',
+    z.object({ actorId: z.string().min(1).optional() }),
+    true,
+  ),
+  def(
+    'set_governance_role',
+    'Set an actor’s governance role (admin | member | auditor). Gated write: requires governance-admin authority.',
+    z.object({
+      actorId: z.string().min(1),
+      role: z.enum(['admin', 'member', 'auditor']),
+    }),
+  ),
+  def(
+    'set_plan',
+    'Set the workspace plan. Plan is a CEILING, never a grant (roadmap §3): it bounds what agents may hold/exercise; users are never plan-filtered.',
+    z.object({ plan: z.enum(['free', 'team', 'enterprise']) }),
+  ),
+  def(
+    'set_workspace_policy',
+    'Set restrict-only workspace policy keys (roadmap §3): a policy can narrow what the plan allows, never widen it.',
+    z.object({
+      policy: z.object({
+        agentGateApprovals: z
+          .boolean()
+          .optional()
+          .describe('false ⇒ agents cannot exercise gate-approval permissions even if granted'),
+        agentSelfDispatch: z
+          .boolean()
+          .optional()
+          .describe('false ⇒ agents cannot claim tasks on their own (mention-dispatch only)'),
+      }),
+    }),
+  ),
+  def(
+    'set_gate_policy',
+    'Set a gate definition as DATA (roadmap §3): min_approvals quorum and required_actor_types — human-only is a default, not a hardcode.',
+    z.object({
+      gate: z.enum(['spec_approval', 'review_approval']),
+      policy: z.object({
+        minApprovals: z.number().int().positive().optional().describe('distinct approvers required per review round'),
+        requiredActorTypes: z
+          .array(z.enum(['user', 'agent', 'system']))
+          .optional()
+          .describe('at least one approver of each listed type is required'),
+      }),
+    }),
+  ),
+  def(
+    'authz_explain',
+    'Replayable authz decision trace (roadmap §3): source grant/role, plan ceiling, policy, and the policy version tuple an auditor can replay.',
+    z.object({
+      actorId: z.string().min(1),
+      permission: z.string().min(1),
+    }),
+    true,
   ),
 
   // -- ops (so nobody ever needs to touch the DB by hand) -----------------------

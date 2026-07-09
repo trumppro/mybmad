@@ -1,0 +1,38 @@
+# Phase 2 backlog — see ../../product-roadmap.md §3 and Build phases Phase 2.
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: "1"
+  title: Entitlements vocabulary and spec tests
+  description: >-
+    Permission gate.review.reject, governance roles, plan ceilings, delivery
+    role catalog, workspace policy, gate policy, authz explanation types; 22
+    conformance tests written before implementation.
+  spec_checkpoint: true
+
+- id: "2"
+  title: Memory engine entitlements
+  description: >-
+    Pure resolution (direct union role bundles, agent ceiling and policy
+    filters), gated governance writes, gate quorum per review round,
+    rejectGate OR-permission. Makes entitlements.test.ts green in memory.
+
+- id: "3"
+  title: PgEngine entitlements parity
+  description: >-
+    Schema additions (governance_role, role_assignments, workspace_state,
+    gate_policies, gate_decisions.round) and faithful port so the same 137
+    tests pass on PGlite, surviving durable restarts.
+  done_checkpoint: true
+
+- id: "4"
+  title: Entitlement commands on the rails
+  description: >-
+    Contracts commands (assign_role, set_plan, set_workspace_policy,
+    set_gate_policy, authz_explain...), bus wiring with engine-side
+    governance authority, bootstrap admin actor, HTTP exit-criterion tests.
+
+- id: "5"
+  title: CLI entitlement commands
+  description: >-
+    oahs role assign/revoke/list, plan set, policy set, gate-policy set,
+    governance set, authz explain; e2e coverage and rebuilt binary.

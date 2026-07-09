@@ -32,6 +32,8 @@ export const actors = pgTable('actors', {
   id: text('id').primaryKey(),
   type: text('type').notNull(), // 'user' | 'agent' | 'system'
   displayName: text('display_name').notNull(),
+  /** Phase 2 (roadmap §3): 'admin' | 'member' | 'auditor' — gated-write authority */
+  governanceRole: text('governance_role').notNull().default('member'),
 });
 
 // ---------------------------------------------------------------------------
@@ -46,6 +48,39 @@ export const grants = pgTable(
   },
   (t) => [primaryKey({ columns: [t.actorId, t.permission] })],
 );
+
+// ---------------------------------------------------------------------------
+// role_assignments — delivery-role bundles (Phase 2, roadmap §3). Assignment
+// grants the bundle; revocation flips `revoked` (audit history is kept).
+// ---------------------------------------------------------------------------
+export const roleAssignments = pgTable('role_assignments', {
+  seq: serial('seq').primaryKey(),
+  actorId: text('actor_id').notNull(),
+  roleCode: text('role_code').notNull(),
+  grantedBy: text('granted_by').notNull(),
+  revoked: boolean('revoked').notNull().default(false),
+});
+
+// ---------------------------------------------------------------------------
+// workspace_state — the single-row plan/policy projection (Phase 2, roadmap
+// §3). Exactly one row with id = 'workspace'; versions back authz.explain.
+// ---------------------------------------------------------------------------
+export const workspaceState = pgTable('workspace_state', {
+  id: text('id').primaryKey(), // always 'workspace'
+  plan: text('plan').notNull(), // 'free' | 'team' | 'enterprise'
+  planVersion: integer('plan_version').notNull().default(1),
+  policy: jsonb('policy').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  policyVersion: integer('policy_version').notNull().default(1),
+});
+
+// ---------------------------------------------------------------------------
+// gate_policies — gate definitions as DATA (Phase 2, roadmap §3):
+// minApprovals + requiredActorTypes, keyed by gate code.
+// ---------------------------------------------------------------------------
+export const gatePolicies = pgTable('gate_policies', {
+  gate: text('gate').primaryKey(), // 'spec_approval' | 'review_approval'
+  policy: jsonb('policy').$type<Record<string, unknown>>().notNull(),
+});
 
 // ---------------------------------------------------------------------------
 // features — epic-level projection (state + done_checkpoint dispatch hold)
@@ -116,6 +151,8 @@ export const gateDecisions = pgTable('gate_decisions', {
   gate: text('gate').notNull(), // 'spec_approval' | 'review_approval'
   decision: text('decision').notNull(), // 'approved' | 'rejected'
   actorId: text('actor_id').notNull(),
+  /** review round the decision belongs to (= review_loop_iteration at decision time) */
+  round: integer('round').notNull().default(0),
 });
 
 // ---------------------------------------------------------------------------

@@ -24,11 +24,15 @@ import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
 
 import {
+  AGENT_GATE_APPROVE_PERMISSIONS,
   BLOCKED_REASONS,
   ConflictError,
+  DEFAULT_PLAN,
+  DELIVERY_ROLES,
   GuardFailedError,
   InvalidTransitionError,
   PermissionDeniedError,
+  PLAN_CEILINGS,
   REVIEW_LOOP_LIMIT,
   StoriesValidationError,
   WORK_ITEM_STATES,
@@ -36,18 +40,25 @@ import {
   type Actor,
   type ActorType,
   type AdvanceInput,
+  type AuthzExplanation,
   type BlockedReason,
   type Claim,
   type CreateWorkItemInput,
   type DivergenceReport,
   type Evidence,
   type Feature,
+  type GateCode,
   type GateDecisionInput,
+  type GatePolicy,
+  type GovernanceRole,
   type Permission,
+  type PlanCode,
+  type RoleAssignment,
   type SpineEvent,
   type StoriesImportResult,
   type WorkItem,
   type WorkItemState,
+  type WorkspacePolicy,
 } from '@oahs/core';
 
 import {
@@ -57,9 +68,12 @@ import {
   events,
   features,
   gateDecisions,
+  gatePolicies,
   grants,
   idempotencyKeys,
+  roleAssignments,
   workItems,
+  workspaceState,
 } from './schema.js';
 
 type Db = PgliteDatabase<Record<string, unknown>>;
@@ -71,6 +85,11 @@ type WorkItemRow = typeof workItems.$inferSelect;
 type ClaimRow = typeof claims.$inferSelect;
 type FeatureRow = typeof features.$inferSelect;
 type EventRow = typeof events.$inferSelect;
+type ActorRow = typeof actors.$inferSelect;
+type WorkspaceStateRow = typeof workspaceState.$inferSelect;
+
+/** The single workspace_state row key (and the workspace event-stream id). */
+const WORKSPACE_ID = 'workspace';
 
 const RANK: Record<WorkItemState, number> = Object.fromEntries(
   WORK_ITEM_STATES.map((s, i) => [s, i]),
@@ -156,6 +175,12 @@ export class PgEngine {
    * conformance suite semantics are untouched.
    */
   async init(): Promise<void> {
+    // Single-row plan/policy projection (Phase 2, roadmap §3). onConflictDoNothing
+    // keeps this idempotent for durable restarts — an existing plan survives.
+    await this.db
+      .insert(workspaceState)
+      .values({ id: WORKSPACE_ID, plan: DEFAULT_PLAN, planVersion: 1, policy: {}, policyVersion: 1 })
+      .onConflictDoNothing();
     const existing = await this.db
       .select({ id: actors.id })
       .from(actors)
@@ -267,18 +292,96 @@ export class PgEngine {
     return rows[0] ?? null;
   }
 
-  private async hasPermission(actorId: string, permission: Permission): Promise<boolean> {
-    const rows = await this.db
+  private async getActorRow(actorId: string): Promise<ActorRow | null> {
+    const rows = await this.db.select().from(actors).where(eq(actors.id, actorId)).limit(1);
+    return rows[0] ?? null;
+  }
+
+  private async workspaceRow(tx: Queryable = this.db): Promise<WorkspaceStateRow> {
+    const rows = await tx.select().from(workspaceState).where(eq(workspaceState.id, WORKSPACE_ID)).limit(1);
+    const row = rows[0];
+    if (row) return row;
+    // init() seeds the row; this default only guards a not-yet-initialized read.
+    return { id: WORKSPACE_ID, plan: DEFAULT_PLAN, planVersion: 1, policy: {}, policyVersion: 1 };
+  }
+
+  /**
+   * Entitlement resolution — a PURE function over plan × governance ×
+   * delivery-role data (roadmap §3), mirroring the reference engine. A grant
+   * may EXIST (direct or via a role) and still not RESOLVE for an agent when
+   * the plan ceiling or the restrict-only workspace policy narrows it. Users
+   * are never plan-filtered.
+   */
+  private async grantSource(actorId: string, permission: Permission): Promise<string | null> {
+    const direct = await this.db
       .select({ permission: grants.permission })
       .from(grants)
       .where(and(eq(grants.actorId, actorId), eq(grants.permission, permission)))
       .limit(1);
-    return rows.length > 0;
+    if (direct.length > 0) return 'direct';
+    const assignments = await this.db
+      .select()
+      .from(roleAssignments)
+      .where(and(eq(roleAssignments.actorId, actorId), eq(roleAssignments.revoked, false)))
+      .orderBy(asc(roleAssignments.seq));
+    for (const assignment of assignments) {
+      if ((DELIVERY_ROLES[assignment.roleCode] ?? []).includes(permission)) {
+        return `role:${assignment.roleCode}`;
+      }
+    }
+    return null;
+  }
+
+  private agentCeilingAllows(
+    actor: ActorRow | null,
+    permission: Permission,
+    workspace: WorkspaceStateRow,
+  ): { plan: boolean; policy: boolean } {
+    if (!actor || actor.type !== 'agent') return { plan: true, policy: true };
+    const ceiling = PLAN_CEILINGS[workspace.plan as PlanCode];
+    const policy = workspace.policy as WorkspacePolicy;
+    if ((AGENT_GATE_APPROVE_PERMISSIONS as readonly string[]).includes(permission)) {
+      return { plan: ceiling.agentGateApprove, policy: policy.agentGateApprovals !== false };
+    }
+    if (permission === 'gate.review.reject') {
+      return { plan: ceiling.agentGateReject, policy: true };
+    }
+    if (permission === 'task.claim') {
+      return { plan: true, policy: policy.agentSelfDispatch !== false };
+    }
+    return { plan: true, policy: true };
+  }
+
+  private async hasPermission(actorId: string, permission: Permission): Promise<boolean> {
+    if ((await this.grantSource(actorId, permission)) === null) return false;
+    const allows = this.agentCeilingAllows(await this.getActorRow(actorId), permission, await this.workspaceRow());
+    return allows.plan && allows.policy;
   }
 
   private async requirePermission(actorId: string, permission: Permission): Promise<void> {
     if (!(await this.hasPermission(actorId, permission))) {
       throw new PermissionDeniedError(permission, actorId);
+    }
+  }
+
+  private async requireGovernanceAdmin(byActorId: string): Promise<void> {
+    if (byActorId === this.systemActorId) return;
+    const actor = await this.getActorRow(byActorId);
+    if (actor?.governanceRole === 'admin') return;
+    throw new PermissionDeniedError('governance.admin', byActorId);
+  }
+
+  /** Grant-time plan ceiling: refuse issuing agent gate permissions the plan forbids. */
+  private async checkGrantCeiling(actorId: string, permission: Permission): Promise<void> {
+    const actor = await this.getActorRow(actorId);
+    if (!actor || actor.type !== 'agent') return;
+    const workspace = await this.workspaceRow();
+    const ceiling = PLAN_CEILINGS[workspace.plan as PlanCode];
+    if ((AGENT_GATE_APPROVE_PERMISSIONS as readonly string[]).includes(permission) && !ceiling.agentGateApprove) {
+      throw new GuardFailedError(`plan ${workspace.plan} does not allow agents to hold ${permission}`);
+    }
+    if (permission === 'gate.review.reject' && !ceiling.agentGateReject) {
+      throw new GuardFailedError(`plan ${workspace.plan} does not allow agents to hold ${permission}`);
     }
   }
 
@@ -375,23 +478,223 @@ export class PgEngine {
 
   // -- setup -----------------------------------------------------------------
 
-  async createActor(input: { type: Exclude<ActorType, 'system'>; displayName: string }): Promise<Actor> {
+  async createActor(input: {
+    type: Exclude<ActorType, 'system'>;
+    displayName: string;
+    governanceRole?: GovernanceRole;
+  }): Promise<Actor> {
     const actor: Actor = { id: this.nextId('actor'), type: input.type, displayName: input.displayName };
-    await this.db.insert(actors).values({ id: actor.id, type: actor.type, displayName: actor.displayName });
+    await this.db.insert(actors).values({
+      id: actor.id,
+      type: actor.type,
+      displayName: actor.displayName,
+      governanceRole: input.governanceRole ?? 'member',
+    });
     return actor;
   }
 
   async grant(input: { actorId: string; permission: Permission; scope?: string }): Promise<void> {
-    await this.db
-      .insert(grants)
-      .values({ actorId: input.actorId, permission: input.permission, scope: input.scope ?? null })
-      .onConflictDoNothing();
+    // Grant-time plan ceiling precedes any effect (Phase 2 pin): a refused
+    // grant inserts nothing and appends nothing.
+    await this.checkGrantCeiling(input.actorId, input.permission);
+    await this.db.transaction(async (tx) => {
+      await tx
+        .insert(grants)
+        .values({ actorId: input.actorId, permission: input.permission, scope: input.scope ?? null })
+        .onConflictDoNothing();
+      await this.appendTx(tx, 'actor', input.actorId, 'grant.issued', this.systemActorId, {
+        permission: input.permission,
+      });
+    });
   }
 
   async revoke(input: { actorId: string; permission: Permission; scope?: string }): Promise<void> {
-    await this.db
-      .delete(grants)
-      .where(and(eq(grants.actorId, input.actorId), eq(grants.permission, input.permission)));
+    await this.db.transaction(async (tx) => {
+      await tx
+        .delete(grants)
+        .where(and(eq(grants.actorId, input.actorId), eq(grants.permission, input.permission)));
+      await this.appendTx(tx, 'actor', input.actorId, 'grant.revoked', this.systemActorId, {
+        permission: input.permission,
+      });
+    });
+  }
+
+  // -- entitlements (Phase 2, roadmap §3) ----------------------------------------
+
+  async setGovernanceRole(input: { actorId: string; role: GovernanceRole; byActorId: string }): Promise<void> {
+    await this.requireGovernanceAdmin(input.byActorId);
+    if ((await this.getActorRow(input.actorId)) === null) {
+      throw new GuardFailedError(`unknown actor: ${input.actorId}`);
+    }
+    await this.db.transaction(async (tx) => {
+      await tx.update(actors).set({ governanceRole: input.role }).where(eq(actors.id, input.actorId));
+      await this.appendTx(tx, 'actor', input.actorId, 'governance.changed', input.byActorId, { role: input.role });
+    });
+  }
+
+  async getGovernanceRole(actorId: string): Promise<GovernanceRole> {
+    const actor = await this.getActorRow(actorId);
+    return (actor?.governanceRole as GovernanceRole | undefined) ?? 'member';
+  }
+
+  async assignRole(input: { actorId: string; roleCode: string; byActorId: string }): Promise<void> {
+    await this.requireGovernanceAdmin(input.byActorId);
+    const bundle = DELIVERY_ROLES[input.roleCode];
+    if (bundle === undefined) throw new GuardFailedError(`unknown delivery role: ${input.roleCode}`);
+    if ((await this.getActorRow(input.actorId)) === null) {
+      throw new GuardFailedError(`unknown actor: ${input.actorId}`);
+    }
+    for (const permission of bundle) {
+      await this.checkGrantCeiling(input.actorId, permission);
+    }
+    const active = await this.db
+      .select({ seq: roleAssignments.seq })
+      .from(roleAssignments)
+      .where(
+        and(
+          eq(roleAssignments.actorId, input.actorId),
+          eq(roleAssignments.roleCode, input.roleCode),
+          eq(roleAssignments.revoked, false),
+        ),
+      )
+      .limit(1);
+    if (active.length > 0) return; // idempotent
+    await this.db.transaction(async (tx) => {
+      await tx.insert(roleAssignments).values({
+        actorId: input.actorId,
+        roleCode: input.roleCode,
+        grantedBy: input.byActorId,
+        revoked: false,
+      });
+      await this.appendTx(tx, 'actor', input.actorId, 'role.assigned', input.byActorId, {
+        roleCode: input.roleCode,
+      });
+    });
+  }
+
+  async revokeRole(input: { actorId: string; roleCode: string; byActorId: string }): Promise<void> {
+    await this.requireGovernanceAdmin(input.byActorId);
+    if (DELIVERY_ROLES[input.roleCode] === undefined) {
+      throw new GuardFailedError(`unknown delivery role: ${input.roleCode}`);
+    }
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(roleAssignments)
+        .set({ revoked: true })
+        .where(
+          and(
+            eq(roleAssignments.actorId, input.actorId),
+            eq(roleAssignments.roleCode, input.roleCode),
+            eq(roleAssignments.revoked, false),
+          ),
+        );
+      await this.appendTx(tx, 'actor', input.actorId, 'role.revoked', input.byActorId, {
+        roleCode: input.roleCode,
+      });
+    });
+  }
+
+  async listRoleAssignments(actorId?: string): Promise<RoleAssignment[]> {
+    const rows =
+      actorId === undefined
+        ? await this.db.select().from(roleAssignments).orderBy(asc(roleAssignments.seq))
+        : await this.db
+            .select()
+            .from(roleAssignments)
+            .where(eq(roleAssignments.actorId, actorId))
+            .orderBy(asc(roleAssignments.seq));
+    return rows.map((row) => ({
+      actorId: row.actorId,
+      roleCode: row.roleCode,
+      grantedBy: row.grantedBy,
+      revoked: row.revoked,
+    }));
+  }
+
+  async setPlan(input: { plan: PlanCode; byActorId: string }): Promise<void> {
+    await this.requireGovernanceAdmin(input.byActorId);
+    if (PLAN_CEILINGS[input.plan] === undefined) throw new GuardFailedError(`unknown plan: ${input.plan}`);
+    const workspace = await this.workspaceRow();
+    const planVersion = workspace.planVersion + 1;
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(workspaceState)
+        .set({ plan: input.plan, planVersion })
+        .where(eq(workspaceState.id, WORKSPACE_ID));
+      await this.appendTx(tx, 'workspace', WORKSPACE_ID, 'plan.changed', input.byActorId, {
+        plan: input.plan,
+        planVersion,
+      });
+    });
+  }
+
+  async getPlan(): Promise<PlanCode> {
+    return (await this.workspaceRow()).plan as PlanCode;
+  }
+
+  async setWorkspacePolicy(input: { policy: WorkspacePolicy; byActorId: string }): Promise<void> {
+    await this.requireGovernanceAdmin(input.byActorId);
+    const workspace = await this.workspaceRow();
+    const merged: WorkspacePolicy = { ...(workspace.policy as WorkspacePolicy), ...input.policy };
+    const policyVersion = workspace.policyVersion + 1;
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(workspaceState)
+        .set({ policy: merged as Record<string, unknown>, policyVersion })
+        .where(eq(workspaceState.id, WORKSPACE_ID));
+      await this.appendTx(tx, 'workspace', WORKSPACE_ID, 'policy.changed', input.byActorId, {
+        policy: { ...merged },
+        policyVersion,
+      });
+    });
+  }
+
+  async getWorkspacePolicy(): Promise<WorkspacePolicy> {
+    return { ...((await this.workspaceRow()).policy as WorkspacePolicy) };
+  }
+
+  async setGatePolicy(input: { gate: GateCode; policy: GatePolicy; byActorId: string }): Promise<void> {
+    await this.requireGovernanceAdmin(input.byActorId);
+    const minApprovals = input.policy.minApprovals ?? 1;
+    if (!Number.isInteger(minApprovals) || minApprovals < 1) {
+      throw new GuardFailedError('minApprovals must be a positive integer');
+    }
+    await this.db.transaction(async (tx) => {
+      await tx
+        .insert(gatePolicies)
+        .values({ gate: input.gate, policy: { ...input.policy } as Record<string, unknown> })
+        .onConflictDoUpdate({
+          target: gatePolicies.gate,
+          set: { policy: { ...input.policy } as Record<string, unknown> },
+        });
+      await this.appendTx(tx, 'workspace', WORKSPACE_ID, 'gate_policy.changed', input.byActorId, {
+        gate: input.gate,
+        policy: { ...input.policy },
+      });
+    });
+  }
+
+  async getGatePolicy(gate: GateCode): Promise<GatePolicy> {
+    const rows = await this.db.select().from(gatePolicies).where(eq(gatePolicies.gate, gate)).limit(1);
+    return { ...((rows[0]?.policy as GatePolicy | undefined) ?? {}) };
+  }
+
+  async authzExplain(input: { actorId: string; permission: Permission }): Promise<AuthzExplanation> {
+    const source = await this.grantSource(input.actorId, input.permission);
+    const actor = await this.getActorRow(input.actorId);
+    const workspace = await this.workspaceRow();
+    const allows = this.agentCeilingAllows(actor, input.permission, workspace);
+    return {
+      actorId: input.actorId,
+      permission: input.permission,
+      allowed: source !== null && allows.plan && allows.policy,
+      source,
+      governanceRole: (actor?.governanceRole as GovernanceRole | undefined) ?? 'member',
+      plan: workspace.plan as PlanCode,
+      planAllows: allows.plan,
+      policyAllows: allows.policy,
+      versions: { plan: workspace.planVersion, policy: workspace.policyVersion },
+    };
   }
 
   async createFeature(input: { actorId: string }): Promise<Feature> {
@@ -905,24 +1208,21 @@ export class PgEngine {
       if (item.state !== 'draft') {
         throw new GuardFailedError(`spec_approval applies to draft items, not ${item.state}`);
       }
+      const quorumMet = await this.quorumWouldBeMet(item, 'spec_approval', input.actorId);
       return this.db.transaction(async (tx) => {
         let pinned = item.pinnedVerification;
         if (input.pinnedVerification !== undefined) {
           pinned = [...input.pinnedVerification];
           await tx.update(workItems).set({ pinnedVerification: pinned }).where(eq(workItems.id, item.id));
         }
-        await tx.insert(gateDecisions).values({
-          workItemId: item.id,
-          gate: 'spec_approval',
-          decision: 'approved',
-          actorId: input.actorId,
-        });
-        await this.appendTx(tx, 'work_item', item.id, 'gate.approved', input.actorId, {
-          gate: 'spec_approval',
-          pinnedVerification: pinned ?? null,
-        });
+        const pinnedItem = { ...item, pinnedVerification: pinned };
+        await this.recordApprovalTx(tx, pinnedItem, 'spec_approval', input.actorId);
+        if (!quorumMet) {
+          // Decision recorded; quorum pending (gate policy is data, roadmap §3).
+          return this.publicItem(pinnedItem);
+        }
         // The approval fires the gated forward transition (conformance pin).
-        return this.executeTransitionTx(tx, { ...item, pinnedVerification: pinned }, 'ready_for_dev', input.actorId);
+        return this.executeTransitionTx(tx, pinnedItem, 'ready_for_dev', input.actorId);
       });
     }
 
@@ -934,18 +1234,69 @@ export class PgEngine {
     if (item.state !== 'in_review') {
       throw new GuardFailedError(`review_approval applies to in_review items, not ${item.state}`);
     }
-    await this.checkReviewEvidence(item);
+    const quorumMet = await this.quorumWouldBeMet(item, 'review_approval', input.actorId);
+    // Evidence is checked exactly when the quorum would complete, so a failed
+    // approval records nothing (Phase 1 pin: denied attempts mutate nothing).
+    if (quorumMet) await this.checkReviewEvidence(item);
     return this.db.transaction(async (tx) => {
-      await tx.insert(gateDecisions).values({
-        workItemId: item.id,
-        gate: 'review_approval',
-        decision: 'approved',
-        actorId: input.actorId,
-      });
-      await this.appendTx(tx, 'work_item', item.id, 'gate.approved', input.actorId, {
-        gate: 'review_approval',
-      });
+      await this.recordApprovalTx(tx, item, 'review_approval', input.actorId);
+      if (!quorumMet) {
+        return this.publicItem(item); // quorum pending — no transition yet
+      }
       return this.executeTransitionTx(tx, item, 'done', input.actorId);
+    });
+  }
+
+  /** Distinct approvers of this round (round = reviewLoopIteration at decision time). */
+  private async roundApprovers(item: WorkItemRow, gate: GateCode): Promise<ActorRow[]> {
+    const rows = await this.db
+      .select({ actorId: gateDecisions.actorId })
+      .from(gateDecisions)
+      .where(
+        and(
+          eq(gateDecisions.workItemId, item.id),
+          eq(gateDecisions.gate, gate),
+          eq(gateDecisions.decision, 'approved'),
+          eq(gateDecisions.round, item.reviewLoopIteration),
+        ),
+      )
+      .orderBy(asc(gateDecisions.seq));
+    const ids = [...new Set(rows.map((row) => row.actorId))];
+    const result: ActorRow[] = [];
+    for (const id of ids) {
+      const actor = await this.getActorRow(id);
+      if (actor) result.push(actor);
+    }
+    return result;
+  }
+
+  /** Gate policy quorum (roadmap §3): min distinct approvers + required actor types, as DATA. */
+  private async quorumWouldBeMet(item: WorkItemRow, gate: GateCode, nextApproverId: string): Promise<boolean> {
+    const policy = await this.getGatePolicy(gate);
+    const min = policy.minApprovals ?? 1;
+    const required = policy.requiredActorTypes ?? [];
+    const approvers = await this.roundApprovers(item, gate);
+    const nextActor = await this.getActorRow(nextApproverId);
+    if (nextActor && !approvers.some((a) => a.id === nextActor.id)) approvers.push(nextActor);
+    if (approvers.length < min) return false;
+    for (const type of required) {
+      if (!approvers.some((a) => a.type === type)) return false;
+    }
+    return true;
+  }
+
+  private async recordApprovalTx(tx: Queryable, item: WorkItemRow, gate: GateCode, actorId: string): Promise<void> {
+    await tx.insert(gateDecisions).values({
+      workItemId: item.id,
+      gate,
+      decision: 'approved',
+      actorId,
+      round: item.reviewLoopIteration,
+    });
+    await this.appendTx(tx, 'work_item', item.id, 'gate.approved', actorId, {
+      gate,
+      round: item.reviewLoopIteration,
+      ...(gate === 'spec_approval' ? { pinnedVerification: item.pinnedVerification } : {}),
     });
   }
 
@@ -980,7 +1331,15 @@ export class PgEngine {
     if (input.gate !== 'review_approval') {
       throw new GuardFailedError('only review_approval rejection is defined in Phase 1');
     }
-    await this.requirePermission(input.actorId, 'gate.review.approve');
+    // Phase 2 (additive): rejection authority = gate.review.approve OR
+    // gate.review.reject — the Phase 2 exit criterion's reviewer-agent holds
+    // only the latter. Every Phase 1 pin on rejectGate keeps holding.
+    if (
+      !(await this.hasPermission(input.actorId, 'gate.review.approve')) &&
+      !(await this.hasPermission(input.actorId, 'gate.review.reject'))
+    ) {
+      throw new PermissionDeniedError('gate.review.reject', input.actorId);
+    }
     if (item.state !== 'in_review') {
       throw new GuardFailedError(`review rejection applies to in_review items, not ${item.state}`);
     }
@@ -990,6 +1349,7 @@ export class PgEngine {
         gate: 'review_approval',
         decision: 'rejected',
         actorId: input.actorId,
+        round: item.reviewLoopIteration,
       });
       const decisionEvent = await this.appendTx(tx, 'work_item', item.id, 'gate.rejected', input.actorId, {
         gate: 'review_approval',

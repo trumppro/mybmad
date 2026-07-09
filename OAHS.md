@@ -51,6 +51,22 @@ oahs events <workItemId>                         # audit: who, under what grant,
 
 MCP: every command is also an MCP tool (`oahs_*`) at `POST /mcp` — point Claude Code at it and ask "how's the sprint" through the same rails.
 
+### Entitlements (Phase 2 — roadmap §3)
+
+Entitlement = **plan × governance role × delivery role**, resolved by a pure function; `authz` shows the replayable trace:
+
+```bash
+oahs role assign <actorId> reviewer          # delivery-role bundles (product_owner, tech_lead, reviewer, developer, qa, contributor)
+oahs governance set <actorId> admin          # who may perform gated entitlement writes
+oahs plan set team                           # a CEILING for agent gate grants — never a grant itself
+oahs policy set --agent-gate-approvals false # restrict-only: narrows the plan, never widens it
+oahs gate-policy set review_approval --min-approvals 2 --require-type user
+                                             # quorum + human-in-the-loop as DATA, not hardcode
+oahs authz <actorId> gate.review.approve     # ALLOWED/DENIED + source + plan/policy trace + version tuple
+```
+
+The Phase 2 exit criterion is a live test in three places (memory, PGlite, HTTP): an agent granted **only** `gate.review.reject` can fire the rejection loopback but is denied done-approval — same actor, same deterministic check, different grant.
+
 ## Invariants (machine-checked)
 
 - **No LLM SDK inside the spine** — grep-lint in CI; the spine never interprets, it checks.
@@ -76,4 +92,4 @@ Evidence collected on a developer machine is as strong as the honest-operator as
 
 ## Status
 
-Phase 0 ✅ and Phase 1 stories 1–14 ✅ (engine, Postgres persistence, HTTP+MCP, gate-holder CLI, runner with crash recovery — ~280 tests green). The remaining Phase 1 exit criterion is operational, not mechanical: run ≥3 real platform stories end-to-end through the spine with a real coding agent (`oahs work` + Claude Code), then enforce the dogfood policy — *no platform work outside the spine*.
+Phase 0 ✅, Phase 1 stories 1–14 ✅, **Phase 2 entitlements ✅** (delivery roles, governance-gated writes, plan ceilings, restrict-only policy, gate quorum as data, `authz.explain` — 340 tests green across memory/PGlite/HTTP/CLI). The remaining Phase 1→2 exit criterion is operational, not mechanical: run ≥3 real platform stories end-to-end through the spine with a real coding agent (`oahs work` + Claude Code), then enforce the dogfood policy — *no platform work outside the spine*. Next build phase: 3 (collaborative chat: threads, mention router, first web UI).

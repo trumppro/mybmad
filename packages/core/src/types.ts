@@ -106,12 +106,105 @@ export type Permission =
   | 'task.block'
   | 'gate.spec.approve'
   | 'gate.review.approve'
+  | 'gate.review.reject' // Phase 2: rejection-loopback WITHOUT done-approval (roadmap Phase 2 exit criterion)
   | 'feature.init'
   | 'feature.advance'
   | 'dispatch.release_hold'
   | 'intent.edit'
   | 'state.downgrade'
-  | 'ops.force_release_claim';
+  | 'ops.force_release_claim'
+  | 'governance.admin'; // Phase 2: authority over gated entitlement writes (held via governance role, not grants)
+
+// ---------------------------------------------------------------------------
+// Entitlements (Phase 2, roadmap §3): plan × governance role × delivery role.
+// Resolution is a PURE function over this data — no interpretation anywhere.
+// ---------------------------------------------------------------------------
+
+export type GovernanceRole = 'admin' | 'member' | 'auditor';
+
+export type PlanCode = 'free' | 'team' | 'enterprise';
+
+/**
+ * Plan is a CEILING, never a grant (roadmap §3). It bounds what may be
+ * granted to AGENT actors; user actors are never plan-filtered. Enforced in
+ * the resolver and at grant time — nowhere else.
+ */
+export interface PlanCeiling {
+  /** may agents hold gate-APPROVAL permissions (spec/review approve)? */
+  agentGateApprove: boolean;
+  /** may agents hold the rejection-loopback permission? */
+  agentGateReject: boolean;
+}
+
+export const PLAN_CEILINGS: Record<PlanCode, PlanCeiling> = {
+  free: { agentGateApprove: false, agentGateReject: false },
+  team: { agentGateApprove: false, agentGateReject: true },
+  enterprise: { agentGateApprove: true, agentGateReject: true },
+};
+
+/** Self-host default: the ceiling is open; the org narrows (restrict-only). */
+export const DEFAULT_PLAN: PlanCode = 'enterprise';
+
+/** Gate-approval permissions bounded by PlanCeiling.agentGateApprove. */
+export const AGENT_GATE_APPROVE_PERMISSIONS: readonly Permission[] = [
+  'gate.spec.approve',
+  'gate.review.approve',
+];
+
+/**
+ * Delivery roles (roadmap §3) — permission bundles, versioned data of the
+ * Rules layer. An assignment grants the bundle; revocation removes it.
+ */
+export const DELIVERY_ROLES: Record<string, readonly Permission[]> = {
+  product_owner: ['task.plan', 'feature.init', 'feature.advance', 'gate.spec.approve', 'dispatch.release_hold'],
+  tech_lead: ['task.plan', 'gate.review.approve', 'gate.review.reject', 'state.downgrade', 'ops.force_release_claim'],
+  reviewer: ['gate.review.approve', 'gate.review.reject'],
+  developer: ['task.claim', 'task.advance', 'task.block'],
+  qa: ['task.block'],
+  contributor: [],
+};
+
+/**
+ * Workspace policy — RESTRICT-ONLY keys (roadmap §3): a policy can narrow
+ * what the plan allows, never widen it. Undefined = no restriction.
+ */
+export interface WorkspacePolicy {
+  /** false ⇒ agents cannot exercise gate-approval permissions even if granted */
+  agentGateApprovals?: boolean;
+  /** false ⇒ agents cannot claim tasks on their own (mention-dispatch only, Phase 3) */
+  agentSelfDispatch?: boolean;
+}
+
+/** Gate definitions are data (roadmap §3): quorum + actor-type requirements. */
+export interface GatePolicy {
+  /** distinct approvers required in the current review round (default 1) */
+  minApprovals?: number;
+  /** at least one approver of each listed type is required (e.g. ['user']) */
+  requiredActorTypes?: ActorType[];
+}
+
+export interface RoleAssignment {
+  actorId: string;
+  roleCode: string;
+  grantedBy: string;
+  revoked: boolean;
+}
+
+/** authz.explain — the decision trace an auditor can replay (roadmap §3). */
+export interface AuthzExplanation {
+  actorId: string;
+  permission: Permission;
+  allowed: boolean;
+  /** 'direct' | 'role:<code>' when a grant exists; null when none does */
+  source: string | null;
+  governanceRole: GovernanceRole;
+  plan: PlanCode;
+  /** false when the plan ceiling blocks an agent's gate permission */
+  planAllows: boolean;
+  /** false when the restrict-only workspace policy blocks it */
+  policyAllows: boolean;
+  versions: { plan: number; policy: number };
+}
 
 export type GateCode = 'spec_approval' | 'review_approval';
 
@@ -232,7 +325,12 @@ export interface GateDecisionInput {
 
 export interface SpineEngine {
   // -- setup ---------------------------------------------------------------
-  createActor(input: { type: Exclude<ActorType, 'system'>; displayName: string }): Actor;
+  createActor(input: {
+    type: Exclude<ActorType, 'system'>;
+    displayName: string;
+    /** bootstrap plumbing (like createActor itself); default 'member' */
+    governanceRole?: GovernanceRole;
+  }): Actor;
   grant(input: { actorId: string; permission: Permission; scope?: string }): void;
   revoke(input: { actorId: string; permission: Permission; scope?: string }): void;
   createFeature(input: { actorId: string }): Feature;
@@ -270,6 +368,23 @@ export interface SpineEngine {
 
   // -- reconciliation (roadmap §1.6, detect-only) -------------------------------
   reconcile(input: { files: Array<{ workItemId: string; frontmatterStatus: string }> }): DivergenceReport[];
+
+  // -- entitlements (Phase 2, roadmap §3) ------------------------------------
+  /** Governance authority: the system actor and 'admin' governance-role holders. */
+  setGovernanceRole(input: { actorId: string; role: GovernanceRole; byActorId: string }): void;
+  getGovernanceRole(actorId: string): GovernanceRole;
+  /** Assign/revoke a delivery role (bundle of permissions). Gated writes; audited. */
+  assignRole(input: { actorId: string; roleCode: string; byActorId: string }): void;
+  revokeRole(input: { actorId: string; roleCode: string; byActorId: string }): void;
+  listRoleAssignments(actorId?: string): RoleAssignment[];
+  setPlan(input: { plan: PlanCode; byActorId: string }): void;
+  getPlan(): PlanCode;
+  setWorkspacePolicy(input: { policy: WorkspacePolicy; byActorId: string }): void;
+  getWorkspacePolicy(): WorkspacePolicy;
+  setGatePolicy(input: { gate: GateCode; policy: GatePolicy; byActorId: string }): void;
+  getGatePolicy(gate: GateCode): GatePolicy;
+  /** Pure decision trace — replayable by an auditor. Never mutates. */
+  authzExplain(input: { actorId: string; permission: Permission }): AuthzExplanation;
 
   // -- queries -------------------------------------------------------------
   getWorkItem(id: string): WorkItem;

@@ -18,6 +18,12 @@ export interface ResolvedToken {
 interface PersistShape {
   version: 1;
   tokens: Record<string, ResolvedToken>; // sha256(token) hex -> record
+  /**
+   * Phase 2 (roadmap §3): the REAL engine actor the bootstrap admin token
+   * acts as ('Workspace Admin', governance role 'admin'). Persisted so a
+   * `--data` restart reuses the same actor instead of minting a new one.
+   */
+  adminActorId?: string;
 }
 
 function hashToken(token: string): string {
@@ -27,6 +33,7 @@ function hashToken(token: string): string {
 export class TokenStore {
   private readonly byHash = new Map<string, ResolvedToken>();
   private readonly persistPath: string | undefined;
+  private adminActorId: string | undefined;
 
   constructor(options?: { persistPath?: string }) {
     this.persistPath = options?.persistPath;
@@ -35,7 +42,19 @@ export class TokenStore {
       for (const [hash, record] of Object.entries(raw.tokens)) {
         this.byHash.set(hash, { actorId: record.actorId, isAdmin: record.isAdmin });
       }
+      this.adminActorId = raw.adminActorId;
     }
+  }
+
+  /** Persisted engine-actor id the bootstrap admin token maps to (if any). */
+  getAdminActorId(): string | undefined {
+    return this.adminActorId;
+  }
+
+  /** Remember (and persist) the bootstrap admin actor mapping. */
+  setAdminActorId(actorId: string): void {
+    this.adminActorId = actorId;
+    this.save();
   }
 
   /**
@@ -61,7 +80,11 @@ export class TokenStore {
 
   private save(): void {
     if (this.persistPath === undefined) return;
-    const shape: PersistShape = { version: 1, tokens: {} };
+    const shape: PersistShape = {
+      version: 1,
+      tokens: {},
+      ...(this.adminActorId !== undefined ? { adminActorId: this.adminActorId } : {}),
+    };
     for (const [hash, record] of this.byHash) {
       // Admin bootstrap entries are configuration; persist only issued tokens.
       if (record.isAdmin) continue;

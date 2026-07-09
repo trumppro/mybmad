@@ -171,9 +171,10 @@ describe('MCP ≡ HTTP parity', () => {
     const callBody = (await callRes.json()) as {
       result: { content: Array<{ type: string; text: string }> };
     };
-    expect(JSON.parse(callBody.result.content[0]!.text)).toEqual({
-      actorId: 'admin',
-      isAdmin: true,
-    });
+    // Parity in the strictest sense: the MCP surface resolves the admin token
+    // to the SAME context as HTTP (Phase 2: a real bootstrap admin actor).
+    const viaHttp = await httpClient.call<{ actorId: string; isAdmin: boolean }>('whoami');
+    expect(viaHttp.isAdmin).toBe(true);
+    expect(JSON.parse(callBody.result.content[0]!.text)).toEqual(viaHttp);
   });
 });

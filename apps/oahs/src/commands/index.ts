@@ -11,11 +11,16 @@ import type { OahsClient } from '@oahs/contracts';
 import {
   WORK_ITEM_STATES,
   type Actor,
+  type AuthzExplanation,
   type Feature,
   type GateCode,
+  type GovernanceRole,
+  type PlanCode,
+  type RoleAssignment,
   type SpineEvent,
   type StoriesImportResult,
   type WorkItem,
+  type WorkspacePolicy,
 } from '@oahs/core';
 
 import { renderTable, type Cell } from '../format.js';
@@ -158,6 +163,16 @@ export async function statusCommand(client: OahsClient): Promise<string> {
 export interface ActorCreateOptions {
   type: string;
   name: string;
+  /** Phase 2 (roadmap §3): initial governance role — admin context only. */
+  governanceRole?: string;
+}
+
+const GOVERNANCE_ROLES = ['admin', 'member', 'auditor'] as const;
+
+function assertGovernanceRole(role: string): asserts role is GovernanceRole {
+  if (!(GOVERNANCE_ROLES as readonly string[]).includes(role)) {
+    throw new Error(`invalid governance role "${role}" (expected ${GOVERNANCE_ROLES.join(' | ')})`);
+  }
 }
 
 export async function actorCreateCommand(
@@ -167,9 +182,11 @@ export async function actorCreateCommand(
   if (opts.type !== 'user' && opts.type !== 'agent') {
     throw new Error(`invalid --type "${opts.type}" (expected user | agent)`);
   }
+  if (opts.governanceRole !== undefined) assertGovernanceRole(opts.governanceRole);
   const created = await client.call<{ actor: Actor; token: string }>('create_actor', {
     type: opts.type,
     displayName: opts.name,
+    ...(opts.governanceRole !== undefined ? { governanceRole: opts.governanceRole } : {}),
   });
   return [
     `actorId: ${created.actor.id}`,
@@ -250,6 +267,174 @@ export async function eventsCommand(
       event.actorId,
     ]),
   );
+}
+
+// ---------------------------------------------------------------------------
+// entitlements (Phase 2, roadmap §3) — role / plan / policy / governance / authz
+// Authority for these writes is decided by the ENGINE from the caller's
+// governance role; the CLI only validates shapes locally.
+// ---------------------------------------------------------------------------
+
+export interface RoleOptions {
+  actorId: string;
+  roleCode: string;
+}
+
+export async function roleAssignCommand(client: OahsClient, opts: RoleOptions): Promise<string> {
+  await client.call('assign_role', { actorId: opts.actorId, roleCode: opts.roleCode });
+  return `assigned role ${opts.roleCode} to ${opts.actorId}`;
+}
+
+export async function roleRevokeCommand(client: OahsClient, opts: RoleOptions): Promise<string> {
+  await client.call('revoke_role', { actorId: opts.actorId, roleCode: opts.roleCode });
+  return `revoked role ${opts.roleCode} from ${opts.actorId}`;
+}
+
+export interface RoleListOptions {
+  actorId?: string;
+}
+
+export async function roleListCommand(
+  client: OahsClient,
+  opts: RoleListOptions = {},
+): Promise<string> {
+  const assignments = await client.call<RoleAssignment[]>(
+    'list_role_assignments',
+    opts.actorId !== undefined ? { actorId: opts.actorId } : {},
+  );
+  return renderTable(
+    ['actorId', 'roleCode', 'grantedBy', 'revoked'],
+    assignments.map((a) => [a.actorId, a.roleCode, a.grantedBy, a.revoked]),
+  );
+}
+
+export interface PlanSetOptions {
+  plan: string;
+}
+
+const PLANS = ['free', 'team', 'enterprise'] as const;
+
+export async function planSetCommand(client: OahsClient, opts: PlanSetOptions): Promise<string> {
+  if (!(PLANS as readonly string[]).includes(opts.plan)) {
+    throw new Error(`invalid plan "${opts.plan}" (expected ${PLANS.join(' | ')})`);
+  }
+  const result = await client.call<{ plan: PlanCode }>('set_plan', { plan: opts.plan });
+  return `plan set: ${result.plan} (a ceiling for agent grants — never a grant itself)`;
+}
+
+export interface PolicySetOptions {
+  /** 'true' | 'false' — restrict-only key (roadmap §3). */
+  agentGateApprovals?: string;
+  /** 'true' | 'false' — restrict-only key (roadmap §3). */
+  agentSelfDispatch?: string;
+}
+
+function parseBoolFlag(flag: string, value: string): boolean {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`invalid ${flag} "${value}" (expected true | false)`);
+}
+
+export async function policySetCommand(client: OahsClient, opts: PolicySetOptions): Promise<string> {
+  const policy: WorkspacePolicy = {
+    ...(opts.agentGateApprovals !== undefined
+      ? { agentGateApprovals: parseBoolFlag('--agent-gate-approvals', opts.agentGateApprovals) }
+      : {}),
+    ...(opts.agentSelfDispatch !== undefined
+      ? { agentSelfDispatch: parseBoolFlag('--agent-self-dispatch', opts.agentSelfDispatch) }
+      : {}),
+  };
+  if (Object.keys(policy).length === 0) {
+    throw new Error('nothing to set: pass --agent-gate-approvals and/or --agent-self-dispatch');
+  }
+  const effective = await client.call<WorkspacePolicy>('set_workspace_policy', { policy });
+  return [
+    'workspace policy (restrict-only — narrows the plan, never widens it):',
+    `  agentGateApprovals: ${effective.agentGateApprovals ?? '(unset)'}`,
+    `  agentSelfDispatch: ${effective.agentSelfDispatch ?? '(unset)'}`,
+  ].join('\n');
+}
+
+export interface GatePolicySetOptions {
+  gate: string;
+  minApprovals?: string;
+  requireTypes?: string[];
+}
+
+export async function gatePolicySetCommand(
+  client: OahsClient,
+  opts: GatePolicySetOptions,
+): Promise<string> {
+  assertGate(opts.gate);
+  const minApprovals = opts.minApprovals !== undefined ? Number(opts.minApprovals) : undefined;
+  if (minApprovals !== undefined && (!Number.isInteger(minApprovals) || minApprovals < 1)) {
+    throw new Error(`invalid --min-approvals "${opts.minApprovals}" (expected a positive integer)`);
+  }
+  const requireTypes = opts.requireTypes ?? [];
+  for (const type of requireTypes) {
+    if (type !== 'user' && type !== 'agent' && type !== 'system') {
+      throw new Error(`invalid --require-type "${type}" (expected user | agent | system)`);
+    }
+  }
+  if (minApprovals === undefined && requireTypes.length === 0) {
+    throw new Error('nothing to set: pass --min-approvals and/or --require-type');
+  }
+  const result = await client.call<{
+    gate: GateCode;
+    policy: { minApprovals?: number; requiredActorTypes?: string[] };
+  }>('set_gate_policy', {
+    gate: opts.gate,
+    policy: {
+      ...(minApprovals !== undefined ? { minApprovals } : {}),
+      ...(requireTypes.length > 0 ? { requiredActorTypes: requireTypes } : {}),
+    },
+  });
+  return [
+    `gate policy set on ${result.gate} (gate definitions are data, roadmap §3):`,
+    `  minApprovals: ${result.policy.minApprovals ?? 1}`,
+    `  requiredActorTypes: ${
+      result.policy.requiredActorTypes !== undefined && result.policy.requiredActorTypes.length > 0
+        ? result.policy.requiredActorTypes.join(', ')
+        : '(none)'
+    }`,
+  ].join('\n');
+}
+
+export interface GovernanceSetOptions {
+  actorId: string;
+  role: string;
+}
+
+export async function governanceSetCommand(
+  client: OahsClient,
+  opts: GovernanceSetOptions,
+): Promise<string> {
+  assertGovernanceRole(opts.role);
+  await client.call('set_governance_role', { actorId: opts.actorId, role: opts.role });
+  return `governance role of ${opts.actorId} set to ${opts.role}`;
+}
+
+export interface AuthzOptions {
+  actorId: string;
+  permission: string;
+}
+
+/** Human-readable rendering of the replayable authz_explain trace (roadmap §3). */
+export async function authzCommand(client: OahsClient, opts: AuthzOptions): Promise<string> {
+  const explanation = await client.call<AuthzExplanation>('authz_explain', {
+    actorId: opts.actorId,
+    permission: opts.permission,
+  });
+  return [
+    `authz ${explanation.permission} for ${explanation.actorId}: ${
+      explanation.allowed ? 'ALLOWED' : 'DENIED'
+    }`,
+    `  source: ${explanation.source ?? '(no grant — direct or via role)'}`,
+    `  governanceRole: ${explanation.governanceRole}`,
+    `  plan: ${explanation.plan} (planAllows: ${explanation.planAllows})`,
+    `  policyAllows: ${explanation.policyAllows}`,
+    `  versions: plan v${explanation.versions.plan}, policy v${explanation.versions.policy}`,
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------

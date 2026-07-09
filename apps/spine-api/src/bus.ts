@@ -10,10 +10,13 @@
 import {
   GuardFailedError,
   PermissionDeniedError,
+  type ActorType,
   type BlockedReason,
   type Evidence,
   type GateCode,
+  type GovernanceRole,
   type Permission,
+  type PlanCode,
   type SpineEngine,
   type WorkItemState,
 } from '@oahs/core';
@@ -23,8 +26,20 @@ import type { TokenStore } from './auth.js';
 
 // Parsed-input shapes (mirror the zod schemas in @oahs/contracts; the zod
 // parse in execute() is the runtime guarantee, these are the static view).
-interface CreateActorIn { type: 'user' | 'agent'; displayName: string }
+interface CreateActorIn { type: 'user' | 'agent'; displayName: string; governanceRole?: GovernanceRole | undefined }
 interface GrantIn { actorId: string; permission: string; scope?: string | undefined }
+interface RoleIn { actorId: string; roleCode: string }
+interface ListRoleAssignmentsIn { actorId?: string | undefined }
+interface SetGovernanceRoleIn { actorId: string; role: GovernanceRole }
+interface SetPlanIn { plan: PlanCode }
+interface SetWorkspacePolicyIn {
+  policy: { agentGateApprovals?: boolean | undefined; agentSelfDispatch?: boolean | undefined };
+}
+interface SetGatePolicyIn {
+  gate: GateCode;
+  policy: { minApprovals?: number | undefined; requiredActorTypes?: ActorType[] | undefined };
+}
+interface AuthzExplainIn { actorId: string; permission: string }
 interface ImportStoriesIn { featureId: string; yaml: string }
 interface ClaimTaskIn { workItemId: string; ttlMs?: number | undefined }
 interface HeartbeatIn { claimId: string }
@@ -72,9 +87,15 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
     switch (command as CommandName) {
       // -- setup / admin -----------------------------------------------------
       case 'create_actor': {
+        // create_actor stays admin-token-gated (bootstrap plumbing), which
+        // also makes it the only ctx allowed to pass governanceRole.
         requireAdmin(ctx, command);
         const p = parsed as CreateActorIn;
-        const actor = engine.createActor({ type: p.type, displayName: p.displayName });
+        const actor = engine.createActor({
+          type: p.type,
+          displayName: p.displayName,
+          ...(p.governanceRole !== undefined ? { governanceRole: p.governanceRole } : {}),
+        });
         const token = tokens.issue(actor.id);
         return { actor, token };
       }
@@ -100,6 +121,67 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
       }
       case 'create_feature': {
         return engine.createFeature({ actorId: ctx.actorId });
+      }
+
+      // -- entitlements (Phase 2, roadmap §3) ----------------------------------
+      // No requireAdmin here: authority is decided by the ENGINE from the
+      // caller's governance role (byActorId = the authenticated actor).
+      case 'assign_role': {
+        const p = parsed as RoleIn;
+        engine.assignRole({ actorId: p.actorId, roleCode: p.roleCode, byActorId: ctx.actorId });
+        return { assigned: true };
+      }
+      case 'revoke_role': {
+        const p = parsed as RoleIn;
+        engine.revokeRole({ actorId: p.actorId, roleCode: p.roleCode, byActorId: ctx.actorId });
+        return { revoked: true };
+      }
+      case 'list_role_assignments': {
+        const p = parsed as ListRoleAssignmentsIn;
+        return engine.listRoleAssignments(p.actorId);
+      }
+      case 'set_governance_role': {
+        const p = parsed as SetGovernanceRoleIn;
+        engine.setGovernanceRole({ actorId: p.actorId, role: p.role, byActorId: ctx.actorId });
+        return { actorId: p.actorId, role: p.role };
+      }
+      case 'set_plan': {
+        const p = parsed as SetPlanIn;
+        engine.setPlan({ plan: p.plan, byActorId: ctx.actorId });
+        return { plan: engine.getPlan() };
+      }
+      case 'set_workspace_policy': {
+        const p = parsed as SetWorkspacePolicyIn;
+        engine.setWorkspacePolicy({
+          policy: {
+            ...(p.policy.agentGateApprovals !== undefined
+              ? { agentGateApprovals: p.policy.agentGateApprovals }
+              : {}),
+            ...(p.policy.agentSelfDispatch !== undefined
+              ? { agentSelfDispatch: p.policy.agentSelfDispatch }
+              : {}),
+          },
+          byActorId: ctx.actorId,
+        });
+        return engine.getWorkspacePolicy();
+      }
+      case 'set_gate_policy': {
+        const p = parsed as SetGatePolicyIn;
+        engine.setGatePolicy({
+          gate: p.gate,
+          policy: {
+            ...(p.policy.minApprovals !== undefined ? { minApprovals: p.policy.minApprovals } : {}),
+            ...(p.policy.requiredActorTypes !== undefined
+              ? { requiredActorTypes: [...p.policy.requiredActorTypes] }
+              : {}),
+          },
+          byActorId: ctx.actorId,
+        });
+        return { gate: p.gate, policy: engine.getGatePolicy(p.gate) };
+      }
+      case 'authz_explain': {
+        const p = parsed as AuthzExplainIn;
+        return engine.authzExplain({ actorId: p.actorId, permission: p.permission as Permission });
       }
       case 'import_stories': {
         const p = parsed as ImportStoriesIn;

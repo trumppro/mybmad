@@ -6,14 +6,39 @@ export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS actors (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
-  display_name TEXT NOT NULL
+  display_name TEXT NOT NULL,
+  governance_role TEXT NOT NULL DEFAULT 'member'
 );
+
+-- Phase 2 upgrade path for durable data dirs created under Phase 1 (story 13).
+ALTER TABLE actors ADD COLUMN IF NOT EXISTS governance_role TEXT NOT NULL DEFAULT 'member';
 
 CREATE TABLE IF NOT EXISTS grants (
   actor_id TEXT NOT NULL,
   permission TEXT NOT NULL,
   scope TEXT,
   PRIMARY KEY (actor_id, permission)
+);
+
+CREATE TABLE IF NOT EXISTS role_assignments (
+  seq SERIAL PRIMARY KEY,
+  actor_id TEXT NOT NULL,
+  role_code TEXT NOT NULL,
+  granted_by TEXT NOT NULL,
+  revoked BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS workspace_state (
+  id TEXT PRIMARY KEY,
+  plan TEXT NOT NULL,
+  plan_version INTEGER NOT NULL DEFAULT 1,
+  policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+  policy_version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS gate_policies (
+  gate TEXT PRIMARY KEY,
+  policy JSONB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS features (
@@ -63,8 +88,12 @@ CREATE TABLE IF NOT EXISTS gate_decisions (
   work_item_id TEXT NOT NULL,
   gate TEXT NOT NULL,
   decision TEXT NOT NULL,
-  actor_id TEXT NOT NULL
+  actor_id TEXT NOT NULL,
+  round INTEGER NOT NULL DEFAULT 0
 );
+
+-- Phase 2 upgrade path for durable data dirs created under Phase 1 (story 13).
+ALTER TABLE gate_decisions ADD COLUMN IF NOT EXISTS round INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS evidence (
   seq SERIAL PRIMARY KEY,

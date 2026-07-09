@@ -48,8 +48,9 @@ describe('spine-api authn', () => {
     expect((res.json() as { ok: boolean }).ok).toBe(false);
   });
 
-  it('admin token → whoami resolves an admin context', async () => {
-    const app = await makeApp();
+  it('admin token → whoami resolves an admin context backed by a REAL actor (Phase 2 bootstrap)', async () => {
+    const engine = createMemoryEngine();
+    const app = await buildServer({ engine, tokenStore: new TokenStore(), adminToken: ADMIN_TOKEN });
     const res = await app.inject({
       method: 'POST',
       url: '/rpc/whoami',
@@ -57,7 +58,12 @@ describe('spine-api authn', () => {
       headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: true, result: { actorId: 'admin', isAdmin: true } });
+    const body = res.json() as { ok: boolean; result: { actorId: string; isAdmin: boolean } };
+    expect(body.ok).toBe(true);
+    expect(body.result.isAdmin).toBe(true);
+    // Phase 2 (roadmap §3): the admin token acts as the bootstrap
+    // 'Workspace Admin' actor holding governance role 'admin'.
+    expect(engine.getGovernanceRole(body.result.actorId)).toBe('admin');
   });
 
   it('unknown command → 404 envelope (authenticated)', async () => {

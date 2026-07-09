@@ -43,6 +43,14 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 - Canonicalization pins only invariants (CRLF≡LF, trailing-space-insensitive, 3-blank ≡ 5-blank runs, single blank preserved) — not an exact collapse width.
 - Reconcile: `done`-in-file vs `in_progress`-in-DB reports `file_ahead`; files under a live claim are excluded; `blocked` frontmatter vs overlay+base-state is *not* divergence; legacy vocab (`review`/`in-review`) normalizes to `in_review`.
 
+### Phase 2 — entitlements (`entitlements.test.ts`, all additive)
+- `gate.review.reject` is a new permission; `rejectGate` accepts **approve OR reject** — the Phase 2 exit criterion (reject-without-approve agent) holds, and every Phase 1 rejectGate pin keeps holding.
+- **Plan ceilings bind agents only**, at grant time (`GuardFailedError`) *and* resolve time (a later downgrade disables an issued grant). Users are never plan-filtered. Default plan is `enterprise` (self-host posture: the org narrows).
+- **Restrict-only policy**: effective agent gate approval = plan ceiling AND workspace policy; a permissive policy never widens a restrictive plan. `agentSelfDispatch=false` blocks agent `task.claim` at resolve time.
+- **Gate quorum is data**: distinct approvers per review round (round = `reviewLoopIteration`); a rejection loopback starts a new round — stale approvals never carry over; `requiredActorTypes` makes human-in-the-loop a policy value, not a hardcode. Evidence guards evaluate exactly when the quorum would complete, so failed approvals record nothing.
+- Governance authority (`setPlan`/`setWorkspacePolicy`/`setGatePolicy`/`assignRole`/`setGovernanceRole`) = the system actor or `governanceRole='admin'` holders; `createActor` takes an optional bootstrap `governanceRole` (plumbing, like `createActor` itself).
+- `grant`/`revoke`/role/plan/policy changes are audited events (actor stream / `workspace` stream).
+
 ### Event log
 - `streamSeq` is 1-based and gap-free per stream; which setup commands emit work-item events is unpinned (tests count deltas, not absolutes).
 - System-actor authorship (epic-lift, loopback) is asserted structurally: event `actorId` differs from every fixture-created actor and carries a `causationId`.

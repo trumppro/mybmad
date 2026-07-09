@@ -50,9 +50,37 @@ export function errorEnvelope(error: unknown): ErrorEnvelope {
   };
 }
 
+/**
+ * Phase 2 bootstrap (roadmap §3): the admin token must resolve to a REAL
+ * engine actor holding governance role 'admin' — gated entitlement writes
+ * (assign_role/set_plan/set_*_policy/…) are authorized by the ENGINE from
+ * that role, never by the transport's isAdmin flag. The mapping persists in
+ * the TokenStore, so a `--data` restart reuses the same 'Workspace Admin'
+ * actor; when the engine cannot confirm the persisted role (fresh engine, or
+ * a persistence layer that predates Phase 2), a fresh bootstrap actor is
+ * created instead.
+ */
+function ensureBootstrapAdminActor(engine: SpineEngine, tokenStore: TokenStore): string {
+  const persisted = tokenStore.getAdminActorId();
+  if (persisted !== undefined) {
+    try {
+      if (engine.getGovernanceRole(persisted) === 'admin') return persisted;
+    } catch {
+      // fall through: the engine cannot vouch for the persisted mapping
+    }
+  }
+  const actor = engine.createActor({
+    type: 'user',
+    displayName: 'Workspace Admin',
+    governanceRole: 'admin',
+  });
+  tokenStore.setAdminActorId(actor.id);
+  return actor.id;
+}
+
 export async function buildServer(options: BuildServerOptions): Promise<FastifyInstance> {
   const { engine, tokenStore, adminToken } = options;
-  tokenStore.bootstrapAdmin(adminToken);
+  tokenStore.bootstrapAdmin(adminToken, ensureBootstrapAdminActor(engine, tokenStore));
   const bus = createCommandBus(engine, tokenStore);
 
   const app = Fastify({ logger: false });

@@ -15,3 +15,10 @@ _bmad*/
 # (per-skill .analysis/ folders contain JSON/HTML reports that should
 # not block commits with formatting checks)
 **/.analysis/
+
+# oahs platform workspaces — own toolchain (TS strict + vitest); root prettier
+# must not reformat their manifests, lockfiles, or generated bundles
+packages/
+apps/
+delivery/
+pnpm-workspace.yaml

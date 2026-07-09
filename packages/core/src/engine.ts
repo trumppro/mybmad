@@ -8,17 +8,22 @@
  * arbitrated, the comment names the pin.
  */
 import {
+  AGENT_GATE_APPROVE_PERMISSIONS,
   BLOCKED_REASONS,
   ConflictError,
+  DEFAULT_PLAN,
+  DELIVERY_ROLES,
   GuardFailedError,
   InvalidTransitionError,
   PermissionDeniedError,
+  PLAN_CEILINGS,
   REVIEW_LOOP_LIMIT,
   StoriesValidationError,
   WORK_ITEM_STATES,
   type Actor,
   type ActorType,
   type AdvanceInput,
+  type AuthzExplanation,
   type BlockedReason,
   type Claim,
   type CreateWorkItemInput,
@@ -27,12 +32,17 @@ import {
   type Feature,
   type GateCode,
   type GateDecisionInput,
+  type GatePolicy,
+  type GovernanceRole,
   type Permission,
+  type PlanCode,
+  type RoleAssignment,
   type SpineEngine,
   type SpineEvent,
   type StoriesImportResult,
   type WorkItem,
   type WorkItemState,
+  type WorkspacePolicy,
 } from './types.js';
 import { parseStories } from './stories.js';
 
@@ -93,7 +103,11 @@ interface GateDecisionRow {
   gate: GateCode;
   decision: 'approved' | 'rejected';
   actorId: string;
+  /** review round the decision belongs to (= reviewLoopIteration at decision time) */
+  round: number;
 }
+
+interface RoleAssignmentRow extends RoleAssignment {}
 
 interface EvidenceRow {
   workItemId: string;
@@ -132,6 +146,15 @@ class EngineImpl implements SpineEngine {
   private readonly eventLog: SpineEvent[] = [];
   private readonly streamSeqs = new Map<string, number>();
   private readonly idempotencyCache = new Map<string, WorkItem>();
+
+  // -- entitlements state (Phase 2, roadmap §3) --------------------------------
+  private readonly governanceRoles = new Map<string, GovernanceRole>();
+  private readonly roleAssignments: RoleAssignmentRow[] = [];
+  private plan: PlanCode = DEFAULT_PLAN;
+  private planVersion = 1;
+  private workspacePolicy: WorkspacePolicy = {};
+  private policyVersion = 1;
+  private readonly gatePolicies = new Map<GateCode, GatePolicy>();
 
   readonly systemActorId: string;
 
@@ -189,13 +212,66 @@ class EngineImpl implements SpineEngine {
     throw new GuardFailedError(`unknown work item: ${workItemId}`);
   }
 
+  /**
+   * Entitlement resolution — a PURE function over plan × governance ×
+   * delivery-role data (roadmap §3). A grant may EXIST (direct or via a
+   * role) and still not RESOLVE for an agent when the plan ceiling or the
+   * restrict-only workspace policy narrows it. Users are never plan-filtered.
+   */
+  private grantSource(actorId: string, permission: Permission): string | null {
+    if (this.grants.get(actorId)?.has(permission)) return 'direct';
+    for (const assignment of this.roleAssignments) {
+      if (assignment.actorId !== actorId || assignment.revoked) continue;
+      if ((DELIVERY_ROLES[assignment.roleCode] ?? []).includes(permission)) {
+        return `role:${assignment.roleCode}`;
+      }
+    }
+    return null;
+  }
+
+  private agentCeilingAllows(actor: Actor | undefined, permission: Permission): { plan: boolean; policy: boolean } {
+    if (!actor || actor.type !== 'agent') return { plan: true, policy: true };
+    const ceiling = PLAN_CEILINGS[this.plan];
+    if ((AGENT_GATE_APPROVE_PERMISSIONS as readonly string[]).includes(permission)) {
+      return { plan: ceiling.agentGateApprove, policy: this.workspacePolicy.agentGateApprovals !== false };
+    }
+    if (permission === 'gate.review.reject') {
+      return { plan: ceiling.agentGateReject, policy: true };
+    }
+    if (permission === 'task.claim') {
+      return { plan: true, policy: this.workspacePolicy.agentSelfDispatch !== false };
+    }
+    return { plan: true, policy: true };
+  }
+
   private hasPermission(actorId: string, permission: Permission): boolean {
-    return this.grants.get(actorId)?.has(permission) ?? false;
+    if (this.grantSource(actorId, permission) === null) return false;
+    const allows = this.agentCeilingAllows(this.actors.get(actorId), permission);
+    return allows.plan && allows.policy;
   }
 
   private requirePermission(actorId: string, permission: Permission): void {
     if (!this.hasPermission(actorId, permission)) {
       throw new PermissionDeniedError(permission, actorId);
+    }
+  }
+
+  private requireGovernanceAdmin(byActorId: string): void {
+    if (byActorId === this.systemActorId) return;
+    if (this.governanceRoles.get(byActorId) === 'admin') return;
+    throw new PermissionDeniedError('governance.admin', byActorId);
+  }
+
+  /** Grant-time plan ceiling: refuse issuing agent gate permissions the plan forbids. */
+  private checkGrantCeiling(actorId: string, permission: Permission): void {
+    const actor = this.actors.get(actorId);
+    if (!actor || actor.type !== 'agent') return;
+    const ceiling = PLAN_CEILINGS[this.plan];
+    if ((AGENT_GATE_APPROVE_PERMISSIONS as readonly string[]).includes(permission) && !ceiling.agentGateApprove) {
+      throw new GuardFailedError(`plan ${this.plan} does not allow agents to hold ${permission}`);
+    }
+    if (permission === 'gate.review.reject' && !ceiling.agentGateReject) {
+      throw new GuardFailedError(`plan ${this.plan} does not allow agents to hold ${permission}`);
     }
   }
 
@@ -239,20 +315,143 @@ class EngineImpl implements SpineEngine {
 
   // -- setup -----------------------------------------------------------------
 
-  createActor(input: { type: Exclude<ActorType, 'system'>; displayName: string }): Actor {
+  createActor(input: {
+    type: Exclude<ActorType, 'system'>;
+    displayName: string;
+    governanceRole?: GovernanceRole;
+  }): Actor {
     const actor: Actor = { id: this.nextId('actor'), type: input.type, displayName: input.displayName };
     this.actors.set(actor.id, actor);
+    this.governanceRoles.set(actor.id, input.governanceRole ?? 'member');
     return { ...actor };
   }
 
   grant(input: { actorId: string; permission: Permission; scope?: string }): void {
+    this.checkGrantCeiling(input.actorId, input.permission);
     const set = this.grants.get(input.actorId) ?? new Set<string>();
     set.add(input.permission);
     this.grants.set(input.actorId, set);
+    this.append('actor', input.actorId, 'grant.issued', this.systemActorId, { permission: input.permission });
   }
 
   revoke(input: { actorId: string; permission: Permission; scope?: string }): void {
     this.grants.get(input.actorId)?.delete(input.permission);
+    this.append('actor', input.actorId, 'grant.revoked', this.systemActorId, { permission: input.permission });
+  }
+
+  // -- entitlements (Phase 2, roadmap §3) ----------------------------------------
+
+  setGovernanceRole(input: { actorId: string; role: GovernanceRole; byActorId: string }): void {
+    this.requireGovernanceAdmin(input.byActorId);
+    if (!this.actors.has(input.actorId)) throw new GuardFailedError(`unknown actor: ${input.actorId}`);
+    this.governanceRoles.set(input.actorId, input.role);
+    this.append('actor', input.actorId, 'governance.changed', input.byActorId, { role: input.role });
+  }
+
+  getGovernanceRole(actorId: string): GovernanceRole {
+    return this.governanceRoles.get(actorId) ?? 'member';
+  }
+
+  assignRole(input: { actorId: string; roleCode: string; byActorId: string }): void {
+    this.requireGovernanceAdmin(input.byActorId);
+    const bundle = DELIVERY_ROLES[input.roleCode];
+    if (bundle === undefined) throw new GuardFailedError(`unknown delivery role: ${input.roleCode}`);
+    if (!this.actors.has(input.actorId)) throw new GuardFailedError(`unknown actor: ${input.actorId}`);
+    for (const permission of bundle) {
+      this.checkGrantCeiling(input.actorId, permission);
+    }
+    const active = this.roleAssignments.some(
+      (a) => a.actorId === input.actorId && a.roleCode === input.roleCode && !a.revoked,
+    );
+    if (active) return; // idempotent
+    this.roleAssignments.push({
+      actorId: input.actorId,
+      roleCode: input.roleCode,
+      grantedBy: input.byActorId,
+      revoked: false,
+    });
+    this.append('actor', input.actorId, 'role.assigned', input.byActorId, { roleCode: input.roleCode });
+  }
+
+  revokeRole(input: { actorId: string; roleCode: string; byActorId: string }): void {
+    this.requireGovernanceAdmin(input.byActorId);
+    if (DELIVERY_ROLES[input.roleCode] === undefined) {
+      throw new GuardFailedError(`unknown delivery role: ${input.roleCode}`);
+    }
+    for (const assignment of this.roleAssignments) {
+      if (assignment.actorId === input.actorId && assignment.roleCode === input.roleCode && !assignment.revoked) {
+        assignment.revoked = true;
+      }
+    }
+    this.append('actor', input.actorId, 'role.revoked', input.byActorId, { roleCode: input.roleCode });
+  }
+
+  listRoleAssignments(actorId?: string): RoleAssignment[] {
+    return this.roleAssignments
+      .filter((a) => actorId === undefined || a.actorId === actorId)
+      .map((a) => ({ ...a }));
+  }
+
+  setPlan(input: { plan: PlanCode; byActorId: string }): void {
+    this.requireGovernanceAdmin(input.byActorId);
+    if (PLAN_CEILINGS[input.plan] === undefined) throw new GuardFailedError(`unknown plan: ${input.plan}`);
+    this.plan = input.plan;
+    this.planVersion += 1;
+    this.append('workspace', 'workspace', 'plan.changed', input.byActorId, {
+      plan: input.plan,
+      planVersion: this.planVersion,
+    });
+  }
+
+  getPlan(): PlanCode {
+    return this.plan;
+  }
+
+  setWorkspacePolicy(input: { policy: WorkspacePolicy; byActorId: string }): void {
+    this.requireGovernanceAdmin(input.byActorId);
+    this.workspacePolicy = { ...this.workspacePolicy, ...input.policy };
+    this.policyVersion += 1;
+    this.append('workspace', 'workspace', 'policy.changed', input.byActorId, {
+      policy: { ...this.workspacePolicy },
+      policyVersion: this.policyVersion,
+    });
+  }
+
+  getWorkspacePolicy(): WorkspacePolicy {
+    return { ...this.workspacePolicy };
+  }
+
+  setGatePolicy(input: { gate: GateCode; policy: GatePolicy; byActorId: string }): void {
+    this.requireGovernanceAdmin(input.byActorId);
+    const minApprovals = input.policy.minApprovals ?? 1;
+    if (!Number.isInteger(minApprovals) || minApprovals < 1) {
+      throw new GuardFailedError('minApprovals must be a positive integer');
+    }
+    this.gatePolicies.set(input.gate, { ...input.policy });
+    this.append('workspace', 'workspace', 'gate_policy.changed', input.byActorId, {
+      gate: input.gate,
+      policy: { ...input.policy },
+    });
+  }
+
+  getGatePolicy(gate: GateCode): GatePolicy {
+    return { ...(this.gatePolicies.get(gate) ?? {}) };
+  }
+
+  authzExplain(input: { actorId: string; permission: Permission }): AuthzExplanation {
+    const source = this.grantSource(input.actorId, input.permission);
+    const allows = this.agentCeilingAllows(this.actors.get(input.actorId), input.permission);
+    return {
+      actorId: input.actorId,
+      permission: input.permission,
+      allowed: source !== null && allows.plan && allows.policy,
+      source,
+      governanceRole: this.getGovernanceRole(input.actorId),
+      plan: this.plan,
+      planAllows: allows.plan,
+      policyAllows: allows.policy,
+      versions: { plan: this.planVersion, policy: this.policyVersion },
+    };
   }
 
   createFeature(input: { actorId: string }): Feature {
@@ -618,16 +817,11 @@ class EngineImpl implements SpineEngine {
       if (input.pinnedVerification !== undefined) {
         item.pinnedVerification = [...input.pinnedVerification];
       }
-      this.gateDecisions.push({
-        workItemId: item.id,
-        gate: 'spec_approval',
-        decision: 'approved',
-        actorId: input.actorId,
-      });
-      this.append('work_item', item.id, 'gate.approved', input.actorId, {
-        gate: 'spec_approval',
-        pinnedVerification: item.pinnedVerification,
-      });
+      if (!this.quorumWouldBeMet(item, 'spec_approval', input.actorId)) {
+        this.recordApproval(item, 'spec_approval', input.actorId);
+        return this.copyItem(item); // decision recorded; quorum pending (gate policy is data, roadmap §3)
+      }
+      this.recordApproval(item, 'spec_approval', input.actorId);
       // The approval fires the gated forward transition (conformance pin).
       return this.executeTransition(item, 'ready_for_dev', input.actorId);
     }
@@ -640,15 +834,64 @@ class EngineImpl implements SpineEngine {
     if (item.state !== 'in_review') {
       throw new GuardFailedError(`review_approval applies to in_review items, not ${item.state}`);
     }
+    if (!this.quorumWouldBeMet(item, 'review_approval', input.actorId)) {
+      this.recordApproval(item, 'review_approval', input.actorId);
+      return this.copyItem(item); // quorum pending — no transition yet
+    }
+    // Evidence is checked exactly when the quorum would complete, so a failed
+    // approval records nothing (Phase 1 pin: denied attempts mutate nothing).
     this.checkReviewEvidence(item);
+    this.recordApproval(item, 'review_approval', input.actorId);
+    return this.executeTransition(item, 'done', input.actorId);
+  }
+
+  /** Distinct approvers of this round (round = reviewLoopIteration at decision time). */
+  private roundApprovers(item: WorkItemRow, gate: GateCode): Actor[] {
+    const ids = new Set(
+      this.gateDecisions
+        .filter(
+          (d) =>
+            d.workItemId === item.id &&
+            d.gate === gate &&
+            d.decision === 'approved' &&
+            d.round === item.reviewLoopIteration,
+        )
+        .map((d) => d.actorId),
+    );
+    return [...ids].flatMap((id) => {
+      const actor = this.actors.get(id);
+      return actor ? [actor] : [];
+    });
+  }
+
+  /** Gate policy quorum (roadmap §3): min distinct approvers + required actor types, as DATA. */
+  private quorumWouldBeMet(item: WorkItemRow, gate: GateCode, nextApproverId: string): boolean {
+    const policy = this.gatePolicies.get(gate) ?? {};
+    const min = policy.minApprovals ?? 1;
+    const required = policy.requiredActorTypes ?? [];
+    const approvers = this.roundApprovers(item, gate);
+    const nextActor = this.actors.get(nextApproverId);
+    if (nextActor && !approvers.some((a) => a.id === nextActor.id)) approvers.push(nextActor);
+    if (approvers.length < min) return false;
+    for (const type of required) {
+      if (!approvers.some((a) => a.type === type)) return false;
+    }
+    return true;
+  }
+
+  private recordApproval(item: WorkItemRow, gate: GateCode, actorId: string): void {
     this.gateDecisions.push({
       workItemId: item.id,
-      gate: 'review_approval',
+      gate,
       decision: 'approved',
-      actorId: input.actorId,
+      actorId,
+      round: item.reviewLoopIteration,
     });
-    this.append('work_item', item.id, 'gate.approved', input.actorId, { gate: 'review_approval' });
-    return this.executeTransition(item, 'done', input.actorId);
+    this.append('work_item', item.id, 'gate.approved', actorId, {
+      gate,
+      round: item.reviewLoopIteration,
+      ...(gate === 'spec_approval' ? { pinnedVerification: item.pinnedVerification } : {}),
+    });
   }
 
   /**
@@ -682,7 +925,15 @@ class EngineImpl implements SpineEngine {
     if (input.gate !== 'review_approval') {
       throw new GuardFailedError('only review_approval rejection is defined in Phase 1');
     }
-    this.requirePermission(input.actorId, 'gate.review.approve');
+    // Phase 2 (additive): rejection authority = gate.review.approve OR
+    // gate.review.reject — the Phase 2 exit criterion's reviewer-agent holds
+    // only the latter. Every Phase 1 pin on rejectGate keeps holding.
+    if (
+      !this.hasPermission(input.actorId, 'gate.review.approve') &&
+      !this.hasPermission(input.actorId, 'gate.review.reject')
+    ) {
+      throw new PermissionDeniedError('gate.review.reject', input.actorId);
+    }
     if (item.state !== 'in_review') {
       throw new GuardFailedError(`review rejection applies to in_review items, not ${item.state}`);
     }
@@ -691,6 +942,7 @@ class EngineImpl implements SpineEngine {
       gate: 'review_approval',
       decision: 'rejected',
       actorId: input.actorId,
+      round: item.reviewLoopIteration,
     });
     const decisionEvent = this.append('work_item', item.id, 'gate.rejected', input.actorId, {
       gate: 'review_approval',

@@ -11,6 +11,10 @@ export default [
       'dist/**',
       'coverage/**',
       '**/*.min.js',
+      // oahs platform workspaces: TypeScript with their own toolchain, plus
+      // generated esbuild bundles (bin/, dist/) that must never be linted
+      'packages/**',
+      'apps/**',
       'test/template-test-generator/**',
       'test/fixtures/**',
       '_bmad*/**',
