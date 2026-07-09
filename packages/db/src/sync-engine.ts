@@ -79,8 +79,21 @@ const METHODS: Array<keyof SpineEngine> = [
   'events',
 ];
 
-export function createPgSyncEngine(): SpineEngine {
-  const created = unwrap(callWorker({ op: 'new' })) as { engineId: number };
+export interface PgSyncEngineOptions {
+  /**
+   * Directory for a DURABLE PGlite database (story 13, `oahs serve --data`).
+   * Omitted → in-memory database, truncated per engine (conformance mode).
+   */
+  dataDir?: string;
+}
+
+export function createPgSyncEngine(options?: PgSyncEngineOptions): SpineEngine {
+  const created = unwrap(
+    callWorker({
+      op: 'new',
+      ...(options?.dataDir !== undefined ? { dataDir: options.dataDir } : {}),
+    }),
+  ) as { engineId: number };
   const engineId = created.engineId;
   const proxy: Record<string, unknown> = {};
   for (const method of METHODS) {

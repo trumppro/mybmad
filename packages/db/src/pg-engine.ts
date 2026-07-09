@@ -145,14 +145,54 @@ export class PgEngine {
 
   constructor(private readonly db: Db) {}
 
-  /** Post-reset setup: the per-workspace system actor (roadmap §1.2). */
+  /**
+   * Post-reset setup: the per-workspace system actor (roadmap §1.2).
+   *
+   * Idempotent for persistent databases (story 13, `oahs serve --data`): a
+   * restart over an existing PGlite data directory finds the system actor
+   * already present, reuses it, and recovers the id counter from the stored
+   * ids so freshly-created entities never collide with persisted ones. A
+   * fresh (or truncated) database takes the original path unchanged, so the
+   * conformance suite semantics are untouched.
+   */
   async init(): Promise<void> {
+    const existing = await this.db
+      .select({ id: actors.id })
+      .from(actors)
+      .where(eq(actors.type, 'system'))
+      .limit(1);
+    const found = existing[0];
+    if (found !== undefined) {
+      this.systemActorId = found.id;
+      this.seq = await this.recoverSeq();
+      return;
+    }
     this.systemActorId = this.nextId('actor-system');
     await this.db.insert(actors).values({
       id: this.systemActorId,
       type: 'system',
       displayName: 'system',
     });
+  }
+
+  /**
+   * Largest nextId() suffix stored in any text-id table — restart-safe id
+   * generation for persistent data directories. Ids are `${prefix}_${base36}`.
+   */
+  private async recoverSeq(): Promise<number> {
+    const ids: string[] = [];
+    ids.push(...(await this.db.select({ id: actors.id }).from(actors)).map((r) => r.id));
+    ids.push(...(await this.db.select({ id: features.id }).from(features)).map((r) => r.id));
+    ids.push(...(await this.db.select({ id: workItems.id }).from(workItems)).map((r) => r.id));
+    ids.push(...(await this.db.select({ id: claims.id }).from(claims)).map((r) => r.id));
+    let max = 0;
+    for (const id of ids) {
+      const sep = id.lastIndexOf('_');
+      if (sep < 0) continue;
+      const n = Number.parseInt(id.slice(sep + 1), 36);
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+    return max;
   }
 
   // -- infrastructure --------------------------------------------------------

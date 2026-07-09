@@ -45,6 +45,12 @@ function wireErrorName(error: Error): string {
 
 interface NewOp {
   op: 'new';
+  /**
+   * When set, the engine runs on a DURABLE PGlite instance rooted at this
+   * directory (story 13, `oahs serve --data`). No truncate happens — the
+   * schema is IF NOT EXISTS-idempotent and PgEngine.init() is restart-safe.
+   */
+  dataDir?: string;
 }
 interface CallOp {
   op: 'call';
@@ -71,6 +77,24 @@ async function getDb(): Promise<ReturnType<typeof drizzle>> {
   return db;
 }
 
+/**
+ * Durable databases, one PGlite per data directory. Re-opening the same
+ * directory within one worker lifetime reuses the live instance (PGlite
+ * holds an exclusive lock on its directory) — which is exactly the
+ * restart-in-process shape the persistence tests exercise.
+ */
+const persistentDbs = new Map<string, ReturnType<typeof drizzle>>();
+
+async function getPersistentDb(dataDir: string): Promise<ReturnType<typeof drizzle>> {
+  const existing = persistentDbs.get(dataDir);
+  if (existing) return existing;
+  const instance = new PGlite(dataDir);
+  const database = drizzle(instance);
+  await instance.exec(SCHEMA_SQL);
+  persistentDbs.set(dataDir, database);
+  return database;
+}
+
 async function resetDb(): Promise<void> {
   // A fresh engine gets a clean database. Engines are created sequentially
   // within one vitest thread, and no conformance test holds two engines at
@@ -89,9 +113,15 @@ async function resetDb(): Promise<void> {
 
 runAsWorker(async (op: Op): Promise<WireResult> => {
   try {
-    const database = await getDb();
     if (op.op === 'new') {
-      await resetDb();
+      let database: ReturnType<typeof drizzle>;
+      if (op.dataDir !== undefined) {
+        // Durable path: no truncate — existing data is the point.
+        database = await getPersistentDb(op.dataDir);
+      } else {
+        database = await getDb();
+        await resetDb();
+      }
       const engine = new PgEngine(database);
       await engine.init();
       const engineId = nextEngineId;

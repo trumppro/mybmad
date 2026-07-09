@@ -1,0 +1,40 @@
+{
+  "name": "@oahs/cli",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The oahs CLI binary (Phase 1 story 13): `oahs serve` boots the spine-api (in-memory or durable PGlite via --data), the gate-holder commands (inbox/approve/reject/status/actor/grant/import/feature/events) drive the same /rpc rails through the typed contracts client, and `oahs work` hands off to the @oahs/runner work loop.",
+  "type": "module",
+  "bin": {
+    "oahs": "./bin/oahs.mjs"
+  },
+  "main": "src/cli.ts",
+  "scripts": {
+    "build": "node scripts/build-cli.mjs",
+    "prepare": "node scripts/build-cli.mjs",
+    "pretest": "node scripts/build-cli.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.0",
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "@oahs/contracts": "file:../../packages/contracts",
+    "@oahs/core": "file:../../packages/core",
+    "@oahs/db": "file:../../packages/db",
+    "@oahs/runner": "file:../../packages/runner",
+    "@oahs/spine-api": "file:../spine-api",
+    "commander": "^13.1.0",
+    "drizzle-orm": "^0.44.0",
+    "fastify": "^5.0.0",
+    "postgres": "^3.4.5",
+    "synckit": "^0.11.0",
+    "yaml": "^2.7.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}
