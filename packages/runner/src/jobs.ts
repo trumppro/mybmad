@@ -112,12 +112,34 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
     throw error;
   }
 
+  // 2.5 — resolve the job's PROJECT via thread → feature → project (D-H).
+  // Soft: an unbound thread (or any resolution failure) simply means
+  // unscoped recall and a global memory.
+  let projectId: string | undefined;
+  try {
+    const visibleThreads = await client.call<Array<{ id: string; featureId: string | null }>>(
+      'list_threads',
+      {},
+    );
+    const thread = visibleThreads.find((t) => t.id === job.threadId);
+    if (thread?.featureId != null) {
+      const feature = await client.call<{ projectId: string }>('get_feature', {
+        featureId: thread.featureId,
+      });
+      projectId = feature.projectId;
+    }
+  } catch {
+    /* project scoping is additive, never load-bearing */
+  }
+
   // 3 — recall (soft): owner-scoped by construction; the engine already
-  // filters private-sourced memories to their source thread (§6).
+  // filters private-sourced memories to their source thread (§6). Scoped to
+  // the job's project + global craft when the thread is project-bound.
   let memories: AgentMemory[] = [];
   try {
     const recalled = await client.call<AgentMemory[]>('search_agent_memory', {
       contextThreadId: job.threadId,
+      ...(projectId !== undefined ? { projectId } : {}),
     });
     memories = recalled.slice(-RECALL_LIMIT);
   } catch {
@@ -177,6 +199,7 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
         kind: 'episodic',
         content: `job ${job.id} in thread ${job.threadId}: ${reply.slice(0, MEMORY_REPLY_HEAD)}`,
         sourceThreadId: job.threadId,
+        ...(projectId !== undefined ? { projectId } : {}),
       });
     } catch {
       /* learning is additive, never load-bearing */

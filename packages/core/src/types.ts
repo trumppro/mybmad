@@ -277,8 +277,36 @@ export const PERSONAS: readonly PersonaDef[] = [
   { personaCode: 'bmad-agent-dev', displayName: 'Amelia (Dev)', defaultRole: 'developer' },
 ];
 
+// ---------------------------------------------------------------------------
+// Project (Phase 7 "Cockpit" Wave 2, D-E) — the unit of PARALLEL WORK for one
+// operator: name + slug + kind + optional repo binding, holding many features
+// (BMAD epics). Features created without a project attach to the lazily
+// created default project, which is how every pre-Wave-2 flow keeps its
+// meaning.
+// ---------------------------------------------------------------------------
+
+export type ProjectKind = 'code' | 'doc' | 'mixed';
+
+export const DEFAULT_PROJECT_SLUG = 'default';
+
+export interface Project {
+  id: string;
+  name: string;
+  /** Unique addressable handle (kebab); never silently changes on rename. */
+  slug: string;
+  kind: ProjectKind;
+  /** Local checkout the runner binds to (solo/BYO posture) — optional. */
+  repoPath: string | null;
+  /** Spec folder relative to repoPath, e.g. delivery/my-feature. */
+  defaultSpecFolder: string | null;
+  state: 'active' | 'archived';
+}
+
 export interface Feature {
   id: string;
+  projectId: string;
+  /** Optional human name — features stop being anonymous (Wave 2). */
+  name: string | null;
   state: 'backlog' | 'in_progress' | 'done';
   /** true while a done_checkpoint hold is active: no further dispatch in this feature */
   dispatchHold: boolean;
@@ -309,11 +337,16 @@ export interface Claim {
   fencingToken: number;
   leaseExpiresAt: number; // engine-clock ms
   released: boolean;
+  /**
+   * Computed by listClaims against the ENGINE clock: unreleased but past
+   * TTL — the dead-runner shape ops must SEE (Wave 2). Absent elsewhere.
+   */
+  expired?: boolean;
 }
 
 export interface SpineEvent {
   globalSeq: number;
-  streamType: 'workspace' | 'feature' | 'work_item' | 'actor' | 'thread' | 'agent_job';
+  streamType: 'workspace' | 'project' | 'feature' | 'work_item' | 'actor' | 'thread' | 'agent_job';
   streamId: string;
   streamSeq: number;
   type: string;
@@ -419,6 +452,8 @@ export interface AgentMemory {
   sourceThreadId: string | null;
   /** Visibility of the source context at learn time — recall filters on it (§6). */
   sourceVisibility: ThreadVisibility | null;
+  /** Project the lesson belongs to; null = GLOBAL craft, recalled everywhere (D-H). */
+  projectId: string | null;
   /** Per-agent, 1-based, append order. */
   seq: number;
 }
@@ -482,7 +517,30 @@ export interface SpineEngine {
   provisionPersonas(input: { byActorId: string }): Actor[];
   grant(input: { actorId: string; permission: Permission; scope?: string }): void;
   revoke(input: { actorId: string; permission: Permission; scope?: string }): void;
-  createFeature(input: { actorId: string }): Feature;
+  // -- projects (Phase 7 Wave 2, D-E) -----------------------------------------
+  createProject(input: {
+    actorId: string;
+    name: string;
+    slug?: string;
+    kind?: ProjectKind;
+    repoPath?: string;
+    defaultSpecFolder?: string;
+  }): Project;
+  /** Resolves by id OR slug. */
+  getProject(input: { projectId: string }): Project;
+  listProjects(input?: { includeArchived?: boolean }): Project[];
+  updateProject(input: {
+    actorId: string;
+    projectId: string;
+    name?: string;
+    kind?: ProjectKind;
+    repoPath?: string;
+    defaultSpecFolder?: string;
+  }): Project;
+  archiveProject(input: { actorId: string; projectId: string }): Project;
+
+  /** projectId (id or slug) optional — absent attaches to the default project. */
+  createFeature(input: { actorId: string; projectId?: string; name?: string }): Feature;
   createWorkItem(input: CreateWorkItemInput & { actorId: string }): WorkItem;
 
   /** Import stories.yaml content (raw YAML string). Idempotent re-import per stories-schema update semantics. */
@@ -566,23 +624,31 @@ export interface SpineEngine {
   completeAgentJob(input: { jobId: string; actorId: string; status: 'done' | 'blocked'; note?: string }): AgentJob;
 
   // -- agent memory (Phase 5, roadmap §6) ----------------------------------------
-  /** Agents only; learning from a private thread requires having been in it. */
+  /**
+   * Agents only; learning from a private thread requires having been in it.
+   * projectId (id or slug) scopes the lesson to a project; omitted = GLOBAL
+   * craft (D-H).
+   */
   appendAgentMemory(input: {
     actorId: string;
     kind: MemoryKind;
     content: string;
     sourceThreadId?: string;
+    projectId?: string;
   }): AgentMemory;
   /**
    * Owner-scoped recall: always and only the caller's memories. Private-
    * sourced memories surface ONLY when recalled inside their source thread —
    * nothing learned in a private thread surfaces in an open context (§6).
+   * projectId scopes recall to that project + global; omitted keeps the
+   * Phase-5 meaning (everything the owner has).
    */
   searchAgentMemory(input: {
     actorId: string;
     contextThreadId?: string;
     kind?: MemoryKind;
     query?: string;
+    projectId?: string;
   }): AgentMemory[];
 
   // -- queries -------------------------------------------------------------
@@ -592,6 +658,12 @@ export interface SpineEngine {
   /** Workspace-wide claims view: live only by default (the "what is being worked on" query). */
   listClaims(input?: { includeReleased?: boolean }): Claim[];
   /** Additive query surface (post-conformance): list/filter work items. */
-  listWorkItems(filter?: { state?: WorkItemState; featureId?: string; claimable?: boolean }): WorkItem[];
+  listWorkItems(filter?: {
+    state?: WorkItemState;
+    featureId?: string;
+    /** id or slug — spans every feature of the project. */
+    projectId?: string;
+    claimable?: boolean;
+  }): WorkItem[];
   events(streamId?: string): SpineEvent[];
 }

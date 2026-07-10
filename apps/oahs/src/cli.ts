@@ -24,6 +24,10 @@ import {
   claimReleaseCommand,
   doclintCommand,
   eventsCommand,
+  projectArchiveCommand,
+  projectCreateCommand,
+  projectLsCommand,
+  projectShowCommand,
   featureCreateCommand,
   gatePolicySetCommand,
   governanceSetCommand,
@@ -166,7 +170,12 @@ export function buildProgram(): Command {
 
   withClientFlags(program.command('status'))
     .description('all work items grouped by state, plus feature dispatch holds')
-    .action(async (opts: ClientFlags) => emit(() => statusCommand(clientFrom(opts))));
+    .option('--project <projectId>', 'scope to one project (id or slug)')
+    .action(async (opts: ClientFlags & { project?: string }) =>
+      emit(() =>
+        statusCommand(clientFrom(opts), opts.project !== undefined ? { project: opts.project } : {}),
+      ),
+    );
 
   const actor = program.command('actor').description('actor management (admin)');
   withClientFlags(actor.command('create'))
@@ -343,8 +352,17 @@ export function buildProgram(): Command {
 
   const feature = program.command('feature').description('feature management');
   withClientFlags(feature.command('create'))
-    .description('create a feature; prints featureId')
-    .action(async (opts: ClientFlags) => emit(() => featureCreateCommand(clientFrom(opts))));
+    .description('create a feature; prints featureId (attaches to --project, else the default project)')
+    .option('--project <projectId>', 'project id or slug')
+    .option('--name <name>', 'human name for the feature')
+    .action(async (opts: ClientFlags & { project?: string; name?: string }) =>
+      emit(() =>
+        featureCreateCommand(clientFrom(opts), {
+          ...(opts.project !== undefined ? { project: opts.project } : {}),
+          ...(opts.name !== undefined ? { name: opts.name } : {}),
+        }),
+      ),
+    );
 
   withClientFlags(program.command('import <featureId> <storiesYamlPath>'))
     .description('import a stories.yaml file into a feature (idempotent)')
@@ -498,6 +516,42 @@ export function buildProgram(): Command {
       ),
     );
 
+  // -- projects (Phase 7 Wave 2, D-E): the unit of parallel work ------------------
+  const project = program.command('project').description('projects: the unit of parallel work (name + slug + repo binding)');
+  withClientFlags(project.command('create <name>'))
+    .description('create a project; slug derives from the name')
+    .option('--slug <slug>', 'addressable handle (default: derived)')
+    .option('--kind <kind>', 'code | doc | mixed (default mixed)')
+    .option('--repo <path>', 'local checkout the runner binds to')
+    .option('--spec-folder <rel>', 'spec folder relative to the repo root')
+    .action(async (name: string, opts: ClientFlags & { slug?: string; kind?: string; repo?: string; specFolder?: string }) =>
+      emit(() =>
+        projectCreateCommand(clientFrom(opts), {
+          name,
+          ...(opts.slug !== undefined ? { slug: opts.slug } : {}),
+          ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+          ...(opts.repo !== undefined ? { repoPath: resolve(opts.repo) } : {}),
+          ...(opts.specFolder !== undefined ? { specFolder: opts.specFolder } : {}),
+        }),
+      ),
+    );
+  withClientFlags(project.command('ls'))
+    .description('every project with its rollup: items by state, blocked, live claims, gates waiting')
+    .option('--all', 'include archived projects')
+    .action(async (opts: ClientFlags & { all?: boolean }) =>
+      emit(() => projectLsCommand(clientFrom(opts), opts.all === true ? { all: true } : {})),
+    );
+  withClientFlags(project.command('show <projectId>'))
+    .description('one project by id or slug (repo binding included)')
+    .action(async (projectId: string, opts: ClientFlags) =>
+      emit(() => projectShowCommand(clientFrom(opts), { projectId })),
+    );
+  withClientFlags(project.command('archive <projectId>'))
+    .description('archive: hidden from ls, refuses new features; history stays readable')
+    .action(async (projectId: string, opts: ClientFlags) =>
+      emit(() => projectArchiveCommand(clientFrom(opts), { projectId })),
+    );
+
   // -- ops (Phase 7 Wave 1): identity, claims view, token recovery ---------------
   withClientFlags(program.command('whoami'))
     .description('which actor is this token (actorId + isAdmin)')
@@ -533,11 +587,15 @@ export function buildProgram(): Command {
   withClientFlags(program.command('work'))
     .description('run the BYO worker loop (coding) or --jobs: the teammate jobs loop (reply-only, roadmap §6)')
     .option('--jobs', 'serve reply-only agent jobs for THIS token’s agent (mention-dispatch, zero lifecycle authority)')
-    .option('--repo <path>', 'target project git checkout (coding mode)')
-    .option('--spec-folder <rel>', 'spec folder relative to the repo root (coding mode)')
+    .option('--repo <path>', 'target project git checkout (coding mode; default: the --project record’s repoPath)')
+    .option('--spec-folder <rel>', 'spec folder relative to the repo root (coding mode; default: the --project record’s defaultSpecFolder)')
+    .option(
+      '--project <projectId>',
+      'bind to a project (id or slug): dispatch ONLY its work items, repo + spec folder read from the project record (coding mode)',
+    )
     .option(
       '--feature <featureId>',
-      'only dispatch this feature’s work items — REQUIRED practice once a second backlog shares the server (coding mode)',
+      'only dispatch this feature’s work items — narrower than --project (coding mode)',
     )
     .requiredOption(
       '--agent-cmd <template>',
@@ -545,16 +603,21 @@ export function buildProgram(): Command {
     )
     .option('--once', 'run at most one dispatch/job cycle, then exit')
     .option('--poll <ms>', 'poll interval in milliseconds')
+    .option('--claim-ttl <ms>', 'claim lease TTL (coding mode; default: engine 15 min)')
+    .option('--heartbeat <ms>', 'lease heartbeat interval during the agent run (coding mode; default 60s)')
     .action(
       async (
         opts: ClientFlags & {
           jobs?: boolean;
           repo?: string;
           specFolder?: string;
+          project?: string;
           feature?: string;
           agentCmd: string;
           once?: boolean;
           poll?: string;
+          claimTtl?: string;
+          heartbeat?: string;
         },
       ) => {
         try {
@@ -575,16 +638,34 @@ export function buildProgram(): Command {
             });
             return;
           }
-          if (opts.repo === undefined || opts.specFolder === undefined) {
-            throw new Error('coding mode requires --repo and --spec-folder (or pass --jobs)');
+          // --project: the Wave-2 binding — repo + spec folder come from the
+          // project record; explicit flags still override.
+          let repoPath = opts.repo;
+          let specFolder = opts.specFolder;
+          if (opts.project !== undefined) {
+            const record = await client.call<{
+              slug: string;
+              repoPath: string | null;
+              defaultSpecFolder: string | null;
+            }>('project_get', { projectId: opts.project });
+            repoPath = repoPath ?? record.repoPath ?? undefined;
+            specFolder = specFolder ?? record.defaultSpecFolder ?? undefined;
+          }
+          if (repoPath === undefined || specFolder === undefined) {
+            throw new Error(
+              'coding mode requires --repo and --spec-folder (or a --project whose record binds them, or pass --jobs)',
+            );
           }
           await runner.workLoop({
             client,
-            repoPath: resolve(opts.repo),
-            specFolder: opts.specFolder,
+            repoPath: resolve(repoPath),
+            specFolder,
             agentCmd: opts.agentCmd,
+            ...(opts.project !== undefined ? { projectId: opts.project } : {}),
             ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),
             ...(opts.poll !== undefined ? { pollMs: Number(opts.poll) } : {}),
+            ...(opts.claimTtl !== undefined ? { claimTtlMs: Number(opts.claimTtl) } : {}),
+            ...(opts.heartbeat !== undefined ? { heartbeatMs: Number(opts.heartbeat) } : {}),
             ...(opts.once === true ? { once: true } : {}),
           });
         } catch (error) {

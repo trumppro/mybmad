@@ -27,6 +27,10 @@ import {
   grantCommand,
   importStoriesCommand,
   inboxCommand,
+  projectArchiveCommand,
+  projectCreateCommand,
+  projectLsCommand,
+  projectShowCommand,
   rejectCommand,
   runToOutput,
   statusCommand,
@@ -298,6 +302,43 @@ describe('oahs CLI command functions against a live spine-api', () => {
 
     // History view still shows the released claim.
     expect(await claimLsCommand(admin, { released: true })).toContain(claim.id);
+  });
+
+  it('project lifecycle from the CLI: create → ls (rollups) → show → scoped status → archive', async () => {
+    const created = await projectCreateCommand(po, {
+      name: 'CLI Project',
+      kind: 'code',
+      repoPath: '/work/cli-project',
+      specFolder: 'delivery/cli',
+    });
+    expect(created).toContain('slug: cli-project');
+
+    // A named feature attaches to it; its stories land inside the project.
+    const featOut = await featureCreateCommand(po, { project: 'cli-project', name: 'CLI epic' });
+    const scopedFeatureId = extract(featOut, 'featureId');
+    await po.call('import_stories', {
+      featureId: scopedFeatureId,
+      yaml: '- id: "cli-1"\n  title: CLI story\n  description: scoped\n',
+    });
+
+    // ls answers the portfolio question: slug + item counts in one table.
+    const ls = await projectLsCommand(po);
+    expect(ls).toContain('cli-project');
+    expect(ls).toMatch(/backlog[^\n]*1|1[^\n]*backlog/);
+
+    const show = await projectShowCommand(po, { projectId: 'cli-project' });
+    expect(show).toContain('repoPath: /work/cli-project');
+    expect(show).toContain('defaultSpecFolder: delivery/cli');
+
+    // status --project shows ONLY that project's items.
+    const scoped = await statusCommand(po, { project: 'cli-project' });
+    expect(scoped).toContain('cli-1');
+    expect(scoped).not.toContain('s1'); // the fixture's default-project story
+
+    const archived = await projectArchiveCommand(po, { projectId: 'cli-project' });
+    expect(archived).toContain('archived');
+    expect(await projectLsCommand(po)).not.toContain('cli-project');
+    expect(await projectLsCommand(po, { all: true })).toContain('cli-project');
   });
 
   it('token list (inventory, no secrets) + token reissue (old dies, new works)', async () => {

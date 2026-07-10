@@ -98,6 +98,11 @@ const METHODS: Array<keyof SpineEngine> = [
   'completeAgentJob',
   'appendAgentMemory',
   'searchAgentMemory',
+  'createProject',
+  'getProject',
+  'listProjects',
+  'updateProject',
+  'archiveProject',
   'getWorkItem',
   'getFeature',
   'getClaims',
@@ -112,6 +117,8 @@ export interface PgSyncEngineOptions {
    * Omitted → in-memory database, truncated per engine (conformance mode).
    */
   dataDir?: string;
+  /** D-G: bind the LEASE clock to real time (leases expire unattended). */
+  wallClock?: boolean;
 }
 
 export function createPgSyncEngine(options?: PgSyncEngineOptions): SpineEngine {
@@ -119,6 +126,7 @@ export function createPgSyncEngine(options?: PgSyncEngineOptions): SpineEngine {
     callWorker({
       op: 'new',
       ...(options?.dataDir !== undefined ? { dataDir: options.dataDir } : {}),
+      ...(options?.wallClock === true ? { wallClock: true } : {}),
     }),
   ) as { engineId: number };
   const engineId = created.engineId;

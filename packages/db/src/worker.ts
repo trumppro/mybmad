@@ -51,6 +51,8 @@ interface NewOp {
    * schema is IF NOT EXISTS-idempotent and PgEngine.init() is restart-safe.
    */
   dataDir?: string;
+  /** D-G: bind the LEASE clock to real time (leases expire unattended). */
+  wallClock?: boolean;
 }
 interface CallOp {
   op: 'call';
@@ -122,7 +124,10 @@ runAsWorker(async (op: Op): Promise<WireResult> => {
         database = await getDb();
         await resetDb();
       }
-      const engine = new PgEngine(database);
+      const engine = new PgEngine(
+        database,
+        op.wallClock === true ? { wallClock: true } : undefined,
+      );
       await engine.init();
       const engineId = nextEngineId;
       nextEngineId += 1;

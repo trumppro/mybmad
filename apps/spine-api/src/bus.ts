@@ -66,7 +66,7 @@ interface SubmitEvidenceIn { workItemId: string; evidence: Evidence; fencingToke
 interface ApproveGateIn { workItemId: string; gate: GateCode; pinnedVerification?: string[] | undefined }
 interface RejectGateIn { workItemId: string; gate: GateCode }
 interface FeatureIn { featureId: string }
-interface ListWorkItemsIn { state?: WorkItemState | undefined; featureId?: string | undefined; claimable?: boolean | undefined }
+interface ListWorkItemsIn { state?: WorkItemState | undefined; featureId?: string | undefined; projectId?: string | undefined; claimable?: boolean | undefined }
 interface QueryEventsIn { streamId?: string | undefined }
 interface CreateThreadIn {
   kind: ThreadKind;
@@ -89,11 +89,12 @@ interface MarkNotificationReadIn { notificationId: string }
 interface ListAgentJobsIn { agentActorId?: string | undefined; status?: AgentJob['status'] | undefined }
 interface CompleteAgentJobIn { jobId: string; status: 'done' | 'blocked'; note?: string | undefined }
 interface ReconcileIn { files: Array<{ workItemId: string; frontmatterStatus: string }> }
-interface AppendAgentMemoryIn { kind: MemoryKind; content: string; sourceThreadId?: string | undefined }
+interface AppendAgentMemoryIn { kind: MemoryKind; content: string; sourceThreadId?: string | undefined; projectId?: string | undefined }
 interface SearchAgentMemoryIn {
   contextThreadId?: string | undefined;
   kind?: MemoryKind | undefined;
   query?: string | undefined;
+  projectId?: string | undefined;
 }
 
 /** Compact one-line summary of zod issues (duck-typed: zod copies may differ). */
@@ -161,8 +162,89 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
         });
         return { revoked: true };
       }
+      // -- projects (Phase 7 Wave 2, D-E) ------------------------------------
+      case 'project_create': {
+        const p = parsed as {
+          name: string;
+          slug?: string | undefined;
+          kind?: 'code' | 'doc' | 'mixed' | undefined;
+          repoPath?: string | undefined;
+          defaultSpecFolder?: string | undefined;
+        };
+        return engine.createProject({
+          actorId: ctx.actorId,
+          name: p.name,
+          ...(p.slug !== undefined ? { slug: p.slug } : {}),
+          ...(p.kind !== undefined ? { kind: p.kind } : {}),
+          ...(p.repoPath !== undefined ? { repoPath: p.repoPath } : {}),
+          ...(p.defaultSpecFolder !== undefined
+            ? { defaultSpecFolder: p.defaultSpecFolder }
+            : {}),
+        });
+      }
+      case 'project_get': {
+        const p = parsed as { projectId: string };
+        return engine.getProject({ projectId: p.projectId });
+      }
+      case 'project_list': {
+        const p = parsed as { includeArchived?: boolean | undefined };
+        const list = engine.listProjects({
+          ...(p.includeArchived !== undefined ? { includeArchived: p.includeArchived } : {}),
+        });
+        // The portfolio rollup, composed from existing queries — no second
+        // write path, no denormalized counters to drift.
+        const liveClaims = engine.listClaims();
+        const claimedItems = new Map<string, number>();
+        for (const claim of liveClaims) {
+          claimedItems.set(claim.workItemId, (claimedItems.get(claim.workItemId) ?? 0) + 1);
+        }
+        return list.map((project) => {
+          const items = engine.listWorkItems({ projectId: project.id });
+          const byState: Record<string, number> = {};
+          let blocked = 0;
+          let awaitingGates = 0;
+          let claims = 0;
+          for (const item of items) {
+            byState[item.state] = (byState[item.state] ?? 0) + 1;
+            if (item.blockedReason !== null) blocked += 1;
+            if ((item.state === 'draft' && item.specCheckpoint) || item.state === 'in_review') {
+              awaitingGates += 1;
+            }
+            claims += claimedItems.get(item.id) ?? 0;
+          }
+          return { project, items: byState, blocked, liveClaims: claims, awaitingGates };
+        });
+      }
+      case 'project_update': {
+        const p = parsed as {
+          projectId: string;
+          name?: string | undefined;
+          kind?: 'code' | 'doc' | 'mixed' | undefined;
+          repoPath?: string | undefined;
+          defaultSpecFolder?: string | undefined;
+        };
+        return engine.updateProject({
+          actorId: ctx.actorId,
+          projectId: p.projectId,
+          ...(p.name !== undefined ? { name: p.name } : {}),
+          ...(p.kind !== undefined ? { kind: p.kind } : {}),
+          ...(p.repoPath !== undefined ? { repoPath: p.repoPath } : {}),
+          ...(p.defaultSpecFolder !== undefined
+            ? { defaultSpecFolder: p.defaultSpecFolder }
+            : {}),
+        });
+      }
+      case 'project_archive': {
+        const p = parsed as { projectId: string };
+        return engine.archiveProject({ actorId: ctx.actorId, projectId: p.projectId });
+      }
       case 'create_feature': {
-        return engine.createFeature({ actorId: ctx.actorId });
+        const p = parsed as { projectId?: string | undefined; name?: string | undefined };
+        return engine.createFeature({
+          actorId: ctx.actorId,
+          ...(p.projectId !== undefined ? { projectId: p.projectId } : {}),
+          ...(p.name !== undefined ? { name: p.name } : {}),
+        });
       }
       case 'create_work_item': {
         // Creator identity from ctx; kind defaults to 'code' in the engine.
@@ -420,6 +502,7 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
           kind: p.kind,
           content: p.content,
           ...(p.sourceThreadId !== undefined ? { sourceThreadId: p.sourceThreadId } : {}),
+          ...(p.projectId !== undefined ? { projectId: p.projectId } : {}),
         });
       }
       case 'search_agent_memory': {
@@ -429,6 +512,7 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
           ...(p.contextThreadId !== undefined ? { contextThreadId: p.contextThreadId } : {}),
           ...(p.kind !== undefined ? { kind: p.kind } : {}),
           ...(p.query !== undefined ? { query: p.query } : {}),
+          ...(p.projectId !== undefined ? { projectId: p.projectId } : {}),
         });
       }
 
@@ -469,14 +553,26 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
         return engine.listWorkItems({
           ...(p.state !== undefined ? { state: p.state as WorkItemState } : {}),
           ...(p.featureId !== undefined ? { featureId: p.featureId } : {}),
+          ...(p.projectId !== undefined ? { projectId: p.projectId } : {}),
           ...(p.claimable !== undefined ? { claimable: p.claimable } : {}),
         });
       }
       case 'inbox': {
+        // A gate holder must see WHICH project a pending decision belongs to.
+        const withProject = (item: ReturnType<SpineEngine['getWorkItem']>) => {
+          try {
+            const feature = engine.getFeature(item.featureId);
+            const project = engine.getProject({ projectId: feature.projectId });
+            return { ...item, project: { id: project.id, slug: project.slug, name: project.name } };
+          } catch {
+            return item;
+          }
+        };
         const awaitingSpec = engine
           .listWorkItems({ state: 'draft' })
-          .filter((item) => item.specCheckpoint);
-        const awaitingReview = engine.listWorkItems({ state: 'in_review' });
+          .filter((item) => item.specCheckpoint)
+          .map(withProject);
+        const awaitingReview = engine.listWorkItems({ state: 'in_review' }).map(withProject);
         return { awaitingSpec, awaitingReview };
       }
       case 'query_events': {

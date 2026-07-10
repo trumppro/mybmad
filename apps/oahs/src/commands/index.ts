@@ -138,8 +138,16 @@ export async function rejectCommand(client: OahsClient, opts: RejectOptions): Pr
 // status
 // ---------------------------------------------------------------------------
 
-export async function statusCommand(client: OahsClient): Promise<string> {
-  const items = await client.call<WorkItem[]>('list_work_items');
+export interface StatusOptions {
+  /** Project id or slug — scope the board to one project. */
+  project?: string;
+}
+
+export async function statusCommand(client: OahsClient, opts: StatusOptions = {}): Promise<string> {
+  const items = await client.call<WorkItem[]>(
+    'list_work_items',
+    opts.project !== undefined ? { projectId: opts.project } : {},
+  );
   const rank = new Map<string, number>(WORK_ITEM_STATES.map((s, i) => [s, i]));
   const sorted = [...items].sort(
     (a, b) =>
@@ -225,9 +233,133 @@ export async function grantCommand(client: OahsClient, opts: GrantOptions): Prom
 // feature / import
 // ---------------------------------------------------------------------------
 
-export async function featureCreateCommand(client: OahsClient): Promise<string> {
-  const feature = await client.call<Feature>('create_feature');
-  return [`featureId: ${feature.id}`, `state: ${feature.state}`].join('\n');
+export interface FeatureCreateOptions {
+  /** Project id or slug — omitted attaches to the default project. */
+  project?: string;
+  name?: string;
+}
+
+export async function featureCreateCommand(
+  client: OahsClient,
+  opts: FeatureCreateOptions = {},
+): Promise<string> {
+  const feature = await client.call<Feature>('create_feature', {
+    ...(opts.project !== undefined ? { projectId: opts.project } : {}),
+    ...(opts.name !== undefined ? { name: opts.name } : {}),
+  });
+  return [
+    `featureId: ${feature.id}`,
+    `projectId: ${feature.projectId}`,
+    ...(feature.name !== null ? [`name: ${feature.name}`] : []),
+    `state: ${feature.state}`,
+  ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// projects (Phase 7 Wave 2, D-E) — the unit of parallel work
+// ---------------------------------------------------------------------------
+
+interface ProjectRollup {
+  project: {
+    id: string;
+    name: string;
+    slug: string;
+    kind: string;
+    repoPath: string | null;
+    defaultSpecFolder: string | null;
+    state: string;
+  };
+  items: Record<string, number>;
+  blocked: number;
+  liveClaims: number;
+  awaitingGates: number;
+}
+
+export interface ProjectCreateOptions {
+  name: string;
+  slug?: string;
+  kind?: string;
+  repoPath?: string;
+  specFolder?: string;
+}
+
+export async function projectCreateCommand(
+  client: OahsClient,
+  opts: ProjectCreateOptions,
+): Promise<string> {
+  const project = await client.call<ProjectRollup['project']>('project_create', {
+    name: opts.name,
+    ...(opts.slug !== undefined ? { slug: opts.slug } : {}),
+    ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+    ...(opts.repoPath !== undefined ? { repoPath: opts.repoPath } : {}),
+    ...(opts.specFolder !== undefined ? { defaultSpecFolder: opts.specFolder } : {}),
+  });
+  return [
+    `projectId: ${project.id}`,
+    `slug: ${project.slug}`,
+    `name: ${project.name}`,
+    `kind: ${project.kind}`,
+    ...(project.repoPath !== null ? [`repoPath: ${project.repoPath}`] : []),
+    ...(project.defaultSpecFolder !== null
+      ? [`defaultSpecFolder: ${project.defaultSpecFolder}`]
+      : []),
+  ].join('\n');
+}
+
+export async function projectLsCommand(
+  client: OahsClient,
+  opts: { all?: boolean } = {},
+): Promise<string> {
+  const rollups = await client.call<ProjectRollup[]>(
+    'project_list',
+    opts.all === true ? { includeArchived: true } : {},
+  );
+  if (rollups.length === 0) return 'no projects — `oahs project create <name>` starts one';
+  const stateCounts = (items: Record<string, number>): string =>
+    Object.entries(items)
+      .map(([state, count]) => `${state}:${count}`)
+      .join(' ') || '—';
+  return renderTable(
+    ['slug', 'name', 'kind', 'state', 'items', 'blocked', 'claims', 'gates'],
+    rollups.map((r) => [
+      r.project.slug,
+      r.project.name,
+      r.project.kind,
+      r.project.state,
+      stateCounts(r.items),
+      r.blocked,
+      r.liveClaims,
+      r.awaitingGates,
+    ]),
+  );
+}
+
+export async function projectShowCommand(
+  client: OahsClient,
+  opts: { projectId: string },
+): Promise<string> {
+  const project = await client.call<ProjectRollup['project']>('project_get', {
+    projectId: opts.projectId,
+  });
+  return [
+    `projectId: ${project.id}`,
+    `slug: ${project.slug}`,
+    `name: ${project.name}`,
+    `kind: ${project.kind}`,
+    `state: ${project.state}`,
+    `repoPath: ${project.repoPath ?? '(unbound)'}`,
+    `defaultSpecFolder: ${project.defaultSpecFolder ?? '(unbound)'}`,
+  ].join('\n');
+}
+
+export async function projectArchiveCommand(
+  client: OahsClient,
+  opts: { projectId: string },
+): Promise<string> {
+  const project = await client.call<ProjectRollup['project']>('project_archive', {
+    projectId: opts.projectId,
+  });
+  return `project ${project.slug} archived`;
 }
 
 export interface ImportStoriesOptions {
@@ -331,7 +463,7 @@ export async function claimLsCommand(
         state,
         claim.actorId,
         claim.fencingToken,
-        claim.released ? 'released' : 'LIVE',
+        claim.released ? 'released' : claim.expired === true ? 'EXPIRED' : 'LIVE',
       ];
     }),
   );

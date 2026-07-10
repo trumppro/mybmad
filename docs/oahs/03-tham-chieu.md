@@ -18,6 +18,25 @@ và `--token <token>` (mặc định biến môi trường `OAHS_TOKEN`). `serve
 |---|---|---|
 | `serve` | `--port <n>` (4521) · `--admin-token <t>` (env `OAHS_ADMIN_TOKEN`) · `--data <dir>` (env `OAHS_DATA`, mặc định `~/.oahs/data`) · `--ephemeral` | Khởi động spine-api (HTTP `/rpc/*` + MCP `/mcp` + UI `/ui`). Bền theo mặc định; `--ephemeral` = in-memory, mất sạch khi tắt. |
 
+### Project (Phase 7 Wave 2 — đơn vị chạy song song)
+
+| Lệnh | Tham số | Việc |
+|---|---|---|
+| `project create <name>` | `--slug` · `--kind code\|doc\|mixed` · `--repo <path>` · `--spec-folder <rel>` | Tạo project; slug sinh từ tên; repo binding để `work --project` khỏi cần cờ. |
+| `project ls` | `--all` | Toàn cảnh: mỗi project một dòng — items theo state, blocked, claims sống, gates chờ. |
+| `project show <id\|slug>` | — | Chi tiết + repo binding. |
+| `project archive <id\|slug>` | — | Ẩn khỏi ls, chặn feature mới; lịch sử vẫn đọc được. |
+| `feature create` | `--project <id\|slug>` · `--name <tên>` | Feature gắn vào project (bỏ trống = default project). |
+| `status` | `--project <id\|slug>` | Bảng trạng thái CHỈ của một project. |
+| `work` | `--project <slug>` · `--claim-ttl <ms>` · `--heartbeat <ms>` | Runner bind theo project: repo + spec folder đọc từ record, chỉ nhận việc của project đó; heartbeat giữ lease khi agent chạy lâu (server chạy wall-clock lease — runner chết thì lease TỰ hết hạn sau TTL). |
+
+**Handle theo project:** hai project được phép trùng key story (vd cùng có `1-1`).
+Handle trần chỉ resolve khi duy nhất toàn server; trùng → lỗi "ambiguous", dùng
+dạng đầy đủ **`<slug>:<key>`** (vd `alpha-app:1-1`) ở MỌI lệnh.
+
+**Memory theo project (D-H):** memory của agent gắn `projectId` (bài học dự án
+nào ở dự án đó); không gắn = craft toàn cục, recall được ở mọi project.
+
 ### Ops (Phase 7 Wave 1)
 
 | Lệnh | Tham số | Việc |

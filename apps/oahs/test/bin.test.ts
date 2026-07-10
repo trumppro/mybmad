@@ -34,7 +34,7 @@ describe('bin/oahs.mjs (esbuild bundle)', () => {
   it('--help exits 0 and lists the commands', async () => {
     // execFile rejects on a non-zero exit — resolving IS the exit-0 assertion.
     const { stdout } = await run(process.execPath, [bin, '--help']);
-    for (const command of ['serve', 'inbox', 'approve', 'reject', 'status', 'actor', 'grant', 'feature', 'import', 'events', 'work', 'whoami', 'claim', 'token']) {
+    for (const command of ['serve', 'inbox', 'approve', 'reject', 'status', 'actor', 'grant', 'feature', 'import', 'events', 'work', 'whoami', 'claim', 'token', 'project']) {
       expect(stdout).toContain(command);
     }
   });
@@ -45,12 +45,13 @@ describe('bin/oahs.mjs (esbuild bundle)', () => {
     expect(result.stderr).toContain('missing token');
   });
 
-  it('oahs work accepts --feature: the multi-project scoping flag parses', async () => {
-    // Same dead-URL shape as the failure test below — the point is that the
+  it('oahs work accepts the scoping + lease flags (--feature --project --claim-ttl --heartbeat)', async () => {
+    // Same dead-URL shape as the failure test below — the point is that every
     // flag is a known option (no commander "unknown option" error).
     const result = await runExpectingFailure([
       'work', '--repo', '.', '--spec-folder', 'spec', '--agent-cmd', 'echo x', '--once',
-      '--feature', 'feat_000001',
+      '--feature', 'feat_000001', '--project', 'alpha',
+      '--claim-ttl', '5000', '--heartbeat', '1000',
       '--url', 'http://127.0.0.1:1', '--token', 'irrelevant',
     ]);
     expect(result.stderr).not.toContain('unknown option');

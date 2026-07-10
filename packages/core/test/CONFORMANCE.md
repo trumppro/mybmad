@@ -74,6 +74,24 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 - System-actor authorship (epic-lift, loopback) is asserted structurally: event `actorId` differs from every fixture-created actor and carries a `causationId`.
 - `stateVersion` is pinned strictly monotonic, not +1-per-mutation.
 
+### Phase 7 Wave 2 — Project entity (`project.test.ts`, additive)
+- **Project is the unit of parallel work** (D-E): name + unique `slug` (derived from name, never silently moved by rename) + `kind` (default `mixed`) + optional `repoPath`/`defaultSpecFolder` + `active|archived`. `getProject` resolves id OR slug; events land on a `project` stream.
+- **The default project is the compatibility floor**: `createFeature` without a project lazily creates/reuses slug `default` — every pre-Wave-2 flow and data dir keeps its exact meaning. Features may carry a `name`.
+- Archived projects refuse NEW features; reads stay open. `listWorkItems({projectId})` (id or slug) spans every feature of the project.
+- `createProject` carries no engine-side permission check — deliberately symmetric with `createFeature` (whose `feature.init` convention is enforced at the ops layer, not pinned in the engine).
+
+### Phase 7 Wave 2 — externalKey scoping (`external-key-scope.test.ts`)
+- Handles are **scoped per project**: a bare key resolves only while unique across the workspace; duplicated across projects → explicit `GuardFailedError` "ambiguous … qualify as `<project-slug>:<key>`" (never silent cross-project first-writer shadowing). The qualified form always resolves. One resolver serves every command (`mustGetItem`).
+- WITHIN a project, the Phase-1 first-writer-wins pin keeps its exact meaning (all Phase-1 flows live in the single default project).
+
+### Phase 7 Wave 2 — memory project scope (`memory-project-scope.test.ts`, additive, D-H)
+- A memory may carry a `projectId` (id or slug at append; stored resolved); **null = GLOBAL craft**. Scoped recall (`searchAgentMemory({projectId})`) returns that project's memories + global — a sibling project's lessons never leak in.
+- **Unscoped recall keeps its exact Phase-5 meaning** (every owner memory). Owner-scoping and the §6 private-source filter compose unchanged with the project filter. Memory events still never carry content.
+
+### Phase 7 Wave 2 — wall-clock leases (`wall-clock.test.ts`, opt-in)
+- `createEngine({ wallClock: true })` binds the LEASE clock to real time: an unheartbeated claim expires after TTL and the item is claimable again — no force-release needed (D-G). Heartbeat keeps its Phase-1 meaning (full TTL renewal from the heartbeat moment), now in real time.
+- **The default stays the logical clock** (`advanceClock`), pinned: real time never expires a lease on a default engine — every other conformance test keeps its determinism. `currentTime()` is the ONLY read path for lease time; no other guard may consult it. Factory options are JSON-serializable (they cross the db facade's worker boundary). The served spine (`oahs serve`) always opts in.
+
 ### Phase 7 Wave 1 — listClaims (`list-claims.test.ts`, additive)
 - `listClaims()` is the workspace-wide claims view: **live (unreleased) claims only by default**, each carrying its `workItemId`; `includeReleased: true` is the history view. Read-only — grants unchanged, no event appended. The per-item `getClaims` keeps its exact Phase-1 meaning.
 

@@ -26,15 +26,22 @@ export { parseStories, type StoryEntry } from './stories.js';
  * factory in a vitest setup file to run the IDENTICAL suite against Postgres
  * (story "11": "conformance suite runs against both memory and Postgres
  * engines"). Default is the in-memory reference engine.
+ *
+ * Options must stay JSON-serializable — the db facade forwards them across a
+ * worker-thread boundary (wallClock, D-G).
  */
-let engineFactory: () => SpineEngine = createMemoryEngine;
+export interface EngineFactoryOptions {
+  wallClock?: boolean;
+}
 
-export function setEngineFactory(factory: () => SpineEngine): void {
+let engineFactory: (options?: EngineFactoryOptions) => SpineEngine = createMemoryEngine;
+
+export function setEngineFactory(factory: (options?: EngineFactoryOptions) => SpineEngine): void {
   engineFactory = factory;
 }
 
-export function createEngine(): SpineEngine {
-  return engineFactory();
+export function createEngine(options?: EngineFactoryOptions): SpineEngine {
+  return engineFactory(options);
 }
 
 export { createMemoryEngine };

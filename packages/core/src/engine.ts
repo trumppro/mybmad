@@ -13,6 +13,7 @@ import {
   BLOCKED_REASONS,
   ConflictError,
   DEFAULT_PLAN,
+  DEFAULT_PROJECT_SLUG,
   DELIVERY_ROLES,
   GuardFailedError,
   InvalidTransitionError,
@@ -47,6 +48,8 @@ import {
   type GovernanceRole,
   type Permission,
   type PlanCode,
+  type Project,
+  type ProjectKind,
   type RoleAssignment,
   type SpineEngine,
   type SpineEvent,
@@ -141,15 +144,26 @@ const LEGACY_STATUS: Record<string, WorkItemState> = {
 };
 
 class EngineImpl implements SpineEngine {
+  /**
+   * Lease clock offset. Logical mode (default): the clock IS this counter
+   * (starts at 0, advanceClock adds — fully deterministic). Wall mode (D-G,
+   * `wallClock: true`): currentTime() = Date.now() + offset, so leases expire
+   * in real time and advanceClock still works for tests.
+   */
   private now = 0;
+  private readonly wallClock: boolean;
   private seq = 0;
   private globalSeq = 0;
 
   private readonly actors = new Map<string, Actor>();
   private readonly grants = new Map<string, Set<string>>(); // actorId -> "permission" (scope ignored until Phase 2)
+  private readonly projects = new Map<string, Project>();
+  private readonly projectSlugIndex = new Map<string, string>(); // slug -> projectId
   private readonly features = new Map<string, Feature>();
   private readonly workItems = new Map<string, WorkItemRow>();
-  private readonly externalKeyIndex = new Map<string, string>(); // externalKey -> workItemId (first writer wins)
+  // projectId -> (externalKey -> workItemId). First writer wins WITHIN a
+  // project; across projects a bare handle is ambiguous by design (Wave 2).
+  private readonly externalKeyIndex = new Map<string, Map<string, string>>();
   private readonly claims = new Map<string, ClaimRow>();
   private readonly claimsByItem = new Map<string, string[]>(); // workItemId -> claimIds
   private readonly fencingCounter = new Map<string, number>(); // workItemId -> last token
@@ -180,7 +194,8 @@ class EngineImpl implements SpineEngine {
 
   readonly systemActorId: string;
 
-  constructor() {
+  constructor(options?: { wallClock?: boolean }) {
+    this.wallClock = options?.wallClock === true;
     this.systemActorId = this.nextId('actor-system');
     this.actors.set(this.systemActorId, {
       id: this.systemActorId,
@@ -195,6 +210,11 @@ class EngineImpl implements SpineEngine {
   private nextId(prefix: string): string {
     this.seq += 1;
     return `${prefix}_${this.seq.toString(36).padStart(6, '0')}`;
+  }
+
+  /** The ONLY read path for lease time — never used by any other guard. */
+  private currentTime(): number {
+    return this.wallClock ? Date.now() + this.now : this.now;
   }
 
   private append(
@@ -227,11 +247,33 @@ class EngineImpl implements SpineEngine {
     const byId = this.workItems.get(workItemId);
     if (byId) return byId;
     // Imported stories are addressed by their externalKey handle
-    // (conformance pin in stories-import.test.ts).
-    const mapped = this.externalKeyIndex.get(workItemId);
-    if (mapped !== undefined) {
-      const item = this.workItems.get(mapped);
+    // (conformance pin in stories-import.test.ts). Since Wave 2 handles are
+    // scoped per project: `<project-slug>:<key>` is always exact; a bare key
+    // resolves only while it is unique across the workspace.
+    const colon = workItemId.indexOf(':');
+    if (colon > 0) {
+      const projectHandle = workItemId.slice(0, colon);
+      const key = workItemId.slice(colon + 1);
+      const project = this.projects.get(projectHandle) ??
+        this.projects.get(this.projectSlugIndex.get(projectHandle) ?? '');
+      const mapped = project ? this.externalKeyIndex.get(project.id)?.get(key) : undefined;
+      const item = mapped !== undefined ? this.workItems.get(mapped) : undefined;
       if (item) return item;
+      throw new GuardFailedError(`unknown work item: ${workItemId}`);
+    }
+    const hits: string[] = [];
+    for (const perProject of this.externalKeyIndex.values()) {
+      const mapped = perProject.get(workItemId);
+      if (mapped !== undefined) hits.push(mapped);
+    }
+    if (hits.length === 1) {
+      const item = this.workItems.get(hits[0]!);
+      if (item) return item;
+    }
+    if (hits.length > 1) {
+      throw new GuardFailedError(
+        `ambiguous work item handle "${workItemId}" (exists in ${hits.length} projects) — qualify as <project-slug>:${workItemId}`,
+      );
     }
     throw new GuardFailedError(`unknown work item: ${workItemId}`);
   }
@@ -302,7 +344,7 @@ class EngineImpl implements SpineEngine {
   private liveClaim(workItemId: string): ClaimRow | null {
     for (const claimId of this.claimsByItem.get(workItemId) ?? []) {
       const claim = this.claims.get(claimId);
-      if (claim && !claim.released && claim.leaseExpiresAt > this.now) return claim;
+      if (claim && !claim.released && claim.leaseExpiresAt > this.currentTime()) return claim;
     }
     return null;
   }
@@ -510,10 +552,132 @@ class EngineImpl implements SpineEngine {
     };
   }
 
-  createFeature(input: { actorId: string }): Feature {
-    const feature: Feature = { id: this.nextId('feat'), state: 'backlog', dispatchHold: false };
+  // -- projects (Phase 7 Wave 2, D-E) -----------------------------------------
+
+  private static slugify(text: string): string {
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+  }
+
+  private mustGetProject(projectId: string): Project {
+    const byId = this.projects.get(projectId);
+    if (byId) return byId;
+    const bySlug = this.projectSlugIndex.get(projectId);
+    if (bySlug !== undefined) {
+      const project = this.projects.get(bySlug);
+      if (project) return project;
+    }
+    throw new GuardFailedError(`unknown project: ${projectId}`);
+  }
+
+  createProject(input: {
+    actorId: string;
+    name: string;
+    slug?: string;
+    kind?: ProjectKind;
+    repoPath?: string;
+    defaultSpecFolder?: string;
+  }): Project {
+    const slug = input.slug ?? EngineImpl.slugify(input.name);
+    if (slug === '') throw new GuardFailedError('project slug must not be empty');
+    if (this.projectSlugIndex.has(slug)) {
+      throw new GuardFailedError(`project slug already taken: ${slug}`);
+    }
+    const project: Project = {
+      id: this.nextId('proj'),
+      name: input.name,
+      slug,
+      kind: input.kind ?? 'mixed',
+      repoPath: input.repoPath ?? null,
+      defaultSpecFolder: input.defaultSpecFolder ?? null,
+      state: 'active',
+    };
+    this.projects.set(project.id, project);
+    this.projectSlugIndex.set(project.slug, project.id);
+    this.append('project', project.id, 'project.created', input.actorId, {
+      name: project.name,
+      slug: project.slug,
+      kind: project.kind,
+    });
+    return { ...project };
+  }
+
+  getProject(input: { projectId: string }): Project {
+    return { ...this.mustGetProject(input.projectId) };
+  }
+
+  listProjects(input?: { includeArchived?: boolean }): Project[] {
+    return [...this.projects.values()]
+      .filter((p) => input?.includeArchived === true || p.state === 'active')
+      .map((p) => ({ ...p }));
+  }
+
+  updateProject(input: {
+    actorId: string;
+    projectId: string;
+    name?: string;
+    kind?: ProjectKind;
+    repoPath?: string;
+    defaultSpecFolder?: string;
+  }): Project {
+    const project = this.mustGetProject(input.projectId);
+    // The slug never silently moves on rename — it is the addressable handle.
+    if (input.name !== undefined) project.name = input.name;
+    if (input.kind !== undefined) project.kind = input.kind;
+    if (input.repoPath !== undefined) project.repoPath = input.repoPath;
+    if (input.defaultSpecFolder !== undefined) project.defaultSpecFolder = input.defaultSpecFolder;
+    this.append('project', project.id, 'project.updated', input.actorId, {
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      ...(input.repoPath !== undefined ? { repoPath: input.repoPath } : {}),
+      ...(input.defaultSpecFolder !== undefined
+        ? { defaultSpecFolder: input.defaultSpecFolder }
+        : {}),
+    });
+    return { ...project };
+  }
+
+  archiveProject(input: { actorId: string; projectId: string }): Project {
+    const project = this.mustGetProject(input.projectId);
+    project.state = 'archived';
+    this.append('project', project.id, 'project.archived', input.actorId, {});
+    return { ...project };
+  }
+
+  /** The compatibility floor: bare createFeature attaches here (lazy). */
+  private defaultProject(actorId: string): Project {
+    const existing = this.projectSlugIndex.get(DEFAULT_PROJECT_SLUG);
+    if (existing !== undefined) {
+      const project = this.projects.get(existing);
+      if (project) return project;
+    }
+    return this.mustGetProject(
+      this.createProject({ actorId, name: 'Default project', slug: DEFAULT_PROJECT_SLUG }).id,
+    );
+  }
+
+  createFeature(input: { actorId: string; projectId?: string; name?: string }): Feature {
+    const project =
+      input.projectId !== undefined
+        ? this.mustGetProject(input.projectId)
+        : this.defaultProject(input.actorId);
+    if (project.state === 'archived') {
+      throw new GuardFailedError(`project is archived: ${project.slug}`);
+    }
+    const feature: Feature = {
+      id: this.nextId('feat'),
+      projectId: project.id,
+      name: input.name ?? null,
+      state: 'backlog',
+      dispatchHold: false,
+    };
     this.features.set(feature.id, feature);
-    this.append('feature', feature.id, 'feature.created', input.actorId, {});
+    this.append('feature', feature.id, 'feature.created', input.actorId, {
+      projectId: project.id,
+      ...(feature.name !== null ? { name: feature.name } : {}),
+    });
     return this.copyFeature(feature);
   }
 
@@ -541,9 +705,10 @@ class EngineImpl implements SpineEngine {
       dependsOn: input.dependsOn ? [...input.dependsOn] : [],
     };
     this.workItems.set(item.id, item);
-    if (!this.externalKeyIndex.has(item.externalKey)) {
-      this.externalKeyIndex.set(item.externalKey, item.id);
-    }
+    const projectId = this.features.get(item.featureId)?.projectId ?? '';
+    const perProject = this.externalKeyIndex.get(projectId) ?? new Map<string, string>();
+    if (!perProject.has(item.externalKey)) perProject.set(item.externalKey, item.id);
+    this.externalKeyIndex.set(projectId, perProject);
     this.append('work_item', item.id, 'work_item.created', input.actorId, {
       externalKey: item.externalKey,
       featureId: item.featureId,
@@ -607,7 +772,7 @@ class EngineImpl implements SpineEngine {
       workItemId: item.id,
       actorId: input.actorId,
       fencingToken: token,
-      leaseExpiresAt: this.now + ttlMs,
+      leaseExpiresAt: this.currentTime() + ttlMs,
       released: false,
       ttlMs,
     };
@@ -619,10 +784,10 @@ class EngineImpl implements SpineEngine {
 
   heartbeat(input: { claimId: string }): void {
     const claim = this.claims.get(input.claimId);
-    if (!claim || claim.released || claim.leaseExpiresAt <= this.now) {
+    if (!claim || claim.released || claim.leaseExpiresAt <= this.currentTime()) {
       throw new ConflictError(`claim ${input.claimId} is not live`);
     }
-    claim.leaseExpiresAt = this.now + claim.ttlMs;
+    claim.leaseExpiresAt = this.currentTime() + claim.ttlMs;
   }
 
   releaseClaim(input: { claimId: string; reason?: string }): void {
@@ -1299,6 +1464,7 @@ class EngineImpl implements SpineEngine {
     kind: MemoryKind;
     content: string;
     sourceThreadId?: string;
+    projectId?: string;
   }): AgentMemory {
     const actor = this.actors.get(input.actorId);
     if (!actor) throw new GuardFailedError(`unknown actor: ${input.actorId}`);
@@ -1316,6 +1482,9 @@ class EngineImpl implements SpineEngine {
       sourceThreadId = thread.id;
       sourceVisibility = thread.visibility;
     }
+    // D-H: a project-scoped lesson stays in its project; null = global craft.
+    const projectId =
+      input.projectId !== undefined ? this.mustGetProject(input.projectId).id : null;
     const seq = this.agentMemories.filter((m) => m.agentActorId === input.actorId).length + 1;
     const memory: AgentMemory = {
       id: this.nextId('mem'),
@@ -1324,6 +1493,7 @@ class EngineImpl implements SpineEngine {
       content: input.content,
       sourceThreadId,
       sourceVisibility,
+      projectId,
       seq,
     };
     this.agentMemories.push(memory);
@@ -1342,13 +1512,18 @@ class EngineImpl implements SpineEngine {
     contextThreadId?: string;
     kind?: MemoryKind;
     query?: string;
+    projectId?: string;
   }): AgentMemory[] {
     // Owner-scoped by construction: there is no cross-actor parameter.
+    const projectId =
+      input.projectId !== undefined ? this.mustGetProject(input.projectId).id : undefined;
     return this.agentMemories
       .filter((m) => {
         if (m.agentActorId !== input.actorId) return false;
         if (input.kind !== undefined && m.kind !== input.kind) return false;
         if (input.query !== undefined && !m.content.toLowerCase().includes(input.query.toLowerCase())) return false;
+        // D-H: scoped recall = that project + global; a sibling never leaks in.
+        if (projectId !== undefined && m.projectId !== null && m.projectId !== projectId) return false;
         // §6: nothing learned in a private thread surfaces outside its
         // source thread.
         if (m.sourceVisibility === 'private' && m.sourceThreadId !== input.contextThreadId) return false;
@@ -1441,11 +1616,20 @@ class EngineImpl implements SpineEngine {
     return this.copyFeature(feature);
   }
 
-  listWorkItems(filter?: { state?: WorkItemState; featureId?: string; claimable?: boolean }): WorkItem[] {
+  listWorkItems(filter?: {
+    state?: WorkItemState;
+    featureId?: string;
+    projectId?: string;
+    claimable?: boolean;
+  }): WorkItem[] {
+    const projectId =
+      filter?.projectId !== undefined ? this.mustGetProject(filter.projectId).id : undefined;
     return [...this.workItems.values()]
       .filter((item) => {
         if (filter?.state !== undefined && item.state !== filter.state) return false;
         if (filter?.featureId !== undefined && item.featureId !== filter.featureId) return false;
+        if (projectId !== undefined && this.features.get(item.featureId)?.projectId !== projectId)
+          return false;
         if (filter?.claimable === true && this.liveClaim(item.id) !== null) return false;
         return true;
       })
@@ -1463,7 +1647,10 @@ class EngineImpl implements SpineEngine {
   listClaims(input?: { includeReleased?: boolean }): Claim[] {
     return [...this.claims.values()]
       .filter((claim) => input?.includeReleased === true || !claim.released)
-      .map((claim) => this.copyClaim(claim));
+      .map((claim) => ({
+        ...this.copyClaim(claim),
+        expired: !claim.released && claim.leaseExpiresAt <= this.currentTime(),
+      }));
   }
 
   events(streamId?: string): SpineEvent[] {
@@ -1472,6 +1659,6 @@ class EngineImpl implements SpineEngine {
   }
 }
 
-export function createEngine(): SpineEngine {
-  return new EngineImpl();
+export function createEngine(options?: { wallClock?: boolean }): SpineEngine {
+  return new EngineImpl(options);
 }

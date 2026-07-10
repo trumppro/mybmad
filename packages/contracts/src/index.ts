@@ -91,7 +91,54 @@ export const COMMANDS = [
       scope: z.string().optional(),
     }),
   ),
-  def('create_feature', 'Create a feature (maps a BMAD epic).', z.object({})),
+  // -- projects (Phase 7 Wave 2, D-E): the unit of parallel work ----------------
+  def(
+    'project_create',
+    'Create a project — name + unique slug + kind, optionally bound to a repo (repoPath + defaultSpecFolder for the runner).',
+    z.object({
+      name: z.string().min(1),
+      slug: z.string().min(1).optional().describe('Addressable handle; derived from name when omitted'),
+      kind: z.enum(['code', 'doc', 'mixed']).optional().describe("Default 'mixed'"),
+      repoPath: z.string().optional(),
+      defaultSpecFolder: z.string().optional(),
+    }),
+  ),
+  def(
+    'project_get',
+    'One project by id OR slug.',
+    z.object({ projectId: z.string().min(1) }),
+    true,
+  ),
+  def(
+    'project_list',
+    'The portfolio question in one call: every project with its rollup — items by state, blocked count, live claims, gates awaiting a decision.',
+    z.object({ includeArchived: z.boolean().optional() }),
+    true,
+  ),
+  def(
+    'project_update',
+    'Update project name/kind/repo binding. The slug never moves.',
+    z.object({
+      projectId: z.string().min(1),
+      name: z.string().min(1).optional(),
+      kind: z.enum(['code', 'doc', 'mixed']).optional(),
+      repoPath: z.string().optional(),
+      defaultSpecFolder: z.string().optional(),
+    }),
+  ),
+  def(
+    'project_archive',
+    'Archive a project: hidden from the default list, refuses new features; history stays readable.',
+    z.object({ projectId: z.string().min(1) }),
+  ),
+  def(
+    'create_feature',
+    'Create a feature (maps a BMAD epic) inside a project — omitted projectId attaches to the default project.',
+    z.object({
+      projectId: z.string().min(1).optional().describe('Project id or slug'),
+      name: z.string().min(1).optional(),
+    }),
+  ),
   def(
     'create_work_item',
     'Create a single work item. kind selects WHICH machine-evidence guards apply (Phase 4) — never WHO may pass a gate.',
@@ -374,6 +421,11 @@ export const COMMANDS = [
         .min(1)
         .optional()
         .describe('Thread the memory was learned in — its visibility gates recall (§6)'),
+      projectId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Project (id or slug) the lesson belongs to; omitted = GLOBAL craft (D-H)'),
     }),
   ),
   def(
@@ -387,6 +439,11 @@ export const COMMANDS = [
         .describe('Thread the recall happens in — gates private-sourced memories'),
       kind: z.enum(['episodic', 'procedural', 'entity']).optional(),
       query: z.string().min(1).optional().describe('Case-insensitive substring filter'),
+      projectId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Scope recall to this project + global craft; omitted = everything (Phase 5)'),
     }),
     true,
   ),
@@ -424,10 +481,11 @@ export const COMMANDS = [
   ),
   def(
     'list_work_items',
-    'List work items, optionally filtered by state / feature / claimability.',
+    'List work items, optionally filtered by state / feature / project / claimability.',
     z.object({
       state: z.enum(WORK_ITEM_STATES).optional(),
       featureId: z.string().optional(),
+      projectId: z.string().optional().describe('Project id or slug — spans every feature of the project'),
       claimable: z.boolean().optional().describe('true = no live claim on the item'),
     }),
     true,

@@ -85,11 +85,32 @@ export const gatePolicies = pgTable('gate_policies', {
 });
 
 // ---------------------------------------------------------------------------
+// projects — the unit of parallel work (Phase 7 Wave 2, D-E)
+// ---------------------------------------------------------------------------
+export const projects = pgTable(
+  'projects',
+  {
+    id: text('id').primaryKey(),
+    seq: serial('seq').notNull(),
+    name: text('name').notNull(),
+    slug: text('slug').notNull(),
+    kind: text('kind').notNull().default('mixed'), // 'code' | 'doc' | 'mixed'
+    repoPath: text('repo_path'),
+    defaultSpecFolder: text('default_spec_folder'),
+    state: text('state').notNull().default('active'), // 'active' | 'archived'
+  },
+  (t) => [uniqueIndex('projects_slug').on(t.slug)],
+);
+
+// ---------------------------------------------------------------------------
 // features — epic-level projection (state + done_checkpoint dispatch hold)
 // ---------------------------------------------------------------------------
 export const features = pgTable('features', {
   id: text('id').primaryKey(),
   seq: serial('seq').notNull(),
+  // '' = not yet backfilled; init() attaches orphans to the default project.
+  projectId: text('project_id').notNull().default(''),
+  name: text('name'),
   state: text('state').notNull(), // 'backlog' | 'in_progress' | 'done'
   dispatchHold: boolean('dispatch_hold').notNull().default(false),
 });
@@ -273,6 +294,8 @@ export const agentMemories = pgTable(
     content: text('content').notNull(),
     sourceThreadId: text('source_thread_id'),
     sourceVisibility: text('source_visibility'), // 'open' | 'private' | NULL
+    // D-H: project the lesson belongs to; NULL = global craft.
+    projectId: text('project_id'),
     seq: integer('seq').notNull(),
   },
   (t) => [uniqueIndex('agent_memories_agent_actor_id_seq').on(t.agentActorId, t.seq)],

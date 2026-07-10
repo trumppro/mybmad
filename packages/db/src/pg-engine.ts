@@ -29,6 +29,7 @@ import {
   BLOCKED_REASONS,
   ConflictError,
   DEFAULT_PLAN,
+  DEFAULT_PROJECT_SLUG,
   DELIVERY_ROLES,
   GuardFailedError,
   InvalidTransitionError,
@@ -62,6 +63,8 @@ import {
   type Notification,
   type Permission,
   type PlanCode,
+  type Project,
+  type ProjectKind,
   type RoleAssignment,
   type SpineEvent,
   type StoriesImportResult,
@@ -89,6 +92,7 @@ import {
   mentions,
   messages,
   notifications,
+  projects,
   roleAssignments,
   threads,
   workItems,
@@ -103,6 +107,7 @@ type Queryable = Db | Tx;
 type WorkItemRow = typeof workItems.$inferSelect;
 type ClaimRow = typeof claims.$inferSelect;
 type FeatureRow = typeof features.$inferSelect;
+type ProjectRow = typeof projects.$inferSelect;
 type EventRow = typeof events.$inferSelect;
 type ActorRow = typeof actors.$inferSelect;
 type WorkspaceStateRow = typeof workspaceState.$inferSelect;
@@ -185,7 +190,19 @@ export class PgEngine {
   private seq = 0;
   private systemActorId = '';
 
-  constructor(private readonly db: Db) {}
+  private readonly wallClock: boolean;
+
+  constructor(
+    private readonly db: Db,
+    options?: { wallClock?: boolean },
+  ) {
+    this.wallClock = options?.wallClock === true;
+  }
+
+  /** The ONLY read path for lease time — never used by any other guard (D-G). */
+  private currentTime(): number {
+    return this.wallClock ? Date.now() + this.now : this.now;
+  }
 
   /**
    * Post-reset setup: the per-workspace system actor (roadmap §1.2).
@@ -213,6 +230,7 @@ export class PgEngine {
     if (found !== undefined) {
       this.systemActorId = found.id;
       this.seq = await this.recoverSeq();
+      await this.backfillProjects();
       return;
     }
     this.systemActorId = this.nextId('actor-system');
@@ -224,12 +242,31 @@ export class PgEngine {
   }
 
   /**
+   * Phase 7 Wave 2 upgrade path: features created before projects existed
+   * carry project_id '' — attach them to the default project so every old
+   * data dir keeps working with its exact prior meaning.
+   */
+  private async backfillProjects(): Promise<void> {
+    const orphans = await this.db
+      .select({ id: features.id })
+      .from(features)
+      .where(eq(features.projectId, ''));
+    if (orphans.length === 0) return;
+    const project = await this.defaultProjectRow(this.systemActorId);
+    await this.db
+      .update(features)
+      .set({ projectId: project.id })
+      .where(eq(features.projectId, ''));
+  }
+
+  /**
    * Largest nextId() suffix stored in any text-id table — restart-safe id
    * generation for persistent data directories. Ids are `${prefix}_${base36}`.
    */
   private async recoverSeq(): Promise<number> {
     const ids: string[] = [];
     ids.push(...(await this.db.select({ id: actors.id }).from(actors)).map((r) => r.id));
+    ids.push(...(await this.db.select({ id: projects.id }).from(projects)).map((r) => r.id));
     ids.push(...(await this.db.select({ id: features.id }).from(features)).map((r) => r.id));
     ids.push(...(await this.db.select({ id: workItems.id }).from(workItems)).map((r) => r.id));
     ids.push(...(await this.db.select({ id: claims.id }).from(claims)).map((r) => r.id));
@@ -308,15 +345,38 @@ export class PgEngine {
     const byId = await this.db.select().from(workItems).where(eq(workItems.id, workItemId)).limit(1);
     if (byId[0]) return byId[0];
     // Imported stories are addressed by their externalKey handle; first
-    // writer wins — the earliest-created row resolves (conformance pin in
-    // stories-import.test.ts, mirrored from the reference externalKeyIndex).
+    // writer wins WITHIN a project (conformance pin in stories-import.test.ts,
+    // scoped per project since Wave 2). `<project-slug>:<key>` is exact; a
+    // bare key resolves only while unique across the workspace.
+    const colon = workItemId.indexOf(':');
+    if (colon > 0) {
+      const project = await this.getProjectRow(workItemId.slice(0, colon));
+      if (project) {
+        const key = workItemId.slice(colon + 1);
+        const rows = await this.db
+          .select({ item: workItems })
+          .from(workItems)
+          .innerJoin(features, eq(workItems.featureId, features.id))
+          .where(and(eq(workItems.externalKey, key), eq(features.projectId, project.id)))
+          .orderBy(asc(workItems.seq))
+          .limit(1);
+        if (rows[0]) return rows[0].item;
+      }
+      throw new GuardFailedError(`unknown work item: ${workItemId}`);
+    }
     const byKey = await this.db
-      .select()
+      .select({ item: workItems, projectId: features.projectId })
       .from(workItems)
+      .innerJoin(features, eq(workItems.featureId, features.id))
       .where(eq(workItems.externalKey, workItemId))
-      .orderBy(asc(workItems.seq))
-      .limit(1);
-    if (byKey[0]) return byKey[0];
+      .orderBy(asc(workItems.seq));
+    const projectIds = new Set(byKey.map((row) => row.projectId));
+    if (projectIds.size > 1) {
+      throw new GuardFailedError(
+        `ambiguous work item handle "${workItemId}" (exists in ${projectIds.size} projects) — qualify as <project-slug>:${workItemId}`,
+      );
+    }
+    if (byKey[0]) return byKey[0].item;
     throw new GuardFailedError(`unknown work item: ${workItemId}`);
   }
 
@@ -426,7 +486,7 @@ export class PgEngine {
         and(
           eq(claims.workItemId, workItemId),
           eq(claims.released, false),
-          gt(claims.leaseExpiresAt, this.now),
+          gt(claims.leaseExpiresAt, this.currentTime()),
         ),
       )
       .orderBy(asc(claims.seq))
@@ -481,9 +541,37 @@ export class PgEngine {
   private publicFeature(row: FeatureRow): Feature {
     return {
       id: row.id,
+      projectId: row.projectId,
+      name: row.name,
       state: row.state as Feature['state'],
       dispatchHold: row.dispatchHold,
     };
+  }
+
+  private publicProject(row: ProjectRow): Project {
+    return {
+      id: row.id,
+      name: row.name,
+      slug: row.slug,
+      kind: row.kind as ProjectKind,
+      repoPath: row.repoPath,
+      defaultSpecFolder: row.defaultSpecFolder,
+      state: row.state as Project['state'],
+    };
+  }
+
+  /** Resolve a project by id OR slug (mirrors the reference engine). */
+  private async getProjectRow(handle: string, tx: Queryable = this.db): Promise<ProjectRow | null> {
+    const byId = await tx.select().from(projects).where(eq(projects.id, handle)).limit(1);
+    if (byId[0]) return byId[0];
+    const bySlug = await tx.select().from(projects).where(eq(projects.slug, handle)).limit(1);
+    return bySlug[0] ?? null;
+  }
+
+  private async mustGetProjectRow(handle: string, tx: Queryable = this.db): Promise<ProjectRow> {
+    const row = await this.getProjectRow(handle, tx);
+    if (!row) throw new GuardFailedError(`unknown project: ${handle}`);
+    return row;
   }
 
   private publicClaim(row: ClaimRow): Claim {
@@ -792,12 +880,129 @@ export class PgEngine {
     };
   }
 
-  async createFeature(input: { actorId: string }): Promise<Feature> {
-    const id = this.nextId('feat');
+  // -- projects (Phase 7 Wave 2, D-E) -----------------------------------------
+
+  private static slugify(text: string): string {
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+  }
+
+  async createProject(input: {
+    actorId: string;
+    name: string;
+    slug?: string;
+    kind?: ProjectKind;
+    repoPath?: string;
+    defaultSpecFolder?: string;
+  }): Promise<Project> {
+    const slug = input.slug ?? PgEngine.slugify(input.name);
+    if (slug === '') throw new GuardFailedError('project slug must not be empty');
+    const id = this.nextId('proj');
     return this.db.transaction(async (tx) => {
-      await tx.insert(features).values({ id, state: 'backlog', dispatchHold: false });
-      await this.appendTx(tx, 'feature', id, 'feature.created', input.actorId, {});
-      return { id, state: 'backlog' as const, dispatchHold: false };
+      const taken = await tx.select().from(projects).where(eq(projects.slug, slug)).limit(1);
+      if (taken[0]) throw new GuardFailedError(`project slug already taken: ${slug}`);
+      const row = {
+        id,
+        name: input.name,
+        slug,
+        kind: input.kind ?? 'mixed',
+        repoPath: input.repoPath ?? null,
+        defaultSpecFolder: input.defaultSpecFolder ?? null,
+        state: 'active',
+      };
+      await tx.insert(projects).values(row);
+      await this.appendTx(tx, 'project', id, 'project.created', input.actorId, {
+        name: input.name,
+        slug,
+        kind: row.kind,
+      });
+      return this.publicProject({ ...row, seq: 0 } as ProjectRow);
+    });
+  }
+
+  async getProject(input: { projectId: string }): Promise<Project> {
+    return this.publicProject(await this.mustGetProjectRow(input.projectId));
+  }
+
+  async listProjects(input?: { includeArchived?: boolean }): Promise<Project[]> {
+    const rows = await this.db.select().from(projects).orderBy(asc(projects.seq));
+    return rows
+      .filter((row) => input?.includeArchived === true || row.state === 'active')
+      .map((row) => this.publicProject(row));
+  }
+
+  async updateProject(input: {
+    actorId: string;
+    projectId: string;
+    name?: string;
+    kind?: ProjectKind;
+    repoPath?: string;
+    defaultSpecFolder?: string;
+  }): Promise<Project> {
+    const row = await this.mustGetProjectRow(input.projectId);
+    return this.db.transaction(async (tx) => {
+      const patch: Partial<ProjectRow> = {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.kind !== undefined ? { kind: input.kind } : {}),
+        ...(input.repoPath !== undefined ? { repoPath: input.repoPath } : {}),
+        ...(input.defaultSpecFolder !== undefined
+          ? { defaultSpecFolder: input.defaultSpecFolder }
+          : {}),
+      };
+      if (Object.keys(patch).length > 0) {
+        await tx.update(projects).set(patch).where(eq(projects.id, row.id));
+      }
+      await this.appendTx(tx, 'project', row.id, 'project.updated', input.actorId, { ...patch });
+      return this.publicProject({ ...row, ...patch });
+    });
+  }
+
+  async archiveProject(input: { actorId: string; projectId: string }): Promise<Project> {
+    const row = await this.mustGetProjectRow(input.projectId);
+    return this.db.transaction(async (tx) => {
+      await tx.update(projects).set({ state: 'archived' }).where(eq(projects.id, row.id));
+      await this.appendTx(tx, 'project', row.id, 'project.archived', input.actorId, {});
+      return this.publicProject({ ...row, state: 'archived' });
+    });
+  }
+
+  /** The compatibility floor: bare createFeature attaches here (lazy). */
+  private async defaultProjectRow(actorId: string): Promise<ProjectRow> {
+    const existing = await this.getProjectRow(DEFAULT_PROJECT_SLUG);
+    if (existing) return existing;
+    const created = await this.createProject({
+      actorId,
+      name: 'Default project',
+      slug: DEFAULT_PROJECT_SLUG,
+    });
+    return this.mustGetProjectRow(created.id);
+  }
+
+  async createFeature(input: {
+    actorId: string;
+    projectId?: string;
+    name?: string;
+  }): Promise<Feature> {
+    const project =
+      input.projectId !== undefined
+        ? await this.mustGetProjectRow(input.projectId)
+        : await this.defaultProjectRow(input.actorId);
+    if (project.state === 'archived') {
+      throw new GuardFailedError(`project is archived: ${project.slug}`);
+    }
+    const id = this.nextId('feat');
+    const name = input.name ?? null;
+    return this.db.transaction(async (tx) => {
+      await tx
+        .insert(features)
+        .values({ id, projectId: project.id, name, state: 'backlog', dispatchHold: false });
+      await this.appendTx(tx, 'feature', id, 'feature.created', input.actorId, {
+        projectId: project.id,
+        ...(name !== null ? { name } : {}),
+      });
+      return { id, projectId: project.id, name, state: 'backlog' as const, dispatchHold: false };
     });
   }
 
@@ -926,7 +1131,7 @@ export class PgEngine {
             and(
               eq(claims.workItemId, item.id),
               eq(claims.released, false),
-              lte(claims.leaseExpiresAt, this.now),
+              lte(claims.leaseExpiresAt, this.currentTime()),
             ),
           );
         // Monotonic fencing token per work item, consumed only on success
@@ -947,7 +1152,7 @@ export class PgEngine {
           workItemId: item.id,
           actorId: input.actorId,
           fencingToken: token,
-          leaseExpiresAt: this.now + ttlMs,
+          leaseExpiresAt: this.currentTime() + ttlMs,
           released: false,
           ttlMs,
         });
@@ -960,7 +1165,7 @@ export class PgEngine {
           workItemId: item.id,
           actorId: input.actorId,
           fencingToken: token,
-          leaseExpiresAt: this.now + ttlMs,
+          leaseExpiresAt: this.currentTime() + ttlMs,
           released: false,
         };
       });
@@ -974,13 +1179,13 @@ export class PgEngine {
 
   async heartbeat(input: { claimId: string }): Promise<void> {
     const row = (await this.db.select().from(claims).where(eq(claims.id, input.claimId)).limit(1))[0];
-    if (!row || row.released || row.leaseExpiresAt <= this.now) {
+    if (!row || row.released || row.leaseExpiresAt <= this.currentTime()) {
       throw new ConflictError(`claim ${input.claimId} is not live`);
     }
     // Heartbeat renews the FULL original TTL from the heartbeat moment.
     await this.db
       .update(claims)
-      .set({ leaseExpiresAt: this.now + row.ttlMs })
+      .set({ leaseExpiresAt: this.currentTime() + row.ttlMs })
       .where(eq(claims.id, row.id));
   }
 
@@ -1901,6 +2106,7 @@ export class PgEngine {
     kind: MemoryKind;
     content: string;
     sourceThreadId?: string;
+    projectId?: string;
   }): Promise<AgentMemory> {
     const actor = await this.getActorRow(input.actorId);
     if (!actor) throw new GuardFailedError(`unknown actor: ${input.actorId}`);
@@ -1918,6 +2124,9 @@ export class PgEngine {
       sourceThreadId = thread.id;
       sourceVisibility = thread.visibility as AgentMemory['sourceVisibility'];
     }
+    // D-H: a project-scoped lesson stays in its project; null = global craft.
+    const projectId =
+      input.projectId !== undefined ? (await this.mustGetProjectRow(input.projectId)).id : null;
     const id = this.nextId('mem');
     return this.db.transaction(async (tx) => {
       // Per-agent seq computed IN the transaction; UNIQUE(agent_actor_id, seq)
@@ -1934,6 +2143,7 @@ export class PgEngine {
         content: input.content,
         sourceThreadId,
         sourceVisibility,
+        projectId,
         seq,
       });
       // Content NEVER enters the shared event log — private learning must not
@@ -1950,6 +2160,7 @@ export class PgEngine {
         content: input.content,
         sourceThreadId,
         sourceVisibility,
+        projectId,
         seq,
       };
     });
@@ -1960,8 +2171,11 @@ export class PgEngine {
     contextThreadId?: string;
     kind?: MemoryKind;
     query?: string;
+    projectId?: string;
   }): Promise<AgentMemory[]> {
     // Owner-scoped by construction: there is no cross-actor parameter.
+    const projectId =
+      input.projectId !== undefined ? (await this.mustGetProjectRow(input.projectId)).id : undefined;
     const rows = await this.db
       .select()
       .from(agentMemories)
@@ -1971,6 +2185,8 @@ export class PgEngine {
       .filter((m) => {
         if (input.kind !== undefined && m.kind !== input.kind) return false;
         if (input.query !== undefined && !m.content.toLowerCase().includes(input.query.toLowerCase())) return false;
+        // D-H: scoped recall = that project + global; a sibling never leaks in.
+        if (projectId !== undefined && m.projectId !== null && m.projectId !== projectId) return false;
         // §6: nothing learned in a private thread surfaces outside its
         // source thread.
         if (m.sourceVisibility === 'private' && m.sourceThreadId !== input.contextThreadId) return false;
@@ -1987,6 +2203,7 @@ export class PgEngine {
       content: row.content,
       sourceThreadId: row.sourceThreadId,
       sourceVisibility: row.sourceVisibility as AgentMemory['sourceVisibility'],
+      projectId: row.projectId,
       seq: row.seq,
     };
   }
@@ -2081,13 +2298,28 @@ export class PgEngine {
   async listWorkItems(filter?: {
     state?: WorkItemState;
     featureId?: string;
+    projectId?: string;
     claimable?: boolean;
   }): Promise<WorkItem[]> {
+    const projectFeatureIds =
+      filter?.projectId !== undefined
+        ? new Set(
+            (
+              await this.db
+                .select({ id: features.id })
+                .from(features)
+                .where(
+                  eq(features.projectId, (await this.mustGetProjectRow(filter.projectId)).id),
+                )
+            ).map((row) => row.id),
+          )
+        : undefined;
     const rows = await this.db.select().from(workItems).orderBy(asc(workItems.seq));
     const result: WorkItem[] = [];
     for (const row of rows) {
       if (filter?.state !== undefined && row.state !== filter.state) continue;
       if (filter?.featureId !== undefined && row.featureId !== filter.featureId) continue;
+      if (projectFeatureIds !== undefined && !projectFeatureIds.has(row.featureId)) continue;
       if (filter?.claimable === true && (await this.liveClaim(row.id)) !== null) continue;
       result.push(this.publicItem(row));
     }
@@ -2113,7 +2345,10 @@ export class PgEngine {
             .from(claims)
             .where(eq(claims.released, false))
             .orderBy(asc(claims.seq));
-    return rows.map((row) => this.publicClaim(row));
+    return rows.map((row) => ({
+      ...this.publicClaim(row),
+      expired: !row.released && row.leaseExpiresAt <= this.currentTime(),
+    }));
   }
 
   async events(streamId?: string): Promise<SpineEvent[]> {

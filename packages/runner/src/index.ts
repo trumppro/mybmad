@@ -33,7 +33,7 @@ export { lintDoc, type DocLintResult, type LintDocOptions } from './doclint.js';
 // served through the rails with memory recall/learning, zero lifecycle calls.
 export { jobsLoop, runJobsOnce, type JobsOnceResult, type JobsRunnerOptions } from './jobs.js';
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -64,6 +64,11 @@ export interface RunnerOptions {
    * from EVERY backlog on the server — unsafe once a second project exists.
    */
   featureId?: string;
+  /**
+   * Only dispatch this PROJECT's work items (id or slug) — the Wave-2 way to
+   * bind a runner: one project = one repo, every feature included.
+   */
+  projectId?: string;
   /** Poll interval for workLoop (ms). Default 15_000. */
   pollMs?: number;
   /**
@@ -72,6 +77,14 @@ export interface RunnerOptions {
    * never the process.
    */
   backoffMs?: number;
+  /** Claim lease TTL passed to claim_task (ms). Default: the engine's 15 min. */
+  claimTtlMs?: number;
+  /**
+   * Lease heartbeat interval DURING the agent run (ms). Default 60_000 —
+   * comfortably inside the default TTL. D-G: a live runner never loses its
+   * lease; a dead one frees it after TTL.
+   */
+  heartbeatMs?: number;
   /**
    * Progress sink — dispatches, outcomes, transcripts, cycle failures.
    * Default: timestamped lines on stderr. A healthy runner narrates; silence
@@ -325,6 +338,37 @@ export function defaultRunnerLog(line: string): void {
   process.stderr.write(`[oahs-runner ${new Date().toISOString()}] ${line}\n`);
 }
 
+/**
+ * Async agent invocation (replaces spawnSync): the event loop stays free so
+ * lease heartbeats can fire DURING the run (D-G). SIGKILL on timeout keeps
+ * the old contract (status null → -1 at the call site).
+ */
+function runAgentCommand(
+  command: string,
+  opts: { cwd: string; timeoutMs: number; env: NodeJS.ProcessEnv },
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise) => {
+    const child = spawn('bash', ['-lc', command], { cwd: opts.cwd, env: opts.env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    const killer = setTimeout(() => child.kill('SIGKILL'), opts.timeoutMs);
+    child.on('error', () => {
+      clearTimeout(killer);
+      resolvePromise({ status: null, stdout, stderr });
+    });
+    child.on('close', (code) => {
+      clearTimeout(killer);
+      resolvePromise({ status: code, stdout, stderr });
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Steps 6–9: measure, submit raw evidence, route by HALT status
 // ---------------------------------------------------------------------------
@@ -483,6 +527,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
         state,
         claimable: true,
         ...(options.featureId !== undefined ? { featureId: options.featureId } : {}),
+        ...(options.projectId !== undefined ? { projectId: options.projectId } : {}),
       })
     ).filter((item) => item.blockedReason === null);
   let candidates = await listUnblocked('ready_for_dev');
@@ -492,7 +537,10 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
 
   let claim: Claim;
   try {
-    claim = await client.call<Claim>('claim_task', { workItemId: picked.id });
+    claim = await client.call<Claim>('claim_task', {
+      workItemId: picked.id,
+      ...(options.claimTtlMs !== undefined ? { ttlMs: options.claimTtlMs } : {}),
+    });
   } catch (error) {
     if (isRemoteError(error, 'ConflictError')) {
       log(`lost the claim race for ${picked.externalKey}`);
@@ -502,9 +550,29 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   }
   log(`dispatch ${picked.externalKey} (claim ${claim.id})`);
 
+  // D-G: keep the lease alive for the WHOLE dispatch (worktree plumbing,
+  // agent run, evidence, push). A dead runner stops heartbeating and its
+  // lease frees itself after TTL; heartbeat failures are logged, never fatal
+  // — the fencing token still guards every mutation.
+  const heartbeatTimer = setInterval(() => {
+    void client.call('heartbeat', { claimId: claim.id }).catch((error: unknown) => {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log(`heartbeat failed for claim ${claim.id}: ${err.message}`);
+    });
+  }, options.heartbeatMs ?? 60_000);
+
+  try {
+    return await runClaimed();
+  } finally {
+    clearInterval(heartbeatTimer);
+  }
+
+  // eslint-disable-next-line no-inner-declarations
+  async function runClaimed(): Promise<RunOnceResult> {
+
   const context = await client.call<{ workItem: WorkItem; entryState: WorkItemState }>(
     'get_task_context',
-    { workItemId: picked.id },
+    { workItemId: claim.workItemId },
   );
   const workItem = context.workItem;
   const specRel = join(options.specFolder, workItem.specPath);
@@ -625,11 +693,9 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     baseline,
     invocations: 1,
   });
-  const invoked = spawnSync('bash', ['-lc', command], {
+  const invoked = await runAgentCommand(command, {
     cwd: worktreeDir,
-    encoding: 'utf8',
-    timeout: options.agentTimeoutMs ?? 30 * 60 * 1000,
-    killSignal: 'SIGKILL',
+    timeoutMs: options.agentTimeoutMs ?? 30 * 60 * 1000,
     env: {
       ...process.env,
       ...options.agentEnv,
@@ -682,6 +748,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   removeWorktree(worktreeDir, repoPath);
   log(`${workItem.externalKey} → ${outcome}`);
   return { ...base, outcome };
+  }
 }
 
 // ---------------------------------------------------------------------------

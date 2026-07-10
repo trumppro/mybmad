@@ -44,12 +44,33 @@ CREATE TABLE IF NOT EXISTS gate_policies (
   policy JSONB NOT NULL
 );
 
+-- Phase 7 Wave 2 (D-E): the unit of parallel work.
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  seq SERIAL NOT NULL,
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'mixed',
+  repo_path TEXT,
+  default_spec_folder TEXT,
+  state TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS projects_slug ON projects (slug);
+
 CREATE TABLE IF NOT EXISTS features (
   id TEXT PRIMARY KEY,
   seq SERIAL NOT NULL,
+  project_id TEXT NOT NULL DEFAULT '',
+  name TEXT,
   state TEXT NOT NULL,
   dispatch_hold BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+-- Phase 7 Wave 2 upgrade path for durable data dirs created earlier:
+-- '' marks a pre-project feature; init() attaches it to the default project.
+ALTER TABLE features ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE features ADD COLUMN IF NOT EXISTS name TEXT;
 
 CREATE TABLE IF NOT EXISTS work_items (
   id TEXT PRIMARY KEY,
@@ -188,8 +209,12 @@ CREATE TABLE IF NOT EXISTS agent_memories (
   content TEXT NOT NULL,
   source_thread_id TEXT,
   source_visibility TEXT,
+  project_id TEXT,
   seq INTEGER NOT NULL
 );
+
+-- Phase 7 Wave 2 upgrade path: pre-project memories stay NULL (= global).
+ALTER TABLE agent_memories ADD COLUMN IF NOT EXISTS project_id TEXT;
 
 -- §6: per-agent memory order is a CONSTRAINT (1-based append order).
 CREATE UNIQUE INDEX IF NOT EXISTS agent_memories_agent_actor_id_seq

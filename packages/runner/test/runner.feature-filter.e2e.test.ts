@@ -191,4 +191,50 @@ describe('runner featureId scoping — two backlogs on one server', () => {
     const claimsA = await po.call<Claim[]>('get_claims', { workItemId: 'a-1' });
     expect(claimsA).toEqual([]);
   });
+
+  it('projectId scoping (Wave 2): a runner bound to project beta never claims alpha work', async () => {
+    // Two real PROJECTS on the same server (the W1 tests above live in the
+    // default project). Alpha's story is older → first in global order.
+    const alphaProj = await po.call<{ id: string }>('project_create', { name: 'Proj Alpha' });
+    const betaProj = await po.call<{ id: string; slug: string }>('project_create', {
+      name: 'Proj Beta',
+    });
+    const falpha = await po.call<Feature>('create_feature', { projectId: alphaProj.id });
+    const fbeta = await po.call<Feature>('create_feature', { projectId: betaProj.id });
+    await po.call('import_stories', {
+      featureId: falpha.id,
+      yaml: '- id: "pa-1"\n  title: Alpha proj story\n  description: x\n',
+    });
+    await po.call('import_stories', {
+      featureId: fbeta.id,
+      yaml: '- id: "pb-1"\n  title: Beta proj story\n  description: x\n',
+    });
+    for (const key of ['pa-1', 'pb-1']) {
+      await po.call('advance_state', { workItemId: key, to: 'draft' });
+      await po.call('approve_gate', {
+        workItemId: key,
+        gate: 'spec_approval',
+        pinnedVerification: ['node .oahs-verify.mjs'],
+      });
+    }
+    // The repo only carries specs under SPEC_FOLDER_B; write pb-1's spec.
+    const wi = await po.call<WorkItem>('get_work_item', { workItemId: 'pb-1' });
+    writeFileSync(
+      join(repoDir, SPEC_FOLDER_B, wi.specPath),
+      '---\nstatus: backlog\n---\n\n# Story pb-1\n',
+      'utf8',
+    );
+    git(['add', '-A'], repoDir);
+    git(
+      ['-c', 'user.name=S', '-c', 'user.email=s@t.local', 'commit', '-m', 'pb-1 spec'],
+      repoDir,
+    );
+
+    const result = await runOnce(runnerOptions({ projectId: betaProj.slug }));
+    expect(result.dispatched).toBe(true);
+    expect(result.externalKey).toBe('pb-1');
+
+    const claimsAlpha = await po.call<Claim[]>('get_claims', { workItemId: 'pa-1' });
+    expect(claimsAlpha).toEqual([]);
+  });
 });

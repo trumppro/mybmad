@@ -52,14 +52,17 @@ export async function startServe(options: ServeOptions = {}): Promise<ServeHandl
   let engineKind: ServeHandle['engineKind'];
   let engine;
   let tokenStore: TokenStore;
+  // D-G: a SERVED spine always runs wall-clock leases — a crashed runner's
+  // claim frees itself after TTL. (The logical clock stays the conformance
+  // default; only serve opts in.)
   if (options.dataDir !== undefined) {
     mkdirSync(options.dataDir, { recursive: true });
     const { createPgSyncEngine } = await import('@oahs/db');
-    engine = createPgSyncEngine({ dataDir: join(options.dataDir, 'pg') });
+    engine = createPgSyncEngine({ dataDir: join(options.dataDir, 'pg'), wallClock: true });
     tokenStore = new TokenStore({ persistPath: join(options.dataDir, 'tokens.json') });
     engineKind = 'pglite';
   } else {
-    engine = createMemoryEngine();
+    engine = createMemoryEngine({ wallClock: true });
     tokenStore = new TokenStore();
     engineKind = 'memory';
   }

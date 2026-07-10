@@ -66,4 +66,17 @@ describe('listClaims — the workspace-wide claims view', () => {
     expect(all.map((c) => c.id)).toEqual([claimA.id]);
     expect(all[0]!.released).toBe(true);
   });
+
+  it('marks EXPIRED leases: unreleased but past TTL by the ENGINE clock (both modes)', () => {
+    const rig = makeRig();
+    rig.engine.claimTask({ workItemId: rig.a.id, actorId: rig.dev.id, ttlMs: 100 });
+    expect(rig.engine.listClaims()[0]!.expired).toBe(false);
+
+    // The logical clock decides — the same computation a wall-clock engine
+    // does against real time, so the view is correct in BOTH modes.
+    rig.engine.advanceClock(200);
+    const after = rig.engine.listClaims();
+    expect(after).toHaveLength(1); // dead-but-unreleased is exactly what ops must SEE
+    expect(after[0]!.expired).toBe(true);
+  });
 });
