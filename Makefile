@@ -3,7 +3,8 @@
 # TypeScript is gated by `typecheck` (tsc); eslint config covers the repo's JS.
 
 OAHS_PORT ?= 4521
-DATA_DIR  ?= .oahs/data
+# Operator state lives OUTSIDE the checkout (matches the CLI default).
+DATA_DIR  ?= $(HOME)/.oahs/data
 OAHS      := --filter "@oahs/*"
 COMPOSE   := docker compose
 

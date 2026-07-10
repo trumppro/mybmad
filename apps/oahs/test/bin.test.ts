@@ -34,7 +34,7 @@ describe('bin/oahs.mjs (esbuild bundle)', () => {
   it('--help exits 0 and lists the commands', async () => {
     // execFile rejects on a non-zero exit — resolving IS the exit-0 assertion.
     const { stdout } = await run(process.execPath, [bin, '--help']);
-    for (const command of ['serve', 'inbox', 'approve', 'reject', 'status', 'actor', 'grant', 'feature', 'import', 'events', 'work']) {
+    for (const command of ['serve', 'inbox', 'approve', 'reject', 'status', 'actor', 'grant', 'feature', 'import', 'events', 'work', 'whoami', 'claim', 'token']) {
       expect(stdout).toContain(command);
     }
   });
@@ -43,6 +43,18 @@ describe('bin/oahs.mjs (esbuild bundle)', () => {
     const result = await runExpectingFailure(['inbox'], { ...process.env, OAHS_TOKEN: '' });
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('missing token');
+  });
+
+  it('oahs work accepts --feature: the multi-project scoping flag parses', async () => {
+    // Same dead-URL shape as the failure test below — the point is that the
+    // flag is a known option (no commander "unknown option" error).
+    const result = await runExpectingFailure([
+      'work', '--repo', '.', '--spec-folder', 'spec', '--agent-cmd', 'echo x', '--once',
+      '--feature', 'feat_000001',
+      '--url', 'http://127.0.0.1:1', '--token', 'irrelevant',
+    ]);
+    expect(result.stderr).not.toContain('unknown option');
+    expect(result.stderr).toContain('oahs work failed');
   });
 
   it('oahs work surfaces runner failures clearly (lazy import, exit 1)', async () => {

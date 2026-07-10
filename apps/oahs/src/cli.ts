@@ -4,8 +4,8 @@
  * src/serve.ts; the worker loop lives in @oahs/runner and is imported LAZILY
  * so the rest of the CLI works while the runner is still landing (story 14).
  *
- * Env is read here and only here: OAHS_TOKEN (client auth) and
- * OAHS_ADMIN_TOKEN (serve bootstrap).
+ * Env is read here and only here: OAHS_TOKEN (client auth), OAHS_URL (client
+ * base URL), OAHS_ADMIN_TOKEN (serve bootstrap), OAHS_DATA (serve data dir).
  */
 import { resolve } from 'node:path';
 
@@ -20,6 +20,8 @@ import {
   adviseReconcileCommand,
   approveCommand,
   authzCommand,
+  claimLsCommand,
+  claimReleaseCommand,
   doclintCommand,
   eventsCommand,
   featureCreateCommand,
@@ -49,11 +51,13 @@ import {
   statusCommand,
   threadCreateCommand,
   threadListCommand,
+  tokenListCommand,
+  tokenReissueCommand,
+  whoamiCommand,
 } from './commands/index.js';
 import { runBrain } from './agent-brain.js';
+import { defaultUrl, resolveDataDir } from './cli-config.js';
 import { DEFAULT_PORT, startServe } from './serve.js';
-
-const DEFAULT_URL = `http://localhost:${DEFAULT_PORT}`;
 
 interface ClientFlags {
   url: string;
@@ -71,7 +75,7 @@ function clientFrom(flags: ClientFlags): OahsClient {
 /** Attach the shared client flags to a gate-holder command. */
 function withClientFlags(cmd: Command): Command {
   return cmd
-    .option('--url <url>', 'spine-api base URL', DEFAULT_URL)
+    .option('--url <url>', 'spine-api base URL (default: env OAHS_URL, else localhost:4521)', defaultUrl())
     .option('--token <token>', 'bearer token (default: env OAHS_TOKEN)');
 }
 
@@ -97,21 +101,23 @@ export function buildProgram(): Command {
   // -- serve ------------------------------------------------------------------
   program
     .command('serve')
-    .description('start the spine-api (HTTP /rpc/* + MCP /mcp)')
+    .description('start the spine-api (HTTP /rpc/* + MCP /mcp; durable by default)')
     .option('--port <port>', 'TCP port', String(DEFAULT_PORT))
     .option('--admin-token <token>', 'bootstrap admin token (default: env OAHS_ADMIN_TOKEN, else generated)')
-    .option('--data <dir>', 'persistence directory (durable PGlite + token store)')
-    .action(async (opts: { port: string; adminToken?: string; data?: string }) => {
+    .option('--data <dir>', 'persistence directory (default: env OAHS_DATA, else ~/.oahs/data)')
+    .option('--ephemeral', 'in-memory engine — ALL state is lost on exit')
+    .action(async (opts: { port: string; adminToken?: string; data?: string; ephemeral?: boolean }) => {
       try {
         const adminToken = opts.adminToken ?? process.env['OAHS_ADMIN_TOKEN'];
+        const dataDir = resolveDataDir(opts);
         const handle = await startServe({
           port: Number(opts.port),
           ...(adminToken !== undefined && adminToken.length > 0 ? { adminToken } : {}),
-          ...(opts.data !== undefined ? { dataDir: resolve(opts.data) } : {}),
+          ...(dataDir !== undefined ? { dataDir } : {}),
         });
         process.stdout.write(
           `oahs spine-api listening on :${handle.port} (HTTP /rpc/*, MCP /mcp; engine: ${handle.engineKind}${
-            opts.data !== undefined ? `, data: ${resolve(opts.data)}` : ''
+            dataDir !== undefined ? `, data: ${dataDir}` : ' — EPHEMERAL, state lost on exit'
           })\n`,
         );
         if (handle.adminTokenGenerated) {
@@ -492,12 +498,47 @@ export function buildProgram(): Command {
       ),
     );
 
+  // -- ops (Phase 7 Wave 1): identity, claims view, token recovery ---------------
+  withClientFlags(program.command('whoami'))
+    .description('which actor is this token (actorId + isAdmin)')
+    .action(async (opts: ClientFlags) => emit(() => whoamiCommand(clientFrom(opts))));
+
+  const claim = program.command('claim').description('claims ops: what is being worked on, and freeing stuck leases');
+  withClientFlags(claim.command('ls'))
+    .description('live claims across ALL work items (story handle, holder, fencing token)')
+    .option('--released', 'include released claims (history view)')
+    .action(async (opts: ClientFlags & { released?: boolean }) =>
+      emit(() =>
+        claimLsCommand(clientFrom(opts), opts.released === true ? { released: true } : {}),
+      ),
+    );
+  withClientFlags(claim.command('release <workItemId>'))
+    .description('force-release EVERY live claim on a work item (dead-runner recovery)')
+    .requiredOption('--force', 'confirm: this frees another actor’s live lease')
+    .action(async (workItemId: string, opts: ClientFlags & { force: boolean }) =>
+      emit(() => claimReleaseCommand(clientFrom(opts), { workItemId })),
+    );
+
+  const token = program.command('token').description('token recovery (admin): inventory + reissue');
+  withClientFlags(token.command('list'))
+    .description('issued-token inventory — actor ids and counts, never secrets')
+    .action(async (opts: ClientFlags) => emit(() => tokenListCommand(clientFrom(opts))));
+  withClientFlags(token.command('reissue <actorId>'))
+    .description('revoke an actor’s tokens and print ONE fresh token (lost-credential recovery)')
+    .action(async (actorId: string, opts: ClientFlags) =>
+      emit(() => tokenReissueCommand(clientFrom(opts), { actorId })),
+    );
+
   // -- work (runner handoff; @oahs/runner lands with story 14) -------------------
   withClientFlags(program.command('work'))
     .description('run the BYO worker loop (coding) or --jobs: the teammate jobs loop (reply-only, roadmap §6)')
     .option('--jobs', 'serve reply-only agent jobs for THIS token’s agent (mention-dispatch, zero lifecycle authority)')
     .option('--repo <path>', 'target project git checkout (coding mode)')
     .option('--spec-folder <rel>', 'spec folder relative to the repo root (coding mode)')
+    .option(
+      '--feature <featureId>',
+      'only dispatch this feature’s work items — REQUIRED practice once a second backlog shares the server (coding mode)',
+    )
     .requiredOption(
       '--agent-cmd <template>',
       'agent command template (coding: {SPEC_FOLDER} {STORY_ID} {INVOKE_WITH} {WORKTREE}; jobs: {CONTEXT_FILE} {REPLY_FILE} {THREAD_ID} {JOB_ID})',
@@ -510,6 +551,7 @@ export function buildProgram(): Command {
           jobs?: boolean;
           repo?: string;
           specFolder?: string;
+          feature?: string;
           agentCmd: string;
           once?: boolean;
           poll?: string;
@@ -541,6 +583,7 @@ export function buildProgram(): Command {
             repoPath: resolve(opts.repo),
             specFolder: opts.specFolder,
             agentCmd: opts.agentCmd,
+            ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),
             ...(opts.poll !== undefined ? { pollMs: Number(opts.poll) } : {}),
             ...(opts.once === true ? { once: true } : {}),
           });

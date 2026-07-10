@@ -217,13 +217,20 @@ The worker deepens (thesis): teammates on [Hermes](https://github.com/nousresear
 
 ---
 
-## §7 Enterprise
+## §7 Enterprise — DEFERRED INDEFINITELY (superseded by "Cockpit")
 
-What makes procurement say yes, sequenced last because none of it is retrofit if §1 is built right:
+> **2026-07 reposition:** the operator's priority is parallel projects for ONE
+> person on one spine — not procurement. Phase 7 is now **Cockpit** (project
+> entity above feature, wall-clock leases + heartbeat, portfolio UI, profile
+> store + init wizard + runner supervisor), delivered in 4 waves; Wave 1
+> (correctness + ops recovery) is in. The items below stay recorded for a
+> future enterprise turn but are not sequenced.
+
+What makes procurement say yes, none of it retrofit if §1 is built right:
 
 - **SSO/SCIM**: OIDC first; identities are already a separate table so SCIM is an adapter.
 - **Audit export**: the event log (§1.5) exports as JSONL with async hash-chaining — tamper-evidence formalized at export, not bought with hot-path locks. Approval signatures (per-agent keys, optional step-up auth for humans) arrive here.
-- **Multi-tenancy**: `workspace_id` has been on every table since the first migration; RLS turns on here. Self-host = the same docker-compose-able stack with a signed license file acting as the plan layer. The BYO posture is itself a regulated-buyer feature: code and artifacts never leave the customer's infrastructure; the spine holds lifecycle metadata, messages, and evidence hashes.
+- **Multi-tenancy**: RLS would turn on here. **Truth note (2026-07): `workspace_id` does NOT yet exist on any table** — earlier drafts claimed it was there since the first migration; the schema is single-workspace today, and multi-project arrives as a first-class `project` entity (Cockpit Wave 2), not tenant columns. Self-host = the same docker-compose-able stack with a signed license file acting as the plan layer. The BYO posture is itself a regulated-buyer feature: code and artifacts never leave the customer's infrastructure; the spine holds lifecycle metadata, messages, and evidence hashes.
 - The thesis's open business decisions (pricing, hosting, vendor posture) get closed here at the latest.
 
 ---

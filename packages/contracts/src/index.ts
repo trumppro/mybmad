@@ -445,7 +445,24 @@ export const COMMANDS = [
     true,
   ),
   def('get_claims', 'All claims (live and released) of a work item.', z.object({ workItemId }), true),
+  def(
+    'list_claims',
+    'Workspace-wide claims view — live only by default; includeReleased for history.',
+    z.object({ includeReleased: z.boolean().optional() }),
+    true,
+  ),
   def('whoami', 'Resolve the authenticated actor.', z.object({}), true),
+  def(
+    'list_tokens',
+    'ADMIN: issued-token inventory (actor id + count) — hashes stay server-side, secrets are never returned.',
+    z.object({}),
+    true,
+  ),
+  def(
+    'reissue_token',
+    'ADMIN: revoke an actor’s issued tokens and return one fresh token (lost-credential recovery).',
+    z.object({ actorId: z.string() }),
+  ),
 ] as const;
 
 export type CommandName = (typeof COMMANDS)[number]['name'];

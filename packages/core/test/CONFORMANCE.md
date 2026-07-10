@@ -73,3 +73,10 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 - `streamSeq` is 1-based and gap-free per stream; which setup commands emit work-item events is unpinned (tests count deltas, not absolutes).
 - System-actor authorship (epic-lift, loopback) is asserted structurally: event `actorId` differs from every fixture-created actor and carries a `causationId`.
 - `stateVersion` is pinned strictly monotonic, not +1-per-mutation.
+
+### Phase 7 Wave 1 — listClaims (`list-claims.test.ts`, additive)
+- `listClaims()` is the workspace-wide claims view: **live (unreleased) claims only by default**, each carrying its `workItemId`; `includeReleased: true` is the history view. Read-only — grants unchanged, no event appended. The per-item `getClaims` keeps its exact Phase-1 meaning.
+
+### Phase 7 Wave 1 — event timestamps (`event-timestamps.test.ts`, additive)
+- Every appended event carries **`occurredAt`: wall-clock ms stamped at append**, monotonically non-decreasing in `globalSeq` order. Pinned with wall-time *bounds* (not clock injection) so the identical suite runs against the memory engine and the worker-thread PGlite facade.
+- `occurredAt` is **observational audit metadata only**: no guard, transition, lease, or entitlement decision may read it — the engine's logical clock (`advanceClock`) stays the only time source for lease logic. Rows persisted before this pin default to `0`.

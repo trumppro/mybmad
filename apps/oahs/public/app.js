@@ -1129,15 +1129,17 @@
             const full = JSON.stringify(event.payload);
             const payload = el("span", void 0, full.length > 100 ? `${full.slice(0, 100)}\u2026` : full);
             payload.title = full;
+            const when = event.occurredAt > 0 ? new Date(event.occurredAt).toISOString().replace(/\.\d{3}Z$/, "Z") : "\u2014";
             return [
               String(event.globalSeq),
+              when,
               `${event.streamType} ${event.streamId}`,
               event.type,
               event.actorId,
               payload
             ];
           });
-          body.appendChild(table(["Seq", "Stream", "Type", "Actor", "Payload"], rows));
+          body.appendChild(table(["Seq", "When", "Stream", "Type", "Actor", "Payload"], rows));
         });
       }
       reload();

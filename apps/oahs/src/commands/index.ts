@@ -14,6 +14,7 @@ import {
   WORK_ITEM_STATES,
   type Actor,
   type AuthzExplanation,
+  type Claim,
   type Feature,
   type GateCode,
   type GovernanceRole,
@@ -267,15 +268,107 @@ export async function eventsCommand(
     'query_events',
     opts.streamId !== undefined ? { streamId: opts.streamId } : {},
   );
+  // The audit must answer WHEN and WHAT in place — a query, not an interview.
+  // occurredAt 0 = row persisted before timestamps existed (Phase 7 Wave 1).
+  const when = (ms: number): string =>
+    ms > 0 ? new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z') : '—';
+  const compact = (payload: Record<string, unknown>): string => {
+    const json = JSON.stringify(payload);
+    return json.length > 120 ? `${json.slice(0, 119)}…` : json;
+  };
   return renderTable(
-    ['seq', 'type', 'stream', 'actor'],
+    ['seq', 'when', 'type', 'stream', 'actor', 'payload'],
     events.map((event) => [
       event.globalSeq,
+      when(event.occurredAt),
       event.type,
       `${event.streamType}/${event.streamId}#${event.streamSeq}`,
       event.actorId,
+      compact(event.payload),
     ]),
   );
+}
+
+// ---------------------------------------------------------------------------
+// ops (Phase 7 Wave 1) — whoami / claim ls / claim release / token recovery
+// ---------------------------------------------------------------------------
+
+export async function whoamiCommand(client: OahsClient): Promise<string> {
+  const me = await client.call<{ actorId: string; isAdmin: boolean }>('whoami');
+  return [`actorId: ${me.actorId}`, `isAdmin: ${String(me.isAdmin)}`].join('\n');
+}
+
+export interface ClaimLsOptions {
+  /** Include released claims (history view). */
+  released?: boolean;
+}
+
+export async function claimLsCommand(
+  client: OahsClient,
+  opts: ClaimLsOptions = {},
+): Promise<string> {
+  const claims = await client.call<Claim[]>(
+    'list_claims',
+    opts.released === true ? { includeReleased: true } : {},
+  );
+  if (claims.length === 0) return opts.released === true ? 'no claims' : 'no live claims';
+  // Humans address stories by handle, not internal id — resolve each claim's
+  // work item (a handful of extra queries on a human-paced command).
+  const rows = await Promise.all(
+    claims.map(async (claim): Promise<Cell[]> => {
+      let story = claim.workItemId;
+      let state = '?';
+      try {
+        const item = await client.call<WorkItem>('get_work_item', { workItemId: claim.workItemId });
+        story = item.externalKey;
+        state = item.state;
+      } catch {
+        /* a claim on a vanished item still renders by id */
+      }
+      return [
+        claim.id,
+        story,
+        state,
+        claim.actorId,
+        claim.fencingToken,
+        claim.released ? 'released' : 'LIVE',
+      ];
+    }),
+  );
+  return renderTable(['claim', 'story', 'state', 'actor', 'fencing', 'status'], rows);
+}
+
+export async function claimReleaseCommand(
+  client: OahsClient,
+  opts: { workItemId: string },
+): Promise<string> {
+  const result = await client.call<{ released: string[] }>('force_release_claim', {
+    workItemId: opts.workItemId,
+  });
+  return `released: ${result.released.join(', ')}`;
+}
+
+export async function tokenListCommand(client: OahsClient): Promise<string> {
+  const inventory = await client.call<Array<{ actorId: string; tokens: number }>>('list_tokens');
+  if (inventory.length === 0) return 'no issued tokens';
+  return renderTable(
+    ['actor', 'tokens'],
+    inventory.map((row) => [row.actorId, row.tokens]),
+  );
+}
+
+export async function tokenReissueCommand(
+  client: OahsClient,
+  opts: { actorId: string },
+): Promise<string> {
+  const result = await client.call<{ actorId: string; token: string }>('reissue_token', {
+    actorId: opts.actorId,
+  });
+  return [
+    `actorId: ${result.actorId}`,
+    `token: ${result.token}`,
+    'old tokens are revoked; store this one now — it is shown exactly once',
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------

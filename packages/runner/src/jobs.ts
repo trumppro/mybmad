@@ -37,6 +37,8 @@ import { join } from 'node:path';
 import type { OahsClient } from '@oahs/contracts';
 import type { AgentJob, AgentMemory, Message } from '@oahs/core';
 
+import { defaultRunnerLog } from './index.js';
+
 export interface JobsRunnerOptions {
   client: OahsClient;
   /** The agent actor this runtime serves — its OWN jobs, nobody else's. */
@@ -50,6 +52,11 @@ export interface JobsRunnerOptions {
   agentTimeoutMs?: number;
   /** Extra environment variables passed to the agent invocation. */
   agentEnv?: Record<string, string>;
+  /**
+   * Progress sink — handled jobs, outcomes, cycle failures. Default:
+   * timestamped lines on stderr (same seam as the coding loop).
+   */
+  log?: (line: string) => void;
 }
 
 export interface JobsOnceResult {
@@ -76,6 +83,7 @@ function isRemoteError(error: unknown, name: string): boolean {
 
 export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceResult> {
   const { client, agentActorId } = options;
+  const log = options.log ?? defaultRunnerLog;
 
   // 1 — poll: this agent's queued jobs only; take the first.
   const queued = await client.call<AgentJob[]>('list_agent_jobs', {
@@ -84,6 +92,7 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
   });
   const job = queued[0];
   if (job === undefined) return { handled: false };
+  log(`job ${job.id} picked up (thread ${job.threadId})`);
 
   // 2 — read the thread THROUGH the rails. 403 = the agent may not see this
   // context (private thread, never invited) → blocked, note only. No retry,
@@ -143,6 +152,8 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
     const reply = existsSync(replyFile) ? readFileSync(replyFile, 'utf8').trim() : '';
     if (reply === '') {
       const note = `agent wrote no reply (exit ${String(invoked.status ?? -1)})`;
+      const stderrHead = (invoked.stderr ?? '').trim().slice(0, 300);
+      log(`job ${job.id} → blocked: ${note}${stderrHead !== '' ? ` — stderr: ${stderrHead}` : ''}`);
       await client.call('complete_agent_job', { jobId: job.id, status: 'blocked', note });
       return { handled: true, jobId: job.id, outcome: 'blocked', details: note };
     }
@@ -171,33 +182,68 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
       /* learning is additive, never load-bearing */
     }
 
+    log(`job ${job.id} → done (replied in thread ${job.threadId})`);
     return { handled: true, jobId: job.id, outcome: 'done' };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-/** Run until stopped: poll → runJobsOnce → sleep(pollMs). SIGINT exits cleanly. */
+/**
+ * Run until stopped: poll → runJobsOnce → sleep(pollMs). SIGINT exits cleanly.
+ * A FAILED cycle is logged and backed off, never fatal (same contract as
+ * workLoop); `--once` keeps script semantics: the error propagates.
+ */
 export async function jobsLoop(
-  options: JobsRunnerOptions & { pollMs?: number; once?: boolean },
+  options: JobsRunnerOptions & {
+    pollMs?: number;
+    /** Base backoff after a failed cycle (ms), doubling, capped 32×. Default 5_000. */
+    backoffMs?: number;
+    once?: boolean;
+    /** TEST ONLY: extra loop-exit condition, checked after every cycle. */
+    stopWhen?: () => boolean;
+  },
 ): Promise<void> {
+  const log = options.log ?? defaultRunnerLog;
+  const opts = { ...options, log };
+  const backoffMs = options.backoffMs ?? 5_000;
   let stopped = false;
   let wake: (() => void) | undefined;
   const onSigint = (): void => {
     stopped = true;
     wake?.();
   };
+  const sleep = async (ms: number): Promise<void> => {
+    await new Promise<void>((resolveSleep) => {
+      wake = resolveSleep;
+      setTimeout(resolveSleep, ms);
+    });
+    wake = undefined;
+  };
   process.once('SIGINT', onSigint);
+  let consecutiveFailures = 0;
   try {
     for (;;) {
-      const result = await runJobsOnce(options);
-      if (options.once === true || stopped) return;
+      let result;
+      try {
+        result = await runJobsOnce(opts);
+        consecutiveFailures = 0;
+      } catch (error) {
+        if (options.once === true) throw error;
+        consecutiveFailures += 1;
+        const err = error instanceof Error ? error : new Error(String(error));
+        const delay = Math.min(backoffMs * 2 ** (consecutiveFailures - 1), backoffMs * 32);
+        log(
+          `cycle failed (${consecutiveFailures} in a row): ${err.name}: ${err.message} — retrying in ${delay}ms`,
+        );
+        if (stopped || options.stopWhen?.() === true) return;
+        await sleep(delay);
+        if (stopped) return;
+        continue;
+      }
+      if (options.once === true || stopped || options.stopWhen?.() === true) return;
       if (!result.handled) {
-        await new Promise<void>((resolveSleep) => {
-          wake = resolveSleep;
-          setTimeout(resolveSleep, options.pollMs ?? 15_000);
-        });
-        wake = undefined;
+        await sleep(options.pollMs ?? 15_000);
         if (stopped) return;
       }
     }

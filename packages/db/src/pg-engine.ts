@@ -274,6 +274,7 @@ export class PgEngine {
       .from(events)
       .where(eq(events.streamId, streamId));
     const streamSeq = Number(row?.maxSeq ?? 0) + 1;
+    const occurredAt = Date.now(); // observational only — never a guard input
     const inserted = await tx
       .insert(events)
       .values({
@@ -283,6 +284,7 @@ export class PgEngine {
         type,
         actorId,
         payload,
+        occurredAt,
         causationId: extra?.causationId ?? null,
         idempotencyKey: extra?.idempotencyKey ?? null,
       })
@@ -297,6 +299,7 @@ export class PgEngine {
       type,
       actorId,
       payload,
+      occurredAt,
       ...(extra?.causationId !== undefined ? { causationId: extra.causationId } : {}),
     };
   }
@@ -503,6 +506,7 @@ export class PgEngine {
       type: row.type,
       actorId: row.actorId,
       payload: row.payload,
+      occurredAt: Number(row.occurredAt), // pre-Phase-7 rows default to 0
       ...(row.causationId !== null ? { causationId: row.causationId } : {}),
     };
   }
@@ -2097,6 +2101,18 @@ export class PgEngine {
       .from(claims)
       .where(eq(claims.workItemId, item.id))
       .orderBy(asc(claims.seq));
+    return rows.map((row) => this.publicClaim(row));
+  }
+
+  async listClaims(input?: { includeReleased?: boolean }): Promise<Claim[]> {
+    const rows =
+      input?.includeReleased === true
+        ? await this.db.select().from(claims).orderBy(asc(claims.seq))
+        : await this.db
+            .select()
+            .from(claims)
+            .where(eq(claims.released, false))
+            .orderBy(asc(claims.seq));
     return rows.map((row) => this.publicClaim(row));
   }
 

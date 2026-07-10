@@ -59,8 +59,25 @@ export interface RunnerOptions {
    * {INVOKE_WITH} {WORKTREE}. Executed with cwd = the claim worktree.
    */
   agentCmd: string;
+  /**
+   * Only dispatch work items of this feature. Without it the runner claims
+   * from EVERY backlog on the server — unsafe once a second project exists.
+   */
+  featureId?: string;
   /** Poll interval for workLoop (ms). Default 15_000. */
   pollMs?: number;
+  /**
+   * Base backoff after a FAILED loop cycle (ms), doubling per consecutive
+   * failure, capped at 32×. Default 5_000. A network blip must cost a pause,
+   * never the process.
+   */
+  backoffMs?: number;
+  /**
+   * Progress sink — dispatches, outcomes, transcripts, cycle failures.
+   * Default: timestamped lines on stderr. A healthy runner narrates; silence
+   * meant "unattended overnight death was invisible" (Phase 7 Wave 1).
+   */
+  log?: (line: string) => void;
   /** Binaries pinned verification commands may start with. */
   verificationAllowlist?: string[];
   /** Git remote to push claim branches to. Default 'origin'. */
@@ -303,6 +320,11 @@ function isRemoteError(error: unknown, name: string): boolean {
   );
 }
 
+/** Default progress sink: timestamped lines on stderr (stdout stays clean). */
+export function defaultRunnerLog(line: string): void {
+  process.stderr.write(`[oahs-runner ${new Date().toISOString()}] ${line}\n`);
+}
+
 // ---------------------------------------------------------------------------
 // Steps 6–9: measure, submit raw evidence, route by HALT status
 // ---------------------------------------------------------------------------
@@ -322,6 +344,8 @@ interface FinishArgs {
   allowlist: readonly string[];
   /** null when adopting (the agent was invoked by the crashed run). */
   agentExitCode: number | null;
+  /** Teed agent transcript path — absent on the adopt path (no fresh run). */
+  agentLogPath?: string;
   submit: (kind: Evidence['kind'], payload: Record<string, unknown>) => Promise<void>;
 }
 
@@ -335,6 +359,7 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
     blockingCondition: spec.blockingCondition,
     autoRunResult: spec.autoRunResult,
     agentExitCode: args.agentExitCode,
+    ...(args.agentLogPath !== undefined ? { agentLogPath: args.agentLogPath } : {}),
   });
 
   // 7 — pinned verification only; the allowlist gates what ever gets executed.
@@ -445,6 +470,7 @@ function scanOldWorktrees(root: string, workItemId: string, specRel: string): Wo
 
 export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   const { client } = options;
+  const log = options.log ?? defaultRunnerLog;
   const repoPath = resolve(options.repoPath);
   const remote = options.remote ?? 'origin';
   const allowlist = options.verificationAllowlist ?? DEFAULT_VERIFICATION_ALLOWLIST;
@@ -452,9 +478,13 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   // 1 — poll. Order of the API response = import order; take the first.
   // Fallback: an in_progress item with no live claim is a crashed dispatch.
   const listUnblocked = async (state: WorkItemState): Promise<WorkItem[]> =>
-    (await client.call<WorkItem[]>('list_work_items', { state, claimable: true })).filter(
-      (item) => item.blockedReason === null,
-    );
+    (
+      await client.call<WorkItem[]>('list_work_items', {
+        state,
+        claimable: true,
+        ...(options.featureId !== undefined ? { featureId: options.featureId } : {}),
+      })
+    ).filter((item) => item.blockedReason === null);
   let candidates = await listUnblocked('ready_for_dev');
   if (candidates.length === 0) candidates = await listUnblocked('in_progress');
   const picked = candidates[0];
@@ -465,10 +495,12 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     claim = await client.call<Claim>('claim_task', { workItemId: picked.id });
   } catch (error) {
     if (isRemoteError(error, 'ConflictError')) {
+      log(`lost the claim race for ${picked.externalKey}`);
       return { dispatched: false, details: `lost the claim race for ${picked.externalKey}` };
     }
     throw error;
   }
+  log(`dispatch ${picked.externalKey} (claim ${claim.id})`);
 
   const context = await client.call<{ workItem: WorkItem; entryState: WorkItemState }>(
     'get_task_context',
@@ -533,6 +565,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
       agentExitCode: null,
     });
     removeWorktree(dir, repoPath);
+    log(`${workItem.externalKey} → ${outcome === 'in_review' ? 'adopted_in_review' : outcome} (adopted ${dir})`);
     return {
       ...base,
       outcome: outcome === 'in_review' ? 'adopted_in_review' : outcome,
@@ -549,6 +582,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
       fencingToken: claim.fencingToken,
     });
     await client.call('release_claim', { claimId: claim.id, reason: 'stale worktree cleaned' });
+    log(`${workItem.externalKey} → blocked (stale worktree cleaned)`);
     return { ...base, outcome: 'blocked', details: 'stale worktree cleaned; task blocked' };
   }
 
@@ -605,6 +639,28 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   });
   const agentExitCode = invoked.status ?? -1;
 
+  // Tee the agent transcript OUTSIDE the worktree (which is removed on
+  // success) so a run stays auditable after the fact. `.oahs/` is already in
+  // the repo's git excludes.
+  const logsDir = join(repoPath, '.oahs', 'logs');
+  mkdirSync(logsDir, { recursive: true });
+  const agentLogPath = join(logsDir, `${claim.id}.log`);
+  writeFileSync(
+    agentLogPath,
+    [
+      `# oahs agent transcript — story ${workItem.externalKey}, claim ${claim.id}`,
+      `# command: ${command}`,
+      `# exit: ${agentExitCode}`,
+      '--- stdout ---',
+      invoked.stdout ?? '',
+      '--- stderr ---',
+      invoked.stderr ?? '',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  log(`agent exited ${agentExitCode} for ${workItem.externalKey} (transcript: ${agentLogPath})`);
+
   // TEST ONLY: simulate dying after the agent committed, before any report.
   // No evidence, no advance, no release — the claim stays live, the worktree
   // stays on disk; a later claim adopts or cleans it (step 10).
@@ -621,8 +677,10 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     workDir: worktreeDir,
     baseline,
     agentExitCode,
+    agentLogPath,
   });
   removeWorktree(worktreeDir, repoPath);
+  log(`${workItem.externalKey} → ${outcome}`);
   return { ...base, outcome };
 }
 
@@ -630,25 +688,59 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
 // workLoop — poll → runOnce → sleep
 // ---------------------------------------------------------------------------
 
-/** Run until stopped: poll → runOnce → sleep(pollMs). SIGINT exits cleanly. */
-export async function workLoop(options: RunnerOptions & { once?: boolean }): Promise<void> {
+/**
+ * Run until stopped: poll → runOnce → sleep(pollMs). SIGINT exits cleanly.
+ * A FAILED cycle (network blip, git hiccup) is logged and backed off, never
+ * fatal — an unattended runner must survive the night. `--once` keeps script
+ * semantics: the error propagates.
+ */
+export async function workLoop(
+  options: RunnerOptions & {
+    once?: boolean;
+    /** TEST ONLY: extra loop-exit condition, checked after every cycle. */
+    stopWhen?: () => boolean;
+  },
+): Promise<void> {
+  const log = options.log ?? defaultRunnerLog;
+  const opts = { ...options, log };
+  const backoffMs = options.backoffMs ?? 5_000;
   let stopped = false;
   let wake: (() => void) | undefined;
   const onSigint = (): void => {
     stopped = true;
     wake?.();
   };
+  const sleep = async (ms: number): Promise<void> => {
+    await new Promise<void>((resolveSleep) => {
+      wake = resolveSleep;
+      setTimeout(resolveSleep, ms);
+    });
+    wake = undefined;
+  };
   process.once('SIGINT', onSigint);
+  let consecutiveFailures = 0;
   try {
     for (;;) {
-      const result = await runOnce(options);
-      if (options.once === true || stopped) return;
+      let result;
+      try {
+        result = await runOnce(opts);
+        consecutiveFailures = 0;
+      } catch (error) {
+        if (options.once === true) throw error;
+        consecutiveFailures += 1;
+        const err = error instanceof Error ? error : new Error(String(error));
+        const delay = Math.min(backoffMs * 2 ** (consecutiveFailures - 1), backoffMs * 32);
+        log(
+          `cycle failed (${consecutiveFailures} in a row): ${err.name}: ${err.message} — retrying in ${delay}ms`,
+        );
+        if (stopped || options.stopWhen?.() === true) return;
+        await sleep(delay);
+        if (stopped) return;
+        continue;
+      }
+      if (options.once === true || stopped || options.stopWhen?.() === true) return;
       if (!result.dispatched) {
-        await new Promise<void>((resolveSleep) => {
-          wake = resolveSleep;
-          setTimeout(resolveSleep, options.pollMs ?? 15_000);
-        });
-        wake = undefined;
+        await sleep(options.pollMs ?? 15_000);
         if (stopped) return;
       }
     }

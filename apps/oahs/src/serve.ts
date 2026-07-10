@@ -21,10 +21,11 @@ import { join } from 'node:path';
 import { createMemoryEngine } from '@oahs/core';
 import { TokenStore, buildServer } from '@oahs/spine-api';
 
-export const DEFAULT_PORT = 4517;
+/** One port everywhere: serve.ts, Makefile, docker-compose, docs. */
+export const DEFAULT_PORT = 4521;
 
 export interface ServeOptions {
-  /** TCP port (0 = ephemeral). Default 4517. */
+  /** TCP port (0 = ephemeral). Default 4521. */
   port?: number;
   /** Bind host. Default 0.0.0.0. */
   host?: string;

@@ -101,6 +101,7 @@ const METHODS: Array<keyof SpineEngine> = [
   'getWorkItem',
   'getFeature',
   'getClaims',
+  'listClaims',
   'listWorkItems',
   'events',
 ];

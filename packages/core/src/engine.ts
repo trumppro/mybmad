@@ -216,6 +216,7 @@ class EngineImpl implements SpineEngine {
       type,
       actorId,
       payload,
+      occurredAt: Date.now(), // observational only — never a guard input
       ...(extra?.causationId !== undefined ? { causationId: extra.causationId } : {}),
     };
     this.eventLog.push(event);
@@ -1457,6 +1458,12 @@ class EngineImpl implements SpineEngine {
       const claim = this.claims.get(claimId);
       return claim ? [this.copyClaim(claim)] : [];
     });
+  }
+
+  listClaims(input?: { includeReleased?: boolean }): Claim[] {
+    return [...this.claims.values()]
+      .filter((claim) => input?.includeReleased === true || !claim.released)
+      .map((claim) => this.copyClaim(claim));
   }
 
   events(streamId?: string): SpineEvent[] {

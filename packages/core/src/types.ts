@@ -319,6 +319,13 @@ export interface SpineEvent {
   type: string;
   actorId: string;
   payload: Record<string, unknown>;
+  /**
+   * Wall-clock ms stamped at append. OBSERVATIONAL audit metadata only —
+   * no guard, transition, lease, or entitlement decision may read it; the
+   * engine's logical clock stays the only time source for lease logic.
+   * Rows persisted before Phase 7 Wave 1 carry 0.
+   */
+  occurredAt: number;
   causationId?: string;
 }
 
@@ -582,6 +589,8 @@ export interface SpineEngine {
   getWorkItem(id: string): WorkItem;
   getFeature(id: string): Feature;
   getClaims(workItemId: string): Claim[];
+  /** Workspace-wide claims view: live only by default (the "what is being worked on" query). */
+  listClaims(input?: { includeReleased?: boolean }): Claim[];
   /** Additive query surface (post-conformance): list/filter work items. */
   listWorkItems(filter?: { state?: WorkItemState; featureId?: string; claimable?: boolean }): WorkItem[];
   events(streamId?: string): SpineEvent[];

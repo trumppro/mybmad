@@ -42,15 +42,21 @@ export const eventsView: View = {
           const full = JSON.stringify(event.payload);
           const payload = el('span', undefined, full.length > 100 ? `${full.slice(0, 100)}…` : full);
           payload.title = full; // full JSON on hover
+          // occurredAt 0 = row persisted before timestamps existed.
+          const when =
+            event.occurredAt > 0
+              ? new Date(event.occurredAt).toISOString().replace(/\.\d{3}Z$/, 'Z')
+              : '—';
           return [
             String(event.globalSeq),
+            when,
             `${event.streamType} ${event.streamId}`,
             event.type,
             event.actorId,
             payload,
           ];
         });
-        body.appendChild(table(['Seq', 'Stream', 'Type', 'Actor', 'Payload'], rows));
+        body.appendChild(table(['Seq', 'When', 'Stream', 'Type', 'Actor', 'Payload'], rows));
       });
     }
 

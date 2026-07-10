@@ -182,6 +182,9 @@ export const events = pgTable(
     type: text('type').notNull(),
     actorId: text('actor_id').notNull(),
     payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    // Wall-clock ms, observational audit metadata only (never a guard input).
+    // Pre-Phase-7 rows keep the default 0.
+    occurredAt: bigint('occurred_at', { mode: 'number' }).notNull().default(0),
     causationId: text('causation_id'),
     idempotencyKey: text('idempotency_key'),
   },

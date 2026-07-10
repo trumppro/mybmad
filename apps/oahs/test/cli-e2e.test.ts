@@ -20,6 +20,8 @@ import { TokenStore, buildServer } from '@oahs/spine-api';
 import {
   actorCreateCommand,
   approveCommand,
+  claimLsCommand,
+  claimReleaseCommand,
   eventsCommand,
   featureCreateCommand,
   grantCommand,
@@ -28,6 +30,9 @@ import {
   rejectCommand,
   runToOutput,
   statusCommand,
+  tokenListCommand,
+  tokenReissueCommand,
+  whoamiCommand,
 } from '../src/commands/index.js';
 
 const ADMIN_TOKEN = 'cli-e2e-admin-token';
@@ -255,5 +260,67 @@ describe('oahs CLI command functions against a live spine-api', () => {
     const scoped = await eventsCommand(admin, { streamId: item.id });
     expect(scoped).toContain('gate.approved');
     expect(scoped).not.toContain('feature.created');
+  });
+
+  it('events answers WHEN (ISO timestamp) and WHAT (payload), not just who/what-type', async () => {
+    const item = await admin.call<WorkItem>('get_work_item', { workItemId: 's1' });
+    const scoped = await eventsCommand(admin, { streamId: item.id });
+    // occurredAt rendered as an ISO-8601 UTC timestamp column.
+    expect(scoped).toContain('when');
+    expect(scoped).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/);
+    // Payloads are visible in place — the audit is a query, not an interview.
+    expect(scoped).toContain('"gate":"spec_approval"');
+  });
+
+  it('whoami answers "which actor is this token" from the CLI', async () => {
+    const out = await whoamiCommand(admin);
+    expect(out).toContain('isAdmin: true');
+    const devOut = await whoamiCommand(dev);
+    expect(devOut).toContain(`actorId: ${devId}`);
+    expect(devOut).toContain('isAdmin: false');
+  });
+
+  it('claim ls shows live claims workspace-wide; claim release --force frees a stuck one', async () => {
+    // A "runner died" simulation: dev claims s2 and never comes back.
+    const claim = await dev.call<Claim>('claim_task', { workItemId: 's2' });
+    const live = await claimLsCommand(admin);
+    expect(live).toContain(claim.id);
+    expect(live).toContain('s2');
+    // The workspace-wide view also exposes the fixture's leftover: s1 was
+    // driven to done WITHOUT releasing its claim — exactly the stuck-lease
+    // shape this view exists to surface.
+    expect(live).toContain('s1');
+
+    const released = await claimReleaseCommand(admin, { workItemId: 's2' });
+    expect(released).toContain(claim.id);
+    const after = await claimLsCommand(admin);
+    expect(after).not.toContain(claim.id);
+
+    // History view still shows the released claim.
+    expect(await claimLsCommand(admin, { released: true })).toContain(claim.id);
+  });
+
+  it('token list (inventory, no secrets) + token reissue (old dies, new works)', async () => {
+    const created = await actorCreateCommand(admin, { type: 'agent', name: 'Reissue Target' });
+    const targetId = extract(created, 'actorId');
+    const oldToken = extract(created, 'token');
+
+    const inventory = await tokenListCommand(admin);
+    expect(inventory).toContain(targetId);
+    expect(inventory).not.toContain(oldToken);
+
+    const reissued = await tokenReissueCommand(admin, { actorId: targetId });
+    const newToken = extract(reissued, 'token');
+    expect(newToken).not.toBe(oldToken);
+
+    const stale = makeClient({ baseUrl, token: oldToken });
+    await expect(stale.call('whoami')).rejects.toMatchObject({ status: 401 });
+    const fresh = makeClient({ baseUrl, token: newToken });
+    expect(await fresh.call('whoami')).toEqual({ actorId: targetId, isAdmin: false });
+
+    // Non-admin is denied both.
+    await expect(tokenListCommand(dev)).rejects.toMatchObject({
+      name: 'PermissionDeniedError',
+    });
   });
 });

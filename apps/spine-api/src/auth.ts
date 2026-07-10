@@ -73,6 +73,32 @@ export class TokenStore {
     return token;
   }
 
+  /**
+   * Issued-token inventory: actor id + count, nothing else. The store holds
+   * only sha256 hashes, so there is no secret HERE to leak — but the wire
+   * gets counts, not hashes. Admin bootstrap entries are configuration and
+   * stay out (mirrors save()).
+   */
+  list(): Array<{ actorId: string; tokens: number }> {
+    const counts = new Map<string, number>();
+    for (const record of this.byHash.values()) {
+      if (record.isAdmin) continue;
+      counts.set(record.actorId, (counts.get(record.actorId) ?? 0) + 1);
+    }
+    return [...counts.entries()].map(([actorId, tokens]) => ({ actorId, tokens }));
+  }
+
+  /**
+   * Lost-credential recovery: revoke EVERY issued token of the actor, issue
+   * one fresh token. The old credential dies the moment the new one exists.
+   */
+  reissue(actorId: string): string {
+    for (const [hash, record] of this.byHash) {
+      if (!record.isAdmin && record.actorId === actorId) this.byHash.delete(hash);
+    }
+    return this.issue(actorId); // issue() saves
+  }
+
   resolve(token: string): ResolvedToken | null {
     const record = this.byHash.get(hashToken(token));
     return record ? { ...record } : null;

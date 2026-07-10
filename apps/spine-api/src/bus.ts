@@ -487,8 +487,27 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
         const p = parsed as WorkItemIn;
         return engine.getClaims(p.workItemId);
       }
+      case 'list_claims': {
+        const p = parsed as { includeReleased?: boolean | undefined };
+        return engine.listClaims({
+          ...(p.includeReleased !== undefined ? { includeReleased: p.includeReleased } : {}),
+        });
+      }
       case 'whoami': {
         return { actorId: ctx.actorId, isAdmin: ctx.isAdmin };
+      }
+
+      // -- token recovery (ADMIN; Phase 7 Wave 1) --------------------------------
+      // Tokens are spine-api configuration, not engine state: these two run
+      // against the TokenStore and never touch the engine or the event log.
+      case 'list_tokens': {
+        requireAdmin(ctx, command);
+        return tokens.list();
+      }
+      case 'reissue_token': {
+        requireAdmin(ctx, command);
+        const p = parsed as { actorId: string };
+        return { actorId: p.actorId, token: tokens.reissue(p.actorId) };
       }
     }
 

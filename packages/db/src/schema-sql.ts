@@ -117,9 +117,14 @@ CREATE TABLE IF NOT EXISTS events (
   type TEXT NOT NULL,
   actor_id TEXT NOT NULL,
   payload JSONB NOT NULL,
+  occurred_at BIGINT NOT NULL DEFAULT 0,
   causation_id TEXT,
   idempotency_key TEXT
 );
+
+-- Phase 7 Wave 1 upgrade path for durable data dirs created earlier:
+-- occurred_at is observational audit metadata; pre-existing rows keep 0.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS occurred_at BIGINT NOT NULL DEFAULT 0;
 
 -- §1.5: UNIQUE(stream_id, stream_seq) doubles as the optimistic lock.
 CREATE UNIQUE INDEX IF NOT EXISTS events_stream_id_stream_seq

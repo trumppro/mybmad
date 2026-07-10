@@ -2,6 +2,8 @@
 
 The deterministic spine built in this fork, per [product-thesis.md](product-thesis.md) and [product-roadmap.md](product-roadmap.md). BMAD content (`src/`) is the worker playbook layer; `packages/` + `apps/` are the platform. **AI does the work, rules run the process, permissioned actors hold the gates.**
 
+> Hướng dẫn sử dụng & vận hành đầy đủ (tiếng Việt): [docs/oahs/](docs/oahs/README.md).
+
 ## Map
 
 | Path | What it is |
@@ -85,7 +87,7 @@ oahs advise next-task --thread <id>   # deterministic advisor bots: read + post 
 oahs advise reconcile --thread <id> --file <wi>=<status>  # zero gates in their audit trail
 ```
 
-**Web UI** (first surface): `oahs serve` then open `http://localhost:4517/ui` — threads, live messages over SSE (`/events/stream`, cursor resume), a composer with structured mentions, and a gate inbox whose Approve/Reject buttons call `/rpc/approve_gate|reject_gate` directly ("gates pass through rails, not chat").
+**Web UI** (first surface): `oahs serve` then open `http://localhost:4521/ui` — threads, live messages over SSE (`/events/stream`, cursor resume), a composer with structured mentions, and a gate inbox whose Approve/Reject buttons call `/rpc/approve_gate|reject_gate` directly ("gates pass through rails, not chat").
 
 ### Non-coding teammates (Phase 4 — roadmap §1.4)
 
@@ -163,4 +165,6 @@ Evidence collected on a developer machine is as strong as the honest-operator as
 
 ## Status
 
-Phases 0–5 ✅, **Phase 6 model gateway ✅ (part 1)** — `@oahs/gateway` connects a live OpenAI-compatible router, a real-LLM teammate brain runs through the rails, verified end-to-end (**490 tests green**; the gateway's live test is env-gated). Server-side sandboxes (the rest of Phase 6) and Phase 7 (enterprise: SSO/SCIM, audit export + hash-chain signatures, RLS multi-tenancy) remain — the vault-ready gateway config and the workspace_id-on-every-table / append-only-event-log groundwork slot them in without a rewrite. The one remaining operational habit is dogfood discipline: keep running platform stories through the spine and enforce *no platform work outside the spine*.
+Phases 0–5 ✅, **Phase 6 model gateway ✅ (part 1)** — `@oahs/gateway` connects a live OpenAI-compatible router, a real-LLM teammate brain runs through the rails, verified end-to-end (the gateway's live test is env-gated). **Phase 7 is now "Cockpit"**: parallel projects for one operator (1 spine, N projects) — Wave 1 (correctness + ops recovery: runner feature-scoping, event timestamps, durable-by-default serve, unified port 4521, runner narration/backoff/transcripts, `whoami`/`claim ls`/`claim release`/`token list|reissue`) is in. Enterprise items (SSO/SCIM, RLS multi-tenancy, licensing) are deferred indefinitely.
+
+**Truth notes** (docs must match code): the schema today is single-workspace — there is **no `workspace_id` column** on any table (multi-project lands as a first-class `project` entity in Wave 2); the append-only event log is real, and since Wave 1 each event carries `occurred_at`. Grants store a `scope` column that is **not yet enforced**. The one remaining operational habit is dogfood discipline: keep running platform stories through the spine and enforce *no platform work outside the spine*.
