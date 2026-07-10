@@ -6,7 +6,7 @@
  * fill the non-CLI steps (advance/claim/evidence), exactly as the runner
  * will.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +27,7 @@ import {
   grantCommand,
   importStoriesCommand,
   inboxCommand,
+  initCommand,
   projectArchiveCommand,
   projectCreateCommand,
   projectLsCommand,
@@ -304,6 +305,52 @@ describe('oahs CLI command functions against a live spine-api', () => {
     expect(await claimLsCommand(admin, { released: true })).toContain(claim.id);
   });
 
+  it('init: ONE command bootstraps PO + dev + personas + project + the profile store (W4)', async () => {
+    const home = mkdtempSync(join(tmp, 'oahs-home-'));
+    const storiesPath = join(tmp, 'init-stories.yaml');
+    writeFileSync(storiesPath, '- id: "i-1"\n  title: First init story\n  description: x\n', 'utf8');
+
+    const out = await initCommand(admin, {
+      url: baseUrl,
+      name: 'Init Project',
+      repoPath: '/work/init',
+      specFolder: 'delivery/main',
+      importPath: storiesPath,
+      env: { OAHS_HOME: home },
+    });
+    expect(out).toContain('init-project');
+    expect(out).toContain('po');
+
+    // The profile store holds REAL tokens for po + dev, default po.
+    const profile = JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')) as {
+      identities: Record<string, { token: string; actorId: string }>;
+      defaultIdentity: string;
+      server: { url: string };
+    };
+    expect(profile.defaultIdentity).toBe('po');
+    expect(profile.server.url).toBe(baseUrl);
+    const po2 = makeClient({ baseUrl, token: profile.identities['po']!.token });
+    expect(await po2.call('whoami')).toEqual({
+      actorId: profile.identities['po']!.actorId,
+      isAdmin: false,
+    });
+
+    // The PO can REALLY drive the lifecycle (grants landed): draft the story.
+    const advanced = await po2.call<WorkItem>('advance_state', {
+      workItemId: 'i-1',
+      to: 'draft',
+    });
+    expect(advanced.state).toBe('draft');
+
+    // Project + personas exist.
+    const rollups = await po2.call<Array<{ project: { slug: string } }>>('project_list');
+    expect(rollups.some((r) => r.project.slug === 'init-project')).toBe(true);
+    const actors = await admin.call<Array<{ personaCode: string | null }>>('list_actors');
+    expect(actors.some((a) => a.personaCode === 'bmad-agent-dev')).toBe(true);
+
+    rmSync(home, { recursive: true, force: true });
+  });
+
   it('project lifecycle from the CLI: create → ls (rollups) → show → scoped status → archive', async () => {
     const created = await projectCreateCommand(po, {
       name: 'CLI Project',
@@ -339,6 +386,19 @@ describe('oahs CLI command functions against a live spine-api', () => {
     expect(archived).toContain('archived');
     expect(await projectLsCommand(po)).not.toContain('cli-project');
     expect(await projectLsCommand(po, { all: true })).toContain('cli-project');
+  });
+
+  it('project create --import bootstraps feature + backlog in the same breath (W4)', async () => {
+    const storiesPath = join(tmp, 'pc-stories.yaml');
+    writeFileSync(storiesPath, '- id: "pc-1"\n  title: Imported story\n  description: x\n', 'utf8');
+    const out = await projectCreateCommand(po, {
+      name: 'Import On Create',
+      importPath: storiesPath,
+    });
+    expect(out).toContain('slug: import-on-create');
+    expect(out).toContain('1 stories imported');
+    const item = await po.call<WorkItem>('get_work_item', { workItemId: 'pc-1' });
+    expect(item.state).toBe('backlog');
   });
 
   it('token list (inventory, no secrets) + token reissue (old dies, new works)', async () => {

@@ -4,6 +4,47 @@ Cách *dùng* oahs để chạy quy trình delivery: qua **web console** và qua
 định bạn đã có một spine đang chạy (xem [Cài đặt & vận hành](01-cai-dat-va-van-hanh.md))
 và biết các khái niệm trong [Tổng quan](00-tong-quan.md).
 
+## Quickstart: máy trắng → 2 dự án song song trong 4 lệnh (Wave 4)
+
+```bash
+# 1. Serve (bền mặc định tại ~/.oahs/data) — process 1/2
+OAHS_ADMIN_TOKEN=<bí-mật> oahs serve
+
+# 2. Init: PO + dev agent + grants chuẩn + personas + dự án đầu + backlog
+#    và GHI PROFILE STORE (~/.oahs/config.json) — hết thời export token
+oahs init "Alpha App" --repo ~/work/alpha --spec-folder delivery/main \
+  --import alpha-stories.yaml --token <bí-mật>
+
+# 3. Dự án thứ hai — KHÔNG cờ token nào: identity mặc định (po) từ store lên tiếng
+oahs project create "Beta App" --repo ~/work/beta --spec-folder delivery/main \
+  --import beta-stories.yaml
+
+# 4. Supervisor: MỘT process nuôi mọi runner — process 2/2
+oahs work --manifest runners.yaml
+```
+
+`runners.yaml` — orchestration thuần, mỗi entry vẫn là một actor thật đi qua rails:
+
+```yaml
+runners:
+  - name: alpha-dev
+    identity: dev            # token lấy từ profile store theo TÊN
+    project: alpha-app       # repo + spec folder đọc từ project record
+    agentCmd: claude -p "Use the bmad-dev-auto skill. spec_folder: {SPEC_FOLDER} story_id: {STORY_ID} {INVOKE_WITH}" --permission-mode acceptEdits
+  - name: beta-dev
+    identity: dev
+    project: beta-app
+    agentCmd: ...
+  # - name: hermes
+  #   identity: hermes
+  #   mode: jobs             # teammate reply-only (mention → job)
+  #   agentCmd: node oahs-brain.mjs
+```
+
+Runner trong manifest crash sẽ tự restart (backoff), không kéo anh em theo;
+`Ctrl-C` dừng cả cụm. Mở `http://localhost:4521/ui` → **Dashboard** thấy cả hai
+dự án, gates chờ quyết, và runner nào đang sống.
+
 ## Chuẩn bị CLI
 
 Sau `make build`, binary nằm ở `apps/oahs/bin/oahs.mjs`. Trong tài liệu, `oahs` nghĩa là
@@ -13,18 +54,20 @@ binary đó — bạn có thể tạo alias cho gọn:
 alias oahs='node /đường/dẫn/mybmad/apps/oahs/bin/oahs.mjs'
 ```
 
-Hai điều mọi lệnh client cần biết:
-
-- **Token**: đặt `export OAHS_TOKEN=<token-của-actor>` (hoặc truyền `--token`). Mỗi actor
-  có token riêng; token quyết định bạn *là ai* và *được làm gì*.
-- **URL**: mặc định CLI trỏ `http://localhost:4521` (cổng đã thống nhất mọi nơi từ
-  Phase 7 Wave 1). Server ở nơi khác? Đặt một lần `export OAHS_URL=http://host:port`
-  — mọi lệnh tự dùng, khỏi truyền `--url` từng lệnh.
+**Danh tính (Wave 4 — profile store):** `~/.oahs/config.json` giữ URL server + các
+identity CÓ TÊN (po, dev, admin…). Thứ tự phân giải token: `--token` >
+`--as <tên>` > env `OAHS_TOKEN` > identity mặc định trong store.
 
 ```bash
-export OAHS_TOKEN=change-me         # admin token bootstrap
-oahs status --url http://localhost:4521
+oahs login po --token <token-po> --make-default   # lưu + verify với server
+oahs identities                                    # tên + actorId (token không bao giờ in)
+oahs use dev                                       # đổi identity mặc định
+oahs inbox --as po                                 # đội mũ PO cho đúng MỘT lệnh
 ```
+
+- **URL**: `--url` > env `OAHS_URL` > profile store > `http://localhost:4521`.
+- **`.oahs.json` theo thư mục**: đặt `{"project": "alpha-app"}` trong thư mục dự án —
+  `oahs status` / `oahs work` ở đó tự scope vào project ấy.
 
 ## Web console (`/ui`)
 

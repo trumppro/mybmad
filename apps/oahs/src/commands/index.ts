@@ -26,6 +26,7 @@ import {
   type WorkspacePolicy,
 } from '@oahs/core';
 
+import { saveIdentity, setDefaultIdentity, setServerUrl } from '../cli-config.js';
 import { renderTable, type Cell } from '../format.js';
 
 // Phase 3 collaboration + advisor bots (roadmap §5) live in collab.ts.
@@ -256,6 +257,99 @@ export async function featureCreateCommand(
 }
 
 // ---------------------------------------------------------------------------
+// init (Phase 7 Wave 4) — one command replaces the ~15-step bootstrap ritual
+// ---------------------------------------------------------------------------
+
+export interface InitOptions {
+  /** Server URL — saved into the profile store. */
+  url: string;
+  /** First project's name. */
+  name: string;
+  repoPath?: string;
+  specFolder?: string;
+  /** stories.yaml to import into the first feature. */
+  importPath?: string;
+  /** Profile-store env override (OAHS_HOME) — tests isolate through this. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Bootstrap a WORKING workspace from a bare admin token: PO + dev agent with
+ * the standard grant bundles, the six BMAD personas (floor-state), the first
+ * project (+ feature, + optional stories import), and a profile store with
+ * po/dev identities (default: po). Grants stay EXPLICIT — this only automates
+ * typing them, never widens them.
+ */
+export async function initCommand(admin: OahsClient, opts: InitOptions): Promise<string> {
+  const env = opts.env ?? process.env;
+
+  // 1 — actors + the standard grant bundles.
+  const po = await admin.call<{ actor: Actor; token: string }>('create_actor', {
+    type: 'user',
+    displayName: 'PO',
+  });
+  const dev = await admin.call<{ actor: Actor; token: string }>('create_actor', {
+    type: 'agent',
+    displayName: 'Dev agent',
+  });
+  const PO_GRANTS = [
+    'task.plan',
+    'task.advance',
+    'gate.spec.approve',
+    'gate.review.approve',
+    'feature.init',
+    'dispatch.release_hold',
+  ];
+  const DEV_GRANTS = ['task.claim', 'task.advance', 'task.block'];
+  for (const permission of PO_GRANTS) {
+    await admin.call('grant_permission', { actorId: po.actor.id, permission });
+  }
+  for (const permission of DEV_GRANTS) {
+    await admin.call('grant_permission', { actorId: dev.actor.id, permission });
+  }
+
+  // 2 — the six BMAD personas (idempotent; zero gate authority by default).
+  await admin.call('provision_personas');
+
+  // 3 — the first project + feature (+ optional backlog import).
+  const project = await admin.call<{ id: string; slug: string }>('project_create', {
+    name: opts.name,
+    ...(opts.repoPath !== undefined ? { repoPath: opts.repoPath } : {}),
+    ...(opts.specFolder !== undefined ? { defaultSpecFolder: opts.specFolder } : {}),
+  });
+  const feature = await admin.call<Feature>('create_feature', {
+    projectId: project.id,
+    name: 'Sprint 1',
+  });
+  let imported = 0;
+  if (opts.importPath !== undefined) {
+    const yaml = readFileSync(resolve(opts.importPath), 'utf8');
+    const result = await admin.call<StoriesImportResult>('import_stories', {
+      featureId: feature.id,
+      yaml,
+    });
+    imported = result.imported.length;
+  }
+
+  // 4 — the profile store: real tokens under memorable names, PO as default.
+  saveIdentity('po', { token: po.token, actorId: po.actor.id }, env);
+  saveIdentity('dev', { token: dev.token, actorId: dev.actor.id }, env);
+  setDefaultIdentity('po', env);
+  setServerUrl(opts.url, env);
+
+  return [
+    `project: ${opts.name} (${project.slug})`,
+    `feature: ${feature.id} (Sprint 1)${imported > 0 ? ` — ${String(imported)} stories imported` : ''}`,
+    `identities saved: po (default), dev — switch with --as, inspect with \`oahs identities\``,
+    '',
+    'next steps:',
+    `  oahs status --project ${project.slug}`,
+    `  oahs work --project ${project.slug} --as dev --agent-cmd '<your agent command>'`,
+    `  open ${opts.url}/ui  (log in with an identity token)`,
+  ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // projects (Phase 7 Wave 2, D-E) — the unit of parallel work
 // ---------------------------------------------------------------------------
 
@@ -281,6 +375,8 @@ export interface ProjectCreateOptions {
   kind?: string;
   repoPath?: string;
   specFolder?: string;
+  /** stories.yaml — creates a first feature ("Sprint 1") and imports into it. */
+  importPath?: string;
 }
 
 export async function projectCreateCommand(
@@ -294,7 +390,7 @@ export async function projectCreateCommand(
     ...(opts.repoPath !== undefined ? { repoPath: opts.repoPath } : {}),
     ...(opts.specFolder !== undefined ? { defaultSpecFolder: opts.specFolder } : {}),
   });
-  return [
+  const lines = [
     `projectId: ${project.id}`,
     `slug: ${project.slug}`,
     `name: ${project.name}`,
@@ -303,7 +399,20 @@ export async function projectCreateCommand(
     ...(project.defaultSpecFolder !== null
       ? [`defaultSpecFolder: ${project.defaultSpecFolder}`]
       : []),
-  ].join('\n');
+  ];
+  if (opts.importPath !== undefined) {
+    const feature = await client.call<Feature>('create_feature', {
+      projectId: project.id,
+      name: 'Sprint 1',
+    });
+    const yaml = readFileSync(resolve(opts.importPath), 'utf8');
+    const result = await client.call<StoriesImportResult>('import_stories', {
+      featureId: feature.id,
+      yaml,
+    });
+    lines.push(`feature: ${feature.id} (Sprint 1) — ${String(result.imported.length)} stories imported`);
+  }
+  return lines.join('\n');
 }
 
 export async function projectLsCommand(

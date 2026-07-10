@@ -34,6 +34,7 @@ import {
   grantCommand,
   importStoriesCommand,
   inboxCommand,
+  initCommand,
   itemCreateCommand,
   jobCompleteCommand,
   jobsCommand,
@@ -60,27 +61,37 @@ import {
   whoamiCommand,
 } from './commands/index.js';
 import { runBrain } from './agent-brain.js';
-import { defaultUrl, resolveDataDir } from './cli-config.js';
+import {
+  defaultUrl,
+  loadProfile,
+  resolveDataDir,
+  resolveIdentity,
+  saveIdentity,
+  setDefaultIdentity,
+  setServerUrl,
+} from './cli-config.js';
 import { DEFAULT_PORT, startServe } from './serve.js';
 
 interface ClientFlags {
   url: string;
   token?: string;
+  as?: string;
 }
 
 function clientFrom(flags: ClientFlags): OahsClient {
-  const token = flags.token ?? process.env['OAHS_TOKEN'];
-  if (token === undefined || token.length === 0) {
-    throw new Error('missing token: pass --token <token> or set OAHS_TOKEN');
-  }
+  const { token } = resolveIdentity({
+    ...(flags.token !== undefined ? { token: flags.token } : {}),
+    ...(flags.as !== undefined ? { as: flags.as } : {}),
+  });
   return makeClient({ baseUrl: flags.url, token });
 }
 
 /** Attach the shared client flags to a gate-holder command. */
 function withClientFlags(cmd: Command): Command {
   return cmd
-    .option('--url <url>', 'spine-api base URL (default: env OAHS_URL, else localhost:4521)', defaultUrl())
-    .option('--token <token>', 'bearer token (default: env OAHS_TOKEN)');
+    .option('--url <url>', 'spine-api base URL (default: env OAHS_URL, profile, else localhost:4521)', defaultUrl())
+    .option('--token <token>', 'bearer token (default: --as identity, env OAHS_TOKEN, profile default)')
+    .option('--as <identity>', 'act as a NAMED identity from the profile store (see `oahs login`)');
 }
 
 /** Run a command function and translate its outcome to stdout/stderr + exit code. */
@@ -170,12 +181,13 @@ export function buildProgram(): Command {
 
   withClientFlags(program.command('status'))
     .description('all work items grouped by state, plus feature dispatch holds')
-    .option('--project <projectId>', 'scope to one project (id or slug)')
-    .action(async (opts: ClientFlags & { project?: string }) =>
-      emit(() =>
-        statusCommand(clientFrom(opts), opts.project !== undefined ? { project: opts.project } : {}),
-      ),
-    );
+    .option('--project <projectId>', 'scope to one project (id or slug; default: .oahs.json in cwd)')
+    .action(async (opts: ClientFlags & { project?: string }) => {
+      const project = opts.project ?? loadProfile().directory?.project;
+      return emit(() =>
+        statusCommand(clientFrom(opts), project !== undefined ? { project } : {}),
+      );
+    });
 
   const actor = program.command('actor').description('actor management (admin)');
   withClientFlags(actor.command('create'))
@@ -524,7 +536,8 @@ export function buildProgram(): Command {
     .option('--kind <kind>', 'code | doc | mixed (default mixed)')
     .option('--repo <path>', 'local checkout the runner binds to')
     .option('--spec-folder <rel>', 'spec folder relative to the repo root')
-    .action(async (name: string, opts: ClientFlags & { slug?: string; kind?: string; repo?: string; specFolder?: string }) =>
+    .option('--import <storiesYaml>', 'create a first feature (Sprint 1) and import this backlog')
+    .action(async (name: string, opts: ClientFlags & { slug?: string; kind?: string; repo?: string; specFolder?: string; import?: string }) =>
       emit(() =>
         projectCreateCommand(clientFrom(opts), {
           name,
@@ -532,6 +545,7 @@ export function buildProgram(): Command {
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
           ...(opts.repo !== undefined ? { repoPath: resolve(opts.repo) } : {}),
           ...(opts.specFolder !== undefined ? { specFolder: opts.specFolder } : {}),
+          ...(opts.import !== undefined ? { importPath: opts.import } : {}),
         }),
       ),
     );
@@ -551,6 +565,101 @@ export function buildProgram(): Command {
     .action(async (projectId: string, opts: ClientFlags) =>
       emit(() => projectArchiveCommand(clientFrom(opts), { projectId })),
     );
+
+  // -- init (Phase 7 Wave 4): one command replaces the bootstrap ritual ----------
+  program
+    .command('init <projectName>')
+    .description('bootstrap a working workspace: PO + dev agent + grants + personas + first project + profile store (needs the ADMIN token)')
+    .option('--url <url>', 'spine-api base URL', defaultUrl())
+    .option('--token <token>', 'ADMIN token (default: env OAHS_ADMIN_TOKEN, then OAHS_TOKEN)')
+    .option('--repo <path>', 'bind the project to a local checkout')
+    .option('--spec-folder <rel>', 'spec folder relative to the repo root')
+    .option('--import <storiesYaml>', 'import a stories.yaml into the first feature')
+    .action(
+      async (
+        projectName: string,
+        opts: { url: string; token?: string; repo?: string; specFolder?: string; import?: string },
+      ) => {
+        try {
+          const token =
+            opts.token ?? process.env['OAHS_ADMIN_TOKEN'] ?? process.env['OAHS_TOKEN'];
+          if (token === undefined || token.length === 0) {
+            throw new Error('init needs the admin token: --token or OAHS_ADMIN_TOKEN');
+          }
+          const admin = makeClient({ baseUrl: opts.url, token });
+          const { text, exitCode } = await runToOutput(() =>
+            initCommand(admin, {
+              url: opts.url,
+              name: projectName,
+              ...(opts.repo !== undefined ? { repoPath: resolve(opts.repo) } : {}),
+              ...(opts.specFolder !== undefined ? { specFolder: opts.specFolder } : {}),
+              ...(opts.import !== undefined ? { importPath: opts.import } : {}),
+            }),
+          );
+          process[exitCode === 0 ? 'stdout' : 'stderr'].write(`${text}\n`);
+          process.exitCode = exitCode;
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          process.stderr.write(`init failed — ${err.message}\n`);
+          process.exitCode = 1;
+        }
+      },
+    );
+
+  // -- profile store (Phase 7 Wave 4, D-F): named identities, no token juggling --
+  program
+    .command('login <name>')
+    .description('save a NAMED identity into ~/.oahs/config.json (verified against the server)')
+    .requiredOption('--token <token>', 'the identity’s bearer token')
+    .option('--url <url>', 'server URL to verify against (also saved as the profile server)', defaultUrl())
+    .option('--make-default', 'make this the default identity')
+    .action(async (name: string, opts: { token: string; url: string; makeDefault?: boolean }) => {
+      try {
+        const client = makeClient({ baseUrl: opts.url, token: opts.token });
+        const who = await client.call<{ actorId: string }>('whoami');
+        saveIdentity(name, { token: opts.token, actorId: who.actorId });
+        setServerUrl(opts.url);
+        if (opts.makeDefault === true) setDefaultIdentity(name);
+        process.stdout.write(
+          `saved identity "${name}" → ${who.actorId}${opts.makeDefault === true ? ' (default)' : ''}\nserver: ${opts.url}\n`,
+        );
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        process.stderr.write(`login failed — ${err.message}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('use <name>')
+    .description('make a saved identity the default (used when no --as/--token/OAHS_TOKEN)')
+    .action((name: string) => {
+      try {
+        setDefaultIdentity(name);
+        process.stdout.write(`default identity: ${name}\n`);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('identities')
+    .description('list saved identities (names + actor ids — tokens never print)')
+    .action(() => {
+      const profile = loadProfile();
+      const names = Object.keys(profile.identities);
+      if (names.length === 0) {
+        process.stdout.write('no identities saved — `oahs login <name> --token <token>`\n');
+        return;
+      }
+      for (const name of names) {
+        const identity = profile.identities[name]!;
+        const isDefault = profile.defaultIdentity === name ? '  (default)' : '';
+        process.stdout.write(`${name}: ${identity.actorId}${isDefault}\n`);
+      }
+    });
 
   // -- ops (Phase 7 Wave 1): identity, claims view, token recovery ---------------
   withClientFlags(program.command('whoami'))
@@ -587,6 +696,7 @@ export function buildProgram(): Command {
   withClientFlags(program.command('work'))
     .description('run the BYO worker loop (coding) or --jobs: the teammate jobs loop (reply-only, roadmap §6)')
     .option('--jobs', 'serve reply-only agent jobs for THIS token’s agent (mention-dispatch, zero lifecycle authority)')
+    .option('--manifest <runnersYaml>', 'SUPERVISOR: run every loop in runners.yaml from ONE process (identities from the profile store)')
     .option('--repo <path>', 'target project git checkout (coding mode; default: the --project record’s repoPath)')
     .option('--spec-folder <rel>', 'spec folder relative to the repo root (coding mode; default: the --project record’s defaultSpecFolder)')
     .option(
@@ -597,9 +707,9 @@ export function buildProgram(): Command {
       '--feature <featureId>',
       'only dispatch this feature’s work items — narrower than --project (coding mode)',
     )
-    .requiredOption(
+    .option(
       '--agent-cmd <template>',
-      'agent command template (coding: {SPEC_FOLDER} {STORY_ID} {INVOKE_WITH} {WORKTREE}; jobs: {CONTEXT_FILE} {REPLY_FILE} {THREAD_ID} {JOB_ID})',
+      'agent command template (coding: {SPEC_FOLDER} {STORY_ID} {INVOKE_WITH} {WORKTREE}; jobs: {CONTEXT_FILE} {REPLY_FILE} {THREAD_ID} {JOB_ID}); required unless --manifest',
     )
     .option('--once', 'run at most one dispatch/job cycle, then exit')
     .option('--poll <ms>', 'poll interval in milliseconds')
@@ -609,11 +719,12 @@ export function buildProgram(): Command {
       async (
         opts: ClientFlags & {
           jobs?: boolean;
+          manifest?: string;
           repo?: string;
           specFolder?: string;
           project?: string;
           feature?: string;
-          agentCmd: string;
+          agentCmd?: string;
           once?: boolean;
           poll?: string;
           claimTtl?: string;
@@ -621,6 +732,18 @@ export function buildProgram(): Command {
         },
       ) => {
         try {
+          if (opts.manifest !== undefined) {
+            const { runSupervisor } = await import('./supervisor.js');
+            await runSupervisor({
+              manifestPath: opts.manifest,
+              url: opts.url,
+              ...(opts.once === true ? { once: true } : {}),
+            });
+            return;
+          }
+          if (opts.agentCmd === undefined) {
+            throw new Error('--agent-cmd is required (or pass --manifest)');
+          }
           const client = clientFrom(opts);
           // LAZY import: the runner is a fixed interface that may still be a
           // stub — the rest of the CLI must never pay for (or break on) it.
@@ -639,15 +762,17 @@ export function buildProgram(): Command {
             return;
           }
           // --project: the Wave-2 binding — repo + spec folder come from the
-          // project record; explicit flags still override.
+          // project record; explicit flags still override. A .oahs.json in
+          // the cwd supplies the default project (Wave 4).
+          const project = opts.project ?? loadProfile().directory?.project;
           let repoPath = opts.repo;
           let specFolder = opts.specFolder;
-          if (opts.project !== undefined) {
+          if (project !== undefined) {
             const record = await client.call<{
               slug: string;
               repoPath: string | null;
               defaultSpecFolder: string | null;
-            }>('project_get', { projectId: opts.project });
+            }>('project_get', { projectId: project });
             repoPath = repoPath ?? record.repoPath ?? undefined;
             specFolder = specFolder ?? record.defaultSpecFolder ?? undefined;
           }
@@ -661,7 +786,7 @@ export function buildProgram(): Command {
             repoPath: resolve(repoPath),
             specFolder,
             agentCmd: opts.agentCmd,
-            ...(opts.project !== undefined ? { projectId: opts.project } : {}),
+            ...(project !== undefined ? { projectId: project } : {}),
             ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),
             ...(opts.poll !== undefined ? { pollMs: Number(opts.poll) } : {}),
             ...(opts.claimTtl !== undefined ? { claimTtlMs: Number(opts.claimTtl) } : {}),

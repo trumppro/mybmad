@@ -18,6 +18,20 @@ và `--token <token>` (mặc định biến môi trường `OAHS_TOKEN`). `serve
 |---|---|---|
 | `serve` | `--port <n>` (4521) · `--admin-token <t>` (env `OAHS_ADMIN_TOKEN`) · `--data <dir>` (env `OAHS_DATA`, mặc định `~/.oahs/data`) · `--ephemeral` | Khởi động spine-api (HTTP `/rpc/*` + MCP `/mcp` + UI `/ui`). Bền theo mặc định; `--ephemeral` = in-memory, mất sạch khi tắt. |
 
+### Setup & danh tính (Phase 7 Wave 4)
+
+| Lệnh | Tham số | Việc |
+|---|---|---|
+| `init <tên-dự-án>` | `--token <admin>` · `--repo` · `--spec-folder` · `--import <yaml>` | MỘT lệnh bootstrap: PO + dev agent + grants chuẩn + personas + dự án đầu (+ backlog) + ghi profile store (po mặc định). |
+| `login <tên>` | `--token <t>` (bắt buộc) · `--make-default` | Lưu identity CÓ TÊN vào `~/.oahs/config.json` (verify whoami trước khi lưu). |
+| `use <tên>` | — | Đổi identity mặc định. |
+| `identities` | — | Liệt kê tên + actorId (không bao giờ in token). |
+| *(mọi lệnh client)* | `--as <tên>` | Chạy MỘT lệnh dưới identity đã lưu — không impersonate, đúng token của actor đó. |
+| `work` | `--manifest <runners.yaml>` | SUPERVISOR: 1 process nuôi N loop (coding/jobs); identity theo tên từ store; crash 1 loop → tự restart. |
+| `project create` | thêm `--import <yaml>` | Tạo project + feature "Sprint 1" + import backlog trong một hơi. |
+
+Env: `OAHS_HOME` đổi chỗ profile store (mặc định `~/.oahs`).
+
 ### Project (Phase 7 Wave 2 — đơn vị chạy song song)
 
 | Lệnh | Tham số | Việc |
