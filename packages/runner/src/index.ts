@@ -339,6 +339,54 @@ export function defaultRunnerLog(line: string): void {
 }
 
 /**
+ * Announce this worker process to the spine (Wave 3 visibility) and keep a
+ * liveness heartbeat going. SOFT everywhere: an older server without the
+ * command, or a registry lost to a restart, must never take the loop down —
+ * visibility is additive, never load-bearing. Returns a stop function.
+ */
+export function announceRunner(
+  client: OahsClient,
+  input: {
+    mode: 'coding' | 'jobs';
+    projectId?: string;
+    repoPath?: string;
+    log: (line: string) => void;
+    intervalMs?: number;
+  },
+): { stop: () => void; ready: Promise<void> } {
+  let runnerId: string | undefined;
+  const announce = async (): Promise<void> => {
+    const registered = await client.call<{ runnerId: string }>('runner_announce', {
+      mode: input.mode,
+      ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
+      ...(input.repoPath !== undefined ? { repoPath: input.repoPath } : {}),
+      pid: process.pid,
+    });
+    runnerId = registered.runnerId;
+    input.log(`announced as ${registered.runnerId} (${input.mode})`);
+  };
+  // `ready` resolves on success OR failure — announcing is soft, but callers
+  // can await it so short-lived loops (--once) are still visible.
+  const ready = announce().catch(() => {
+    input.log('runner announce unavailable (older server?) — continuing without visibility');
+  });
+  const timer = setInterval(() => {
+    void (async () => {
+      if (runnerId === undefined) return announce();
+      try {
+        await client.call('runner_heartbeat', { runnerId });
+      } catch {
+        // Registry lost (server restart) — re-announce next tick.
+        runnerId = undefined;
+      }
+    })().catch(() => {
+      /* visibility stays soft */
+    });
+  }, input.intervalMs ?? 30_000);
+  return { stop: () => clearInterval(timer), ready };
+}
+
+/**
  * Async agent invocation (replaces spawnSync): the event loop stays free so
  * lease heartbeats can fire DURING the run (D-G). SIGKILL on timeout keeps
  * the old contract (status null → -1 at the call site).
@@ -771,6 +819,13 @@ export async function workLoop(
   const log = options.log ?? defaultRunnerLog;
   const opts = { ...options, log };
   const backoffMs = options.backoffMs ?? 5_000;
+  const announcer = announceRunner(options.client, {
+    mode: 'coding',
+    ...(options.projectId !== undefined ? { projectId: options.projectId } : {}),
+    repoPath: resolve(options.repoPath),
+    log,
+  });
+  await announcer.ready;
   let stopped = false;
   let wake: (() => void) | undefined;
   const onSigint = (): void => {
@@ -812,6 +867,7 @@ export async function workLoop(
       }
     }
   } finally {
+    announcer.stop();
     process.removeListener('SIGINT', onSigint);
   }
 }

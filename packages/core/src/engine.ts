@@ -1644,6 +1644,13 @@ class EngineImpl implements SpineEngine {
     });
   }
 
+  listEvidence(workItemId: string): Evidence[] {
+    const item = this.mustGetItem(workItemId);
+    return this.evidenceRows
+      .filter((row) => row.workItemId === item.id)
+      .map((row) => ({ kind: row.evidence.kind, payload: { ...row.evidence.payload } }));
+  }
+
   listClaims(input?: { includeReleased?: boolean }): Claim[] {
     return [...this.claims.values()]
       .filter((claim) => input?.includeReleased === true || !claim.released)

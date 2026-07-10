@@ -288,3 +288,46 @@ section { margin-bottom: 18px; }
   .chat-shell { grid-template-columns: 1fr; grid-auto-rows: minmax(0, 1fr); overflow-y: auto; }
   #col-threads, #col-rails { border: none; border-bottom: 1px solid var(--border); }
 }
+
+/* ---- cockpit (Phase 7 Wave 3): dashboard, project board, item detail ---- */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.project-card, .item-card { cursor: pointer; }
+.project-card:hover, .item-card:hover { border-color: var(--accent); }
+
+.board {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(200px, 1fr);
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+.board-column h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+.board-column .card { margin-bottom: 8px; }
+
+.badge.live { color: var(--ok); border-color: var(--ok); }
+.badge.stale, .badge.expired { color: var(--danger); border-color: var(--danger); }
+
+details > pre.payload {
+  margin: 6px 0 0;
+  padding: 8px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+details > summary { cursor: pointer; color: var(--muted); }

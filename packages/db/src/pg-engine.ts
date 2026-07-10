@@ -2336,6 +2336,19 @@ export class PgEngine {
     return rows.map((row) => this.publicClaim(row));
   }
 
+  async listEvidence(workItemId: string): Promise<Evidence[]> {
+    const item = await this.mustGetItem(workItemId);
+    const rows = await this.db
+      .select()
+      .from(evidenceTable)
+      .where(eq(evidenceTable.workItemId, item.id))
+      .orderBy(asc(evidenceTable.seq));
+    return rows.map((row) => ({
+      kind: row.kind as Evidence['kind'],
+      payload: row.payload as Record<string, unknown>,
+    }));
+  }
+
   async listClaims(input?: { includeReleased?: boolean }): Promise<Claim[]> {
     const rows =
       input?.includeReleased === true

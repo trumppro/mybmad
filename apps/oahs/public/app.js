@@ -91,10 +91,16 @@
     const hash = window.location.hash.replace(/^#\/?/, "");
     return hash === "" ? routes[0]?.path ?? "" : hash;
   }
+  function routeParam() {
+    const path = currentPath();
+    const slash = path.indexOf("/");
+    return slash > 0 ? decodeURIComponent(path.slice(slash + 1)) : "";
+  }
   function renderCurrent() {
     if (contentEl === null) return;
     const path = currentPath();
-    const route = routes.find((candidate) => candidate.path === path) ?? routes[0];
+    const route = routes.find((candidate) => candidate.path === path) ?? // Parameterized pages: 'project/alpha' mounts the 'project' route.
+    routes.find((candidate) => path.startsWith(`${candidate.path}/`)) ?? routes[0];
     if (route === void 0) return;
     if (currentCleanup !== null) {
       currentCleanup();
@@ -149,6 +155,7 @@
     const sidebar = el("nav");
     sidebar.id = "sidebar";
     for (const route of getRoutes()) {
+      if (route.hidden === true) continue;
       if (route.adminOnly === true && !state.isAdmin) continue;
       const item = el("button", "nav-item", route.label);
       item.dataset["path"] = route.path;
@@ -163,7 +170,11 @@
     startRouter(content, (path) => {
       for (const child of Array.from(sidebar.children)) {
         const item = child;
-        item.classList.toggle("active", item.dataset["path"] === path);
+        const target = item.dataset["path"];
+        item.classList.toggle(
+          "active",
+          target === path || target !== void 0 && path.startsWith(`${target}/`)
+        );
       }
     });
   }
@@ -365,6 +376,17 @@
     node.addEventListener("click", onClick);
     return node;
   }
+  function viewShell(title) {
+    const view = el("div", "view");
+    const head = el("div", "view-head");
+    head.appendChild(el("h2", void 0, title));
+    const toolbar = el("div", "toolbar");
+    head.appendChild(toolbar);
+    view.appendChild(head);
+    const body = el("div", "view-body");
+    view.appendChild(body);
+    return { view, toolbar, body };
+  }
   function section(title) {
     const wrapper = el("section");
     wrapper.appendChild(el("h2", void 0, title));
@@ -538,7 +560,14 @@
   function gateCard(item, gate, parent) {
     const card2 = el("div", "card");
     card2.appendChild(el("div", "c-title", `${item.externalKey} \u2014 ${item.title}`));
-    card2.appendChild(el("div", "c-sub", `${item.state} \xB7 awaiting ${gate}`));
+    const pinned = (item.pinnedVerification ?? []).join(" && ");
+    card2.appendChild(
+      el(
+        "div",
+        "c-sub",
+        `${item.project !== void 0 ? `${item.project.slug} \xB7 ` : ""}${item.state} \xB7 awaiting ${gate}${pinned !== "" ? ` \xB7 pinned: ${pinned}` : ""}`
+      )
+    );
     const actions = el("div", "c-actions");
     const approve = el("button", "approve", "Approve");
     approve.addEventListener("click", () => {
@@ -851,7 +880,7 @@
       head.appendChild(el("h2", void 0, "Claims"));
       view.appendChild(head);
       const toolbar = el("div", "toolbar");
-      const workItemId = textInput("workItemId or externalKey");
+      const workItemId = textInput("blank = ALL live claims; or a workItemId / externalKey");
       toolbar.appendChild(field("Work item", workItemId));
       toolbar.appendChild(button("Load claims", () => reload(), "primary"));
       toolbar.appendChild(
@@ -876,18 +905,20 @@
       function reload() {
         run(async () => {
           const id = workItemId.value.trim();
-          if (id === "") throw new Error("workItemId is required");
-          const claims = await rpc("get_claims", { workItemId: id });
+          const claims = id === "" ? await rpc("list_claims") : await rpc("get_claims", { workItemId: id });
           clear(body);
           if (claims.length === 0) {
-            body.appendChild(emptyState("No claims on this work item."));
+            body.appendChild(
+              emptyState(id === "" ? "No live claims anywhere." : "No claims on this work item.")
+            );
             return;
           }
           const rows = claims.map((claim) => [
             claim.id,
+            claim.workItemId,
             claim.actorId,
             String(claim.fencingToken),
-            claim.released ? badge("released") : badge("live"),
+            claim.released ? badge("released") : claim.expired === true ? badge("expired") : badge("live"),
             claim.released ? "\u2014" : button("Release", () => {
               run(async () => {
                 await rpc("release_claim", { claimId: claim.id });
@@ -895,9 +926,144 @@
               });
             })
           ]);
-          body.appendChild(table(["Claim", "Actor", "Fence", "Status", "Action"], rows));
+          body.appendChild(table(["Claim", "Work item", "Actor", "Fence", "Status", "Action"], rows));
         });
       }
+      return () => {
+      };
+    }
+  };
+
+  // ../spine-api/ui-src/views/dashboard.ts
+  var STALE_MS = 9e4;
+  function ago(ms) {
+    const seconds = Math.max(0, Math.round((Date.now() - ms) / 1e3));
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.round(seconds / 60);
+    return minutes < 60 ? `${minutes}m ago` : `${Math.round(minutes / 60)}h ago`;
+  }
+  function projectCard(rollup) {
+    const cardEl = el("div", "card project-card");
+    cardEl.dataset["slug"] = rollup.project.slug;
+    cardEl.appendChild(el("div", "c-title", `${rollup.project.name} (${rollup.project.slug})`));
+    cardEl.appendChild(
+      el(
+        "div",
+        "c-sub",
+        `${rollup.project.kind}${rollup.project.repoPath !== null ? ` \xB7 ${rollup.project.repoPath}` : " \xB7 no repo bound"}`
+      )
+    );
+    const counts = el("div", "c-actions");
+    for (const [stateName, count] of Object.entries(rollup.items)) {
+      counts.appendChild(badge(`${stateName}:${String(count)}`));
+    }
+    if (Object.keys(rollup.items).length === 0) counts.appendChild(el("span", "c-sub", "empty backlog"));
+    cardEl.appendChild(counts);
+    const meta = el("div", "c-actions");
+    if (rollup.blocked > 0) meta.appendChild(badge(`blocked:${String(rollup.blocked)}`));
+    if (rollup.liveClaims > 0) meta.appendChild(badge(`claims:${String(rollup.liveClaims)}`));
+    if (rollup.awaitingGates > 0) meta.appendChild(badge(`gates:${String(rollup.awaitingGates)}`));
+    cardEl.appendChild(meta);
+    cardEl.addEventListener("click", () => navigate(`project/${rollup.project.slug}`));
+    return cardEl;
+  }
+  var dashboardView = {
+    mount(container) {
+      const { view, toolbar, body } = viewShell("Dashboard");
+      const refresh = button("Refresh", () => reload(), "primary");
+      toolbar.appendChild(refresh);
+      container.appendChild(view);
+      function newProjectForm(parent) {
+        const form = el("div", "card");
+        form.appendChild(el("div", "c-title", "New project"));
+        const name = textInput("name, e.g. My App");
+        const repo = textInput("repo path (optional)");
+        const spec = textInput("spec folder, e.g. delivery/main (optional)");
+        form.appendChild(field("Name", name));
+        form.appendChild(field("Repo", repo));
+        form.appendChild(field("Spec folder", spec));
+        form.appendChild(
+          button(
+            "Create project",
+            () => {
+              run(async () => {
+                if (name.value.trim() === "") throw new Error("name is required");
+                await rpc("project_create", {
+                  name: name.value.trim(),
+                  ...repo.value.trim() !== "" ? { repoPath: repo.value.trim() } : {},
+                  ...spec.value.trim() !== "" ? { defaultSpecFolder: spec.value.trim() } : {}
+                });
+                reload();
+              });
+            },
+            "primary"
+          )
+        );
+        parent.appendChild(form);
+      }
+      function reload() {
+        run(async () => {
+          const [rollups, runners, inbox] = await Promise.all([
+            rpc("project_list"),
+            rpc("list_runners"),
+            rpc("inbox")
+          ]);
+          clear(body);
+          const projects = section("Projects");
+          const grid = el("div", "card-grid");
+          for (const rollup of rollups) grid.appendChild(projectCard(rollup));
+          if (rollups.length === 0) {
+            grid.appendChild(emptyState("No projects yet \u2014 create the first one below."));
+          }
+          projects.body.appendChild(grid);
+          newProjectForm(projects.body);
+          body.appendChild(projects.section);
+          const gates = section("Gates awaiting a decision");
+          const pending = [
+            ...inbox.awaitingSpec.map((item) => ({ item, gate: "spec_approval" })),
+            ...inbox.awaitingReview.map((item) => ({ item, gate: "review_approval" }))
+          ];
+          if (pending.length === 0) {
+            gates.body.appendChild(emptyState("Nothing waits on you."));
+          } else {
+            gates.body.appendChild(
+              table(
+                ["Project", "Story", "Title", "Gate", ""],
+                pending.map(({ item, gate }) => [
+                  item.project?.slug ?? "\u2014",
+                  item.externalKey,
+                  item.title,
+                  badge(gate),
+                  button("Open", () => navigate(`item/${item.id}`))
+                ])
+              )
+            );
+          }
+          body.appendChild(gates.section);
+          const runnersSection = section("Runners");
+          if (runners.length === 0) {
+            runnersSection.body.appendChild(
+              emptyState("No runners announced \u2014 start one with `oahs work --project <slug>`.")
+            );
+          } else {
+            runnersSection.body.appendChild(
+              table(
+                ["Status", "Mode", "Actor", "Project", "Repo", "Last seen"],
+                [...runners].sort((a, b) => b.lastSeenAt - a.lastSeenAt).map((runner) => [
+                  Date.now() - runner.lastSeenAt > STALE_MS ? badge("stale") : badge("live"),
+                  runner.mode,
+                  runner.actorId,
+                  runner.projectId ?? "\u2014",
+                  runner.repoPath ?? "\u2014",
+                  ago(runner.lastSeenAt)
+                ])
+              )
+            );
+          }
+          body.appendChild(runnersSection.section);
+        });
+      }
+      reload();
       return () => {
       };
     }
@@ -1129,10 +1295,10 @@
             const full = JSON.stringify(event.payload);
             const payload = el("span", void 0, full.length > 100 ? `${full.slice(0, 100)}\u2026` : full);
             payload.title = full;
-            const when = event.occurredAt > 0 ? new Date(event.occurredAt).toISOString().replace(/\.\d{3}Z$/, "Z") : "\u2014";
+            const when2 = event.occurredAt > 0 ? new Date(event.occurredAt).toISOString().replace(/\.\d{3}Z$/, "Z") : "\u2014";
             return [
               String(event.globalSeq),
-              when,
+              when2,
               `${event.streamType} ${event.streamId}`,
               event.type,
               event.actorId,
@@ -1336,6 +1502,170 @@
     }
   };
 
+  // ../spine-api/ui-src/views/item.ts
+  function when(ms) {
+    return ms > 0 ? new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z") : "\u2014";
+  }
+  function payloadCell(payload) {
+    const full = JSON.stringify(payload, null, 2);
+    const details = el("details");
+    const compact = JSON.stringify(payload);
+    details.appendChild(el("summary", void 0, compact.length > 80 ? `${compact.slice(0, 79)}\u2026` : compact));
+    const pre = el("pre", "payload");
+    pre.textContent = full;
+    details.appendChild(pre);
+    return details;
+  }
+  var itemView = {
+    mount(container) {
+      const handle = routeParam();
+      const { view, toolbar, body } = viewShell(`Work item ${handle}`);
+      toolbar.appendChild(button("\u2190 Back", () => window.history.back()));
+      toolbar.appendChild(button("Refresh", () => reload(), "primary"));
+      container.appendChild(view);
+      function gateActions(item, parent) {
+        const gate = item.state === "draft" && item.specCheckpoint ? "spec_approval" : item.state === "in_review" ? "review_approval" : null;
+        if (gate === null) return;
+        const row = el("div", "c-actions");
+        row.appendChild(badge(`awaiting ${gate}`));
+        row.appendChild(
+          el(
+            "span",
+            "c-sub",
+            `pinned verification: ${(item.pinnedVerification ?? []).join(" && ") || "(none)"}`
+          )
+        );
+        row.appendChild(
+          button(
+            "Approve",
+            () => {
+              run(async () => {
+                await rpc("approve_gate", { workItemId: item.id, gate });
+                setStatus(`approved ${gate} on ${item.externalKey}`);
+                reload();
+              });
+            },
+            "approve"
+          )
+        );
+        row.appendChild(
+          button(
+            "Reject",
+            () => {
+              run(async () => {
+                await rpc("reject_gate", { workItemId: item.id, gate });
+                setStatus(`rejected ${gate} on ${item.externalKey}`);
+                reload();
+              });
+            },
+            "reject"
+          )
+        );
+        parent.appendChild(row);
+      }
+      function reload() {
+        run(async () => {
+          const item = await rpc("get_work_item", { workItemId: handle });
+          const [claims, evidence, events, feature] = await Promise.all([
+            rpc("get_claims", { workItemId: item.id }),
+            rpc("list_evidence", { workItemId: item.id }),
+            rpc("query_events", { streamId: item.id }),
+            rpc("get_feature", { featureId: item.featureId })
+          ]);
+          clear(body);
+          const head = el("div", "card");
+          head.appendChild(el("div", "c-title", `${item.externalKey} \u2014 ${item.title}`));
+          const meta = el("div", "c-actions");
+          meta.appendChild(badge(item.state));
+          meta.appendChild(badge(item.kind));
+          if (item.blockedReason !== null) meta.appendChild(badge(`blocked: ${item.blockedReason}`));
+          meta.appendChild(el("span", "c-sub", `review loop #${String(item.reviewLoopIteration)}`));
+          head.appendChild(meta);
+          head.appendChild(el("div", "c-sub", `spec: ${item.specPath}`));
+          head.appendChild(
+            button("Open project", () => {
+              run(async () => {
+                const project = await rpc("project_get", {
+                  projectId: feature.projectId
+                });
+                navigate(`project/${project.slug}`);
+              });
+            })
+          );
+          gateActions(item, head);
+          body.appendChild(head);
+          const evidenceSection = section("Evidence");
+          if (evidence.length === 0) {
+            evidenceSection.body.appendChild(emptyState("No evidence submitted yet."));
+          } else {
+            evidenceSection.body.appendChild(
+              table(
+                ["Kind", "Highlights", "Payload"],
+                evidence.map((entry) => {
+                  const highlights = [];
+                  const p = entry.payload;
+                  if (typeof p["status"] === "string") highlights.push(`status: ${String(p["status"])}`);
+                  if (typeof p["command"] === "string") highlights.push(String(p["command"]));
+                  if (p["exitCode"] !== void 0) highlights.push(`exit ${String(p["exitCode"])}`);
+                  if (p["nonEmpty"] !== void 0) highlights.push(`nonEmpty: ${String(p["nonEmpty"])}`);
+                  if (p["reachableOnRemote"] !== void 0)
+                    highlights.push(`onRemote: ${String(p["reachableOnRemote"])}`);
+                  if (typeof p["agentLogPath"] === "string")
+                    highlights.push(`transcript: ${String(p["agentLogPath"])}`);
+                  return [badge(entry.kind), highlights.join(" \xB7 ") || "\u2014", payloadCell(entry.payload)];
+                })
+              )
+            );
+          }
+          body.appendChild(evidenceSection.section);
+          const claimsSection = section("Claims");
+          if (claims.length === 0) {
+            claimsSection.body.appendChild(emptyState("Never claimed."));
+          } else {
+            claimsSection.body.appendChild(
+              table(
+                ["Claim", "Actor", "Fence", "Status", ""],
+                claims.map((claim) => [
+                  claim.id,
+                  claim.actorId,
+                  String(claim.fencingToken),
+                  claim.released ? badge("released") : badge("live"),
+                  claim.released ? "\u2014" : button(
+                    "Force release",
+                    () => {
+                      run(async () => {
+                        await rpc("force_release_claim", { workItemId: item.id });
+                        reload();
+                      });
+                    },
+                    "danger"
+                  )
+                ])
+              )
+            );
+          }
+          body.appendChild(claimsSection.section);
+          const timeline = section("Timeline");
+          timeline.body.appendChild(
+            table(
+              ["When", "Type", "Actor", "Payload"],
+              [...events].reverse().map((event) => [
+                when(event.occurredAt),
+                event.type,
+                event.actorId,
+                payloadCell(event.payload)
+              ])
+            )
+          );
+          body.appendChild(timeline.section);
+        });
+      }
+      reload();
+      return () => {
+      };
+    }
+  };
+
   // ../spine-api/ui-src/views/login.ts
   function renderLogin(root, onConnected) {
     clear(root);
@@ -1378,6 +1708,99 @@
     box.appendChild(error);
     root.appendChild(box);
   }
+
+  // ../spine-api/ui-src/views/project.ts
+  function itemCard(item) {
+    const cardEl = el("div", "card item-card");
+    cardEl.appendChild(el("div", "c-title", `${item.externalKey} \u2014 ${item.title}`));
+    const meta = el("div", "c-actions");
+    meta.appendChild(badge(item.kind));
+    if (item.blockedReason !== null) meta.appendChild(badge(`blocked: ${item.blockedReason}`));
+    cardEl.appendChild(meta);
+    cardEl.addEventListener("click", () => navigate(`item/${item.id}`));
+    return cardEl;
+  }
+  var projectView = {
+    mount(container) {
+      const handle = routeParam();
+      const { view, toolbar, body } = viewShell(`Project ${handle}`);
+      toolbar.appendChild(button("\u2190 Dashboard", () => navigate("dashboard")));
+      toolbar.appendChild(button("Refresh", () => reload(), "primary"));
+      container.appendChild(view);
+      function reload() {
+        run(async () => {
+          const [project, items, inbox] = await Promise.all([
+            rpc("project_get", { projectId: handle }),
+            rpc("list_work_items", { projectId: handle }),
+            rpc("inbox")
+          ]);
+          clear(body);
+          const head = el("div", "card");
+          head.appendChild(el("div", "c-title", `${project.name} (${project.slug})`));
+          head.appendChild(
+            el(
+              "div",
+              "c-sub",
+              `${project.kind} \xB7 ${project.state} \xB7 repo: ${project.repoPath ?? "(unbound)"} \xB7 spec: ${project.defaultSpecFolder ?? "(unbound)"}`
+            )
+          );
+          if (project.state === "active") {
+            head.appendChild(
+              button(
+                "Archive project",
+                () => {
+                  run(async () => {
+                    await rpc("project_archive", { projectId: project.id });
+                    setStatus(`archived ${project.slug}`);
+                    navigate("dashboard");
+                  });
+                },
+                "danger"
+              )
+            );
+          }
+          body.appendChild(head);
+          const gates = section("Gates awaiting a decision");
+          const pending = [
+            ...inbox.awaitingSpec.map((item) => ({ item, gate: "spec_approval" })),
+            ...inbox.awaitingReview.map((item) => ({ item, gate: "review_approval" }))
+          ].filter(({ item }) => item.project?.id === project.id);
+          if (pending.length === 0) {
+            gates.body.appendChild(emptyState("No gates waiting in this project."));
+          } else {
+            gates.body.appendChild(
+              table(
+                ["Story", "Title", "Gate", "Pinned verification", ""],
+                pending.map(({ item, gate }) => [
+                  item.externalKey,
+                  item.title,
+                  badge(gate),
+                  (item.pinnedVerification ?? []).join(" && ") || "\u2014",
+                  button("Open", () => navigate(`item/${item.id}`))
+                ])
+              )
+            );
+          }
+          body.appendChild(gates.section);
+          const board = section("Board");
+          const columns = el("div", "board");
+          for (const stateName of WORK_ITEM_STATES) {
+            const inState = items.filter((item) => item.state === stateName);
+            const column = el("div", "board-column");
+            column.appendChild(el("h3", void 0, `${stateName} (${String(inState.length)})`));
+            for (const item of inState) column.appendChild(itemCard(item));
+            columns.appendChild(column);
+          }
+          board.body.appendChild(columns);
+          if (items.length === 0) board.body.appendChild(emptyState("No work items yet \u2014 import a stories.yaml."));
+          body.appendChild(board.section);
+        });
+      }
+      reload();
+      return () => {
+      };
+    }
+  };
 
   // ../spine-api/ui-src/views/work.ts
   async function fetchItems(stateFilter) {
@@ -1461,6 +1884,7 @@
   // ../spine-api/ui-src/app.ts
   function routeTable() {
     return [
+      { path: "dashboard", label: "Dashboard", view: dashboardView },
       { path: "chat", label: "Chat", view: chatView },
       { path: "work", label: "Work items", view: workView },
       { path: "features", label: "Features", view: featuresView },
@@ -1468,7 +1892,9 @@
       { path: "events", label: "Audit events", view: eventsView },
       { path: "entitlements", label: "Entitlements", view: entitlementsView, adminOnly: true },
       { path: "actors", label: "Actors", view: actorsView, adminOnly: true },
-      { path: "insights", label: "Insights", view: insightsView }
+      { path: "insights", label: "Insights", view: insightsView },
+      { path: "project", label: "Project", view: projectView, hidden: true },
+      { path: "item", label: "Work item", view: itemView, hidden: true }
     ];
   }
   function startApp(root) {

@@ -19,7 +19,7 @@ export const claimsView: View = {
     view.appendChild(head);
 
     const toolbar = el('div', 'toolbar');
-    const workItemId = textInput('workItemId or externalKey');
+    const workItemId = textInput('blank = ALL live claims; or a workItemId / externalKey');
     toolbar.appendChild(field('Work item', workItemId));
     toolbar.appendChild(button('Load claims', () => reload(), 'primary'));
     toolbar.appendChild(
@@ -45,19 +45,31 @@ export const claimsView: View = {
 
     function reload(): void {
       run(async () => {
+        // Wave 3: blank filter = the WORKSPACE-WIDE live view (list_claims),
+        // expired leases flagged — nobody types an id just to see what is
+        // being worked on (or stuck) right now.
         const id = workItemId.value.trim();
-        if (id === '') throw new Error('workItemId is required');
-        const claims = await rpc<Claim[]>('get_claims', { workItemId: id });
+        const claims =
+          id === ''
+            ? await rpc<Claim[]>('list_claims')
+            : await rpc<Claim[]>('get_claims', { workItemId: id });
         clear(body);
         if (claims.length === 0) {
-          body.appendChild(emptyState('No claims on this work item.'));
+          body.appendChild(
+            emptyState(id === '' ? 'No live claims anywhere.' : 'No claims on this work item.'),
+          );
           return;
         }
         const rows = claims.map((claim) => [
           claim.id,
+          claim.workItemId,
           claim.actorId,
           String(claim.fencingToken),
-          claim.released ? badge('released') : badge('live'),
+          claim.released
+            ? badge('released')
+            : claim.expired === true
+              ? badge('expired')
+              : badge('live'),
           claim.released
             ? '—'
             : button('Release', () => {
@@ -67,7 +79,7 @@ export const claimsView: View = {
                 });
               }),
         ]);
-        body.appendChild(table(['Claim', 'Actor', 'Fence', 'Status', 'Action'], rows));
+        body.appendChild(table(['Claim', 'Work item', 'Actor', 'Fence', 'Status', 'Action'], rows));
       });
     }
 

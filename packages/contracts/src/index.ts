@@ -509,7 +509,36 @@ export const COMMANDS = [
     z.object({ includeReleased: z.boolean().optional() }),
     true,
   ),
+  def(
+    'list_evidence',
+    'A work item’s raw evidence in submission order (halt_report, test_run, git_diff, commit, doc_lint …).',
+    z.object({ workItemId }),
+    true,
+  ),
   def('whoami', 'Resolve the authenticated actor.', z.object({}), true),
+  // -- runner liveness (Wave 3): operational state, zero lifecycle authority ----
+  def(
+    'runner_announce',
+    'Announce a worker process (identity from the token). Returns runnerId for heartbeats. Operational only — no event, no authority.',
+    z.object({
+      mode: z.enum(['coding', 'jobs']),
+      projectId: z.string().min(1).optional().describe('Project the runner is bound to (id or slug)'),
+      repoPath: z.string().optional(),
+      host: z.string().optional(),
+      pid: z.number().int().optional(),
+    }),
+  ),
+  def(
+    'runner_heartbeat',
+    'Renew a runner’s liveness. Unknown runnerId (server restarted) is a GuardFailedError — re-register.',
+    z.object({ runnerId: z.string().min(1) }),
+  ),
+  def(
+    'list_runners',
+    'Every registered runner with lastSeenAt — "which workers are alive, on what" for the cockpit.',
+    z.object({}),
+    true,
+  ),
   def(
     'list_tokens',
     'ADMIN: issued-token inventory (actor id + count) — hashes stay server-side, secrets are never returned.',

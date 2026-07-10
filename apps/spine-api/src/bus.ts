@@ -28,6 +28,7 @@ import {
 import { COMMAND_MAP, type ActorContext, type CommandBus, type CommandName } from '@oahs/contracts';
 
 import type { TokenStore } from './auth.js';
+import { RunnerRegistry } from './runners.js';
 
 // Parsed-input shapes (mirror the zod schemas in @oahs/contracts; the zod
 // parse in execute() is the runtime guarantee, these are the static view).
@@ -116,7 +117,11 @@ function requireAdmin(ctx: ActorContext, command: string): void {
   }
 }
 
-export function createCommandBus(engine: SpineEngine, tokens: TokenStore): CommandBus {
+export function createCommandBus(
+  engine: SpineEngine,
+  tokens: TokenStore,
+  runners: RunnerRegistry = new RunnerRegistry(),
+): CommandBus {
   async function execute(command: string, input: unknown, ctx: ActorContext): Promise<unknown> {
     const def = COMMAND_MAP.get(command);
     if (!def) throw new GuardFailedError(`unknown command: ${command}`);
@@ -589,8 +594,42 @@ export function createCommandBus(engine: SpineEngine, tokens: TokenStore): Comma
           ...(p.includeReleased !== undefined ? { includeReleased: p.includeReleased } : {}),
         });
       }
+      case 'list_evidence': {
+        const p = parsed as WorkItemIn;
+        return engine.listEvidence(p.workItemId);
+      }
       case 'whoami': {
         return { actorId: ctx.actorId, isAdmin: ctx.isAdmin };
+      }
+
+      // -- runner liveness (Wave 3): operational, zero lifecycle authority -------
+      case 'runner_announce': {
+        const p = parsed as {
+          mode: 'coding' | 'jobs';
+          projectId?: string | undefined;
+          repoPath?: string | undefined;
+          host?: string | undefined;
+          pid?: number | undefined;
+        };
+        return runners.register(ctx.actorId, {
+          mode: p.mode,
+          ...(p.projectId !== undefined ? { projectId: p.projectId } : {}),
+          ...(p.repoPath !== undefined ? { repoPath: p.repoPath } : {}),
+          ...(p.host !== undefined ? { host: p.host } : {}),
+          ...(p.pid !== undefined ? { pid: p.pid } : {}),
+        });
+      }
+      case 'runner_heartbeat': {
+        const p = parsed as { runnerId: string };
+        if (!runners.heartbeat(p.runnerId)) {
+          throw new GuardFailedError(
+            `unknown runner ${p.runnerId} (server restarted?) — re-register`,
+          );
+        }
+        return { ok: true };
+      }
+      case 'list_runners': {
+        return runners.list();
       }
 
       // -- token recovery (ADMIN; Phase 7 Wave 1) --------------------------------

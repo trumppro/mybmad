@@ -657,6 +657,8 @@ export interface SpineEngine {
   getClaims(workItemId: string): Claim[];
   /** Workspace-wide claims view: live only by default (the "what is being worked on" query). */
   listClaims(input?: { includeReleased?: boolean }): Claim[];
+  /** A work item's raw evidence in submission order (the detail view's source). */
+  listEvidence(workItemId: string): Evidence[];
   /** Additive query surface (post-conformance): list/filter work items. */
   listWorkItems(filter?: {
     state?: WorkItemState;

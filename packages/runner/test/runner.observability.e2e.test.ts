@@ -62,6 +62,7 @@ writeFileSync(specFile, [
 type App = Awaited<ReturnType<typeof buildServer>>;
 
 let app: App;
+let admin: OahsClient;
 let po: OahsClient;
 let dev: OahsClient;
 let devActorId: string;
@@ -79,7 +80,7 @@ beforeAll(async () => {
   await app.listen({ port: 0, host: '127.0.0.1' });
   const { port } = app.server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${port}`;
-  const admin = makeClient({ baseUrl, token: ADMIN_TOKEN });
+  admin = makeClient({ baseUrl, token: ADMIN_TOKEN });
 
   const createdPo = await admin.call<{ actor: Actor; token: string }>('create_actor', {
     type: 'user',
@@ -250,6 +251,16 @@ describe('runner observability + resilience', () => {
 
     expect(lines.some((l) => l.includes('simulated jobs blip'))).toBe(true);
     expect(cleanPolls).toBeGreaterThanOrEqual(1);
+  });
+
+  it('workLoop ANNOUNCES itself: list_runners shows the coding runner (Wave 3 visibility)', async () => {
+    await workLoop({ ...runnerOptions(), once: true });
+    const runners = await admin.call<
+      Array<{ actorId: string; mode: string; repoPath?: string; lastSeenAt: number }>
+    >('list_runners');
+    const mine = runners.find((r) => r.actorId === devActorId && r.mode === 'coding');
+    expect(mine).toBeDefined();
+    expect(mine?.repoPath).toBe(repoDir);
   });
 
   it('workLoop --once still propagates a cycle error (script semantics)', async () => {

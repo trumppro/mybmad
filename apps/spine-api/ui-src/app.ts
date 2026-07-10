@@ -16,17 +16,23 @@ import { LS_TOKEN, LS_URL, state, type WhoAmI } from './core/state.js';
 import { actorsView } from './views/actors.js';
 import { chatView } from './views/chat.js';
 import { claimsView } from './views/claims.js';
+import { dashboardView } from './views/dashboard.js';
 import { entitlementsView } from './views/entitlements.js';
 import { eventsView } from './views/events.js';
 import { featuresView } from './views/features.js';
 import { insightsView } from './views/insights.js';
+import { itemView } from './views/item.js';
 import { renderLogin } from './views/login.js';
+import { projectView } from './views/project.js';
 import { workView } from './views/work.js';
 
-// The route table. Chat is the home; the ops views follow. Admin-only pages
-// are hidden from the nav for non-admin actors (the server enforces either way).
+// The route table. The DASHBOARD is the home (Phase 7 Wave 3): one screen for
+// every project, runner, and pending gate. Parameterized detail pages
+// (project/<slug>, item/<id>) are routed but hidden from the nav. Admin-only
+// pages are hidden from the nav for non-admin actors (the server enforces).
 function routeTable(): Route[] {
   return [
+    { path: 'dashboard', label: 'Dashboard', view: dashboardView },
     { path: 'chat', label: 'Chat', view: chatView },
     { path: 'work', label: 'Work items', view: workView },
     { path: 'features', label: 'Features', view: featuresView },
@@ -35,6 +41,8 @@ function routeTable(): Route[] {
     { path: 'entitlements', label: 'Entitlements', view: entitlementsView, adminOnly: true },
     { path: 'actors', label: 'Actors', view: actorsView, adminOnly: true },
     { path: 'insights', label: 'Insights', view: insightsView },
+    { path: 'project', label: 'Project', view: projectView, hidden: true },
+    { path: 'item', label: 'Work item', view: itemView, hidden: true },
   ];
 }
 

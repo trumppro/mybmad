@@ -67,6 +67,30 @@ describe('listClaims — the workspace-wide claims view', () => {
     expect(all[0]!.released).toBe(true);
   });
 
+  it('listEvidence returns a work item’s raw evidence in submission order (the detail view’s source)', () => {
+    const rig = makeRig();
+    rig.engine.grant({ actorId: rig.dev.id, permission: 'task.advance' });
+    const claim = rig.engine.claimTask({ workItemId: rig.a.id, actorId: rig.dev.id });
+    rig.engine.submitEvidence({
+      workItemId: rig.a.id,
+      actorId: rig.dev.id,
+      evidence: { kind: 'halt_report', payload: { status: 'done', agentLogPath: '/l/x.log' } },
+      fencingToken: claim.fencingToken,
+    });
+    rig.engine.submitEvidence({
+      workItemId: rig.a.id,
+      actorId: rig.dev.id,
+      evidence: { kind: 'test_run', payload: { command: 'pnpm test', exitCode: 0 } },
+      fencingToken: claim.fencingToken,
+    });
+
+    const evidence = rig.engine.listEvidence(rig.a.id);
+    expect(evidence.map((e) => e.kind)).toEqual(['halt_report', 'test_run']);
+    expect(evidence[0]!.payload['agentLogPath']).toBe('/l/x.log');
+    // Handle resolution works here too, and other items see nothing.
+    expect(rig.engine.listEvidence('lc-b')).toEqual([]);
+  });
+
   it('marks EXPIRED leases: unreleased but past TTL by the ENGINE clock (both modes)', () => {
     const rig = makeRig();
     rig.engine.claimTask({ workItemId: rig.a.id, actorId: rig.dev.id, ttlMs: 100 });

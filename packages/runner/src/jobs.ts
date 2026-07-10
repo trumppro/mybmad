@@ -37,7 +37,7 @@ import { join } from 'node:path';
 import type { OahsClient } from '@oahs/contracts';
 import type { AgentJob, AgentMemory, Message } from '@oahs/core';
 
-import { defaultRunnerLog } from './index.js';
+import { announceRunner, defaultRunnerLog } from './index.js';
 
 export interface JobsRunnerOptions {
   client: OahsClient;
@@ -230,6 +230,8 @@ export async function jobsLoop(
   const log = options.log ?? defaultRunnerLog;
   const opts = { ...options, log };
   const backoffMs = options.backoffMs ?? 5_000;
+  const announcer = announceRunner(options.client, { mode: 'jobs', log });
+  await announcer.ready;
   let stopped = false;
   let wake: (() => void) | undefined;
   const onSigint = (): void => {
@@ -271,6 +273,7 @@ export async function jobsLoop(
       }
     }
   } finally {
+    announcer.stop();
     process.removeListener('SIGINT', onSigint);
   }
 }

@@ -31,6 +31,7 @@ export function buildAppShell(root: HTMLElement, onLogout: () => void): void {
   const sidebar = el('nav');
   sidebar.id = 'sidebar';
   for (const route of getRoutes()) {
+    if (route.hidden === true) continue;
     if (route.adminOnly === true && !state.isAdmin) continue;
     const item = el('button', 'nav-item', route.label);
     item.dataset['path'] = route.path;
@@ -48,7 +49,11 @@ export function buildAppShell(root: HTMLElement, onLogout: () => void): void {
   startRouter(content, (path) => {
     for (const child of Array.from(sidebar.children)) {
       const item = child as HTMLElement;
-      item.classList.toggle('active', item.dataset['path'] === path);
+      const target = item.dataset['path'];
+      item.classList.toggle(
+        'active',
+        target === path || (target !== undefined && path.startsWith(`${target}/`)),
+      );
     }
   });
 }

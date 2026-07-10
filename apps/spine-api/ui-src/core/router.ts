@@ -18,6 +18,8 @@ export interface Route {
   view: View;
   /** Hidden from the nav for non-admin actors (server still enforces). */
   adminOnly?: boolean;
+  /** Never shown in the nav (parameterized detail pages). */
+  hidden?: boolean;
 }
 
 let routes: Route[] = [];
@@ -38,10 +40,21 @@ export function currentPath(): string {
   return hash === '' ? (routes[0]?.path ?? '') : hash;
 }
 
+/** The suffix after a parameterized route's first '/', e.g. 'alpha' in #/project/alpha. */
+export function routeParam(): string {
+  const path = currentPath();
+  const slash = path.indexOf('/');
+  return slash > 0 ? decodeURIComponent(path.slice(slash + 1)) : '';
+}
+
 function renderCurrent(): void {
   if (contentEl === null) return;
   const path = currentPath();
-  const route = routes.find((candidate) => candidate.path === path) ?? routes[0];
+  const route =
+    routes.find((candidate) => candidate.path === path) ??
+    // Parameterized pages: 'project/alpha' mounts the 'project' route.
+    routes.find((candidate) => path.startsWith(`${candidate.path}/`)) ??
+    routes[0];
   if (route === undefined) return;
   if (currentCleanup !== null) {
     currentCleanup();

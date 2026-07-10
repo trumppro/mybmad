@@ -12,11 +12,19 @@ import { state } from '../core/state.js';
 import { emptyState } from '../components/widgets.js';
 
 type Gate = 'spec_approval' | 'review_approval';
+type InboxItem = WorkItem & { project?: { id: string; slug: string; name: string } };
 
-function gateCard(item: WorkItem, gate: Gate, parent: HTMLElement): void {
+function gateCard(item: InboxItem, gate: Gate, parent: HTMLElement): void {
   const card = el('div', 'card');
   card.appendChild(el('div', 'c-title', `${item.externalKey} — ${item.title}`));
-  card.appendChild(el('div', 'c-sub', `${item.state} · awaiting ${gate}`));
+  const pinned = (item.pinnedVerification ?? []).join(' && ');
+  card.appendChild(
+    el(
+      'div',
+      'c-sub',
+      `${item.project !== undefined ? `${item.project.slug} · ` : ''}${item.state} · awaiting ${gate}${pinned !== '' ? ` · pinned: ${pinned}` : ''}`,
+    ),
+  );
   const actions = el('div', 'c-actions');
   const approve = el('button', 'approve', 'Approve');
   approve.addEventListener('click', () => {

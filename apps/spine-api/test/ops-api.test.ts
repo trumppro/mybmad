@@ -81,6 +81,37 @@ describe('list_claims — workspace-wide claims view over HTTP', () => {
   });
 });
 
+describe('runner registry — who is polling, for which project (Wave 3)', () => {
+  it('register → list shows the runner under its TOKEN actor; heartbeat bumps lastSeenAt', async () => {
+    const registered = await dev.call<{ runnerId: string; lastSeenAt: number }>(
+      'runner_announce',
+      { mode: 'coding', projectId: 'default', repoPath: '/work/repo' },
+    );
+    expect(registered.runnerId).toMatch(/^rn_/);
+
+    const listed = await admin.call<
+      Array<{ runnerId: string; actorId: string; mode: string; repoPath?: string; lastSeenAt: number }>
+    >('list_runners');
+    const mine = listed.find((r) => r.runnerId === registered.runnerId);
+    // Identity comes from the TOKEN, never the body.
+    expect(mine).toMatchObject({ actorId: devActor.id, mode: 'coding', repoPath: '/work/repo' });
+
+    const before = mine!.lastSeenAt;
+    await new Promise((r) => setTimeout(r, 15));
+    await dev.call('runner_heartbeat', { runnerId: registered.runnerId });
+    const after = await admin.call<Array<{ runnerId: string; lastSeenAt: number }>>('list_runners');
+    expect(after.find((r) => r.runnerId === registered.runnerId)!.lastSeenAt).toBeGreaterThan(
+      before,
+    );
+  });
+
+  it('heartbeat for an unknown runner is a clear error (restart lost the registry — re-register)', async () => {
+    await expect(dev.call('runner_heartbeat', { runnerId: 'rn_ghost' })).rejects.toMatchObject({
+      name: 'GuardFailedError',
+    });
+  });
+});
+
 describe('token inventory + reissue — admin-only recovery rails', () => {
   it('list_tokens is admin-only and never returns a secret', async () => {
     await expect(dev.call('list_tokens')).rejects.toMatchObject({
