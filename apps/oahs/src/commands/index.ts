@@ -257,6 +257,64 @@ export async function featureCreateCommand(
 }
 
 // ---------------------------------------------------------------------------
+// feature FSM (Phase 9, roadmap §9)
+// ---------------------------------------------------------------------------
+
+export const FEATURE_GATES = ['design_approval', 'handoff_approval'] as const;
+
+function assertFeatureGate(gate: string): asserts gate is (typeof FEATURE_GATES)[number] {
+  if (!(FEATURE_GATES as readonly string[]).includes(gate)) {
+    throw new Error(`invalid --gate "${gate}" (expected ${FEATURE_GATES.join(' | ')})`);
+  }
+}
+
+export async function featureAdvanceCommand(
+  client: OahsClient,
+  opts: { featureId: string; to: string },
+): Promise<string> {
+  const feature = await client.call<Feature>('feature_advance', {
+    featureId: opts.featureId,
+    to: opts.to,
+  });
+  return `advanced feature ${feature.id}\nstate: ${feature.state}`;
+}
+
+export async function featureApproveCommand(
+  client: OahsClient,
+  opts: { featureId: string; gate: string },
+): Promise<string> {
+  assertFeatureGate(opts.gate);
+  const feature = await client.call<Feature>('approve_feature_gate', {
+    featureId: opts.featureId,
+    gate: opts.gate,
+  });
+  return `approved ${opts.gate} on feature ${feature.id}\nstate: ${feature.state}`;
+}
+
+export async function featureRejectCommand(
+  client: OahsClient,
+  opts: { featureId: string; gate: string },
+): Promise<string> {
+  assertFeatureGate(opts.gate);
+  const feature = await client.call<Feature>('reject_feature_gate', {
+    featureId: opts.featureId,
+    gate: opts.gate,
+  });
+  return `rejected ${opts.gate} on feature ${feature.id} (loopback fired)\nstate: ${feature.state}`;
+}
+
+export async function featureCancelCommand(
+  client: OahsClient,
+  opts: { featureId: string; reason?: string },
+): Promise<string> {
+  const feature = await client.call<Feature>('cancel_feature', {
+    featureId: opts.featureId,
+    ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+  });
+  return `cancelled feature ${feature.id}\nstate: ${feature.state}`;
+}
+
+// ---------------------------------------------------------------------------
 // init (Phase 7 Wave 4) — one command replaces the ~15-step bootstrap ritual
 // ---------------------------------------------------------------------------
 

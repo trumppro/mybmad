@@ -7,7 +7,7 @@
  * TMPL (sprint-status-template.yaml): "Mark epic as 'in-progress' when starting
  * work on its first story".
  * ROADMAP §1.2 hardens the prose: "Epic-lift is an idempotent projector rule:
- * the first child leaving `backlog` lifts the feature to `in_progress`; retries
+ * the first child leaving `backlog` lifts the feature to `executing` (§9 rename); retries
  * no-op. Feature `done` is never automatic — the engine only *permits* it when
  * all children are done and a permitted actor commands it."
  *
@@ -151,7 +151,7 @@ describe('epic lift (SPRINT epic transitions, ROADMAP §1.2)', () => {
   // SPRINT: "Epic transitions to 'in-progress' automatically when first story is
   // created"; ROADMAP §1.2 hardens the trigger to "the first child leaving
   // `backlog`", executed under the system actor's implicit projector grant.
-  it('the first story leaving backlog lifts the feature to in_progress, authored by system', () => {
+  it('the first story leaving backlog lifts the feature to executing, authored by system', () => {
     const rig = makeRig();
     const story1 = newItem(rig, '1-1');
     newItem(rig, '1-2');
@@ -162,7 +162,7 @@ describe('epic lift (SPRINT epic transitions, ROADMAP §1.2)', () => {
     const featureEventsBefore = rig.engine.events(rig.feature.id);
     leaveBacklog(rig, story1);
 
-    expect(rig.engine.getFeature(rig.feature.id).state).toBe('in_progress');
+    expect(rig.engine.getFeature(rig.feature.id).state).toBe('executing');
 
     // ROADMAP §1.2: "A system actor exists per workspace with versioned implicit
     // grants for exactly the projector rules (epic-lift, ...)" — the lift event
@@ -183,11 +183,11 @@ describe('epic lift (SPRINT epic transitions, ROADMAP §1.2)', () => {
     const story2 = newItem(rig, '1-2');
 
     leaveBacklog(rig, story1);
-    expect(rig.engine.getFeature(rig.feature.id).state).toBe('in_progress');
+    expect(rig.engine.getFeature(rig.feature.id).state).toBe('executing');
     const featureEventCountAfterLift = rig.engine.events(rig.feature.id).length;
 
     leaveBacklog(rig, story2);
-    expect(rig.engine.getFeature(rig.feature.id).state).toBe('in_progress');
+    expect(rig.engine.getFeature(rig.feature.id).state).toBe('executing');
     expect(rig.engine.events(rig.feature.id).length).toBe(featureEventCountAfterLift);
   });
 
@@ -195,7 +195,7 @@ describe('epic lift (SPRINT epic transitions, ROADMAP §1.2)', () => {
   // ROADMAP §1.2: "Feature `done` is never automatic — the engine only *permits*
   // it when all children are done and a permitted actor commands it."
   // The SpineEngine surface exposes no automatic feature completion; conformance
-  // here is that the feature is still in_progress after every child is done.
+  // here is that the feature is still `executing` after every child is done.
   it('does NOT auto-complete the feature when all stories reach done', () => {
     const rig = makeRig();
     const story1 = newItem(rig, '1-1');
@@ -206,8 +206,8 @@ describe('epic lift (SPRINT epic transitions, ROADMAP §1.2)', () => {
     expect(rig.engine.getWorkItem(story1.id).state).toBe('done');
     expect(rig.engine.getWorkItem(story2.id).state).toBe('done');
 
-    // All children done, yet the feature holds at in_progress until a permitted
+    // All children done, yet the feature holds at `executing` until a permitted
     // actor commands the completion.
-    expect(rig.engine.getFeature(rig.feature.id).state).toBe('in_progress');
+    expect(rig.engine.getFeature(rig.feature.id).state).toBe('executing');
   });
 });

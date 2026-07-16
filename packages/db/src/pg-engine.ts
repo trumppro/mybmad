@@ -52,6 +52,9 @@ import {
   type DivergenceReport,
   type Evidence,
   type Feature,
+  type FeatureAdvanceInput,
+  type FeatureGateDecisionInput,
+  type FeatureState,
   type GateCode,
   type GateDecisionInput,
   type GatePolicy,
@@ -156,6 +159,40 @@ const TRANSITIONS: TransitionRule[] = [
     guards: ['nonempty_diff'],
   },
 ];
+
+/** Mirror of the reference feature FSM (engine.ts §9) — do not diverge. */
+type FeatureGuard = 'children_done' | 'tests_pinned';
+
+interface FeatureTransitionRule {
+  from: FeatureState;
+  to: FeatureState;
+  permission: Permission;
+  guards: FeatureGuard[];
+}
+
+const FEATURE_TRANSITIONS: FeatureTransitionRule[] = [
+  { from: 'backlog', to: 'spec', permission: 'feature.advance', guards: [] },
+  { from: 'spec', to: 'design', permission: 'feature.advance', guards: [] },
+  { from: 'breakdown', to: 'executing', permission: 'feature.advance', guards: [] },
+  { from: 'executing', to: 'handoff', permission: 'feature.advance', guards: ['children_done'] },
+];
+
+function featureGateSpec(gate: GateCode): {
+  permission: Permission;
+  expected: FeatureState;
+  to: FeatureState;
+  back: FeatureState;
+  guard?: FeatureGuard;
+} {
+  switch (gate) {
+    case 'design_approval':
+      return { permission: 'gate.design.approve', expected: 'design', to: 'breakdown', back: 'spec', guard: 'tests_pinned' };
+    case 'handoff_approval':
+      return { permission: 'gate.handoff.approve', expected: 'handoff', to: 'done', back: 'executing' };
+    default:
+      throw new GuardFailedError(`not a feature gate: ${gate}`);
+  }
+}
 
 const LEGACY_STATUS: Record<string, WorkItemState> = {
   backlog: 'backlog',
@@ -1475,14 +1512,16 @@ export class PgEngine {
     if (from === 'backlog' && to !== 'backlog') {
       const feature = await this.getFeatureRow(item.featureId, tx);
       if (feature && feature.state === 'backlog') {
-        await tx.update(features).set({ state: 'in_progress' }).where(eq(features.id, feature.id));
+        // §9: the projector jumps straight to `executing` (was `in_progress`),
+        // SKIPPING the gated stages — the degenerate/back-compat path.
+        await tx.update(features).set({ state: 'executing' }).where(eq(features.id, feature.id));
         await this.appendTx(
           tx,
           'feature',
           feature.id,
           'feature.state_changed',
           this.systemActorId,
-          { from: 'backlog', to: 'in_progress' },
+          { from: 'backlog', to: 'executing' },
           { causationId: String(event.globalSeq) },
         );
       }
@@ -1788,6 +1827,219 @@ export class PgEngine {
         undefined,
         String(decisionEvent.globalSeq),
       );
+    });
+  }
+
+  // -- feature FSM (Phase 9, roadmap §9) — mirror of engine.ts, do not diverge ---
+
+  private async mustGetFeatureRow(featureId: string): Promise<FeatureRow> {
+    const feature = await this.getFeatureRow(featureId);
+    if (!feature) throw new GuardFailedError(`unknown feature: ${featureId}`);
+    return feature;
+  }
+
+  private async checkFeatureGuard(guard: FeatureGuard, feature: FeatureRow): Promise<void> {
+    switch (guard) {
+      case 'children_done': {
+        const notDone = await this.db
+          .select({ id: workItems.id })
+          .from(workItems)
+          .where(and(eq(workItems.featureId, feature.id), sql`${workItems.state} <> 'done'`));
+        if (notDone.length > 0) {
+          throw new GuardFailedError(`feature has ${String(notDone.length)} work item(s) not done`);
+        }
+        return;
+      }
+      case 'tests_pinned': {
+        // "In TDD" checkpoint (D7): at least one story of the feature carries a
+        // non-empty pinnedVerification (the test-first pass authored the tests).
+        const rows = await this.db
+          .select({ pinned: workItems.pinnedVerification })
+          .from(workItems)
+          .where(eq(workItems.featureId, feature.id));
+        const anyPinned = rows.some((r) => (r.pinned?.length ?? 0) > 0);
+        if (!anyPinned) {
+          throw new GuardFailedError('In-TDD checkpoint: no pinned verification commands authored for this feature');
+        }
+        return;
+      }
+    }
+  }
+
+  /** Mutate + append feature.state_changed inside a tx. */
+  private async executeFeatureTransitionTx(
+    tx: Tx,
+    feature: FeatureRow,
+    to: FeatureState,
+    actorId: string,
+    causationId?: string,
+  ): Promise<Feature> {
+    const from = feature.state;
+    await tx.update(features).set({ state: to }).where(eq(features.id, feature.id));
+    await this.appendTx(
+      tx,
+      'feature',
+      feature.id,
+      'feature.state_changed',
+      actorId,
+      { from, to },
+      causationId !== undefined ? { causationId } : undefined,
+    );
+    return this.publicFeature({ ...feature, state: to });
+  }
+
+  async featureAdvance(input: FeatureAdvanceInput): Promise<Feature> {
+    const feature = await this.mustGetFeatureRow(input.featureId);
+    const rule = FEATURE_TRANSITIONS.find((t) => t.from === feature.state && t.to === input.to);
+    if (!rule) throw new InvalidTransitionError(feature.state as FeatureState, input.to);
+    await this.requirePermission(input.actorId, rule.permission);
+    for (const guard of rule.guards) await this.checkFeatureGuard(guard, feature);
+    return this.db.transaction(async (tx) =>
+      this.executeFeatureTransitionTx(tx, feature, input.to, input.actorId),
+    );
+  }
+
+  /** rejections so far for this feature+gate — the current quorum round. */
+  private async currentFeatureRound(featureId: string, gate: GateCode): Promise<number> {
+    const rows = await this.db
+      .select({ seq: gateDecisions.seq })
+      .from(gateDecisions)
+      .where(
+        and(
+          eq(gateDecisions.featureId, featureId),
+          eq(gateDecisions.gate, gate),
+          eq(gateDecisions.decision, 'rejected'),
+        ),
+      );
+    return rows.length;
+  }
+
+  private async featureQuorumWouldBeMet(
+    feature: FeatureRow,
+    gate: GateCode,
+    nextApproverId: string,
+  ): Promise<boolean> {
+    const round = await this.currentFeatureRound(feature.id, gate);
+    const rows = await this.db
+      .select({ actorId: gateDecisions.actorId })
+      .from(gateDecisions)
+      .where(
+        and(
+          eq(gateDecisions.featureId, feature.id),
+          eq(gateDecisions.gate, gate),
+          eq(gateDecisions.decision, 'approved'),
+          eq(gateDecisions.round, round),
+        ),
+      );
+    const ids = [...new Set(rows.map((r) => r.actorId))];
+    const approvers: ActorRow[] = [];
+    for (const id of ids) {
+      const actor = await this.getActorRow(id);
+      if (actor) approvers.push(actor);
+    }
+    const nextActor = await this.getActorRow(nextApproverId);
+    if (nextActor && !approvers.some((a) => a.id === nextActor.id)) approvers.push(nextActor);
+    const policy = await this.getGatePolicy(gate);
+    const min = policy.minApprovals ?? 1;
+    const required = policy.requiredActorTypes ?? [];
+    if (approvers.length < min) return false;
+    for (const type of required) {
+      if (!approvers.some((a) => a.type === type)) return false;
+    }
+    return true;
+  }
+
+  /** round is precomputed OUTSIDE the tx — PGlite is single-connection, so no
+   *  this.db read may happen while a this.db.transaction is open. */
+  private async recordFeatureApprovalTx(
+    tx: Queryable,
+    feature: FeatureRow,
+    gate: GateCode,
+    actorId: string,
+    round: number,
+  ): Promise<void> {
+    await tx.insert(gateDecisions).values({
+      workItemId: null,
+      featureId: feature.id,
+      gate,
+      decision: 'approved',
+      actorId,
+      round,
+    });
+    await this.appendTx(tx, 'feature', feature.id, 'gate.approved', actorId, {
+      gate,
+      round,
+      featureId: feature.id,
+    });
+  }
+
+  async approveFeatureGate(input: FeatureGateDecisionInput): Promise<Feature> {
+    const feature = await this.mustGetFeatureRow(input.featureId);
+    const { permission, expected, to, guard } = featureGateSpec(input.gate);
+    await this.requirePermission(input.actorId, permission);
+    if (feature.state !== expected) {
+      throw new GuardFailedError(`${input.gate} applies to ${expected} features, not ${feature.state}`);
+    }
+    // All reads happen BEFORE opening the transaction (single-connection PGlite).
+    const round = await this.currentFeatureRound(feature.id, input.gate);
+    const quorumMet = await this.featureQuorumWouldBeMet(feature, input.gate, input.actorId);
+    // Entry guard checked exactly when the quorum would complete (a
+    // non-completing approval records nothing extra).
+    if (quorumMet && guard !== undefined) await this.checkFeatureGuard(guard, feature);
+    return this.db.transaction(async (tx) => {
+      await this.recordFeatureApprovalTx(tx, feature, input.gate, input.actorId, round);
+      if (!quorumMet) return this.publicFeature(feature); // decision recorded; quorum pending
+      return this.executeFeatureTransitionTx(tx, feature, to, input.actorId);
+    });
+  }
+
+  async rejectFeatureGate(input: FeatureGateDecisionInput): Promise<Feature> {
+    const feature = await this.mustGetFeatureRow(input.featureId);
+    const { permission, expected, back } = featureGateSpec(input.gate);
+    await this.requirePermission(input.actorId, permission);
+    if (feature.state !== expected) {
+      throw new GuardFailedError(`${input.gate} rejection applies to ${expected} features, not ${feature.state}`);
+    }
+    const round = await this.currentFeatureRound(feature.id, input.gate);
+    return this.db.transaction(async (tx) => {
+      await tx.insert(gateDecisions).values({
+        workItemId: null,
+        featureId: feature.id,
+        gate: input.gate,
+        decision: 'rejected',
+        actorId: input.actorId,
+        round,
+      });
+      const decisionEvent = await this.appendTx(tx, 'feature', feature.id, 'gate.rejected', input.actorId, {
+        gate: input.gate,
+        featureId: feature.id,
+      });
+      return this.executeFeatureTransitionTx(
+        tx,
+        feature,
+        back,
+        this.systemActorId,
+        String(decisionEvent.globalSeq),
+      );
+    });
+  }
+
+  async cancelFeature(input: { featureId: string; actorId: string; reason?: string }): Promise<Feature> {
+    const feature = await this.mustGetFeatureRow(input.featureId);
+    await this.requirePermission(input.actorId, 'feature.cancel');
+    if (feature.state === 'done' || feature.state === 'cancelled') {
+      throw new GuardFailedError(`cannot cancel a terminal feature (${feature.state})`);
+    }
+    const from = feature.state;
+    return this.db.transaction(async (tx) => {
+      await tx.update(features).set({ state: 'cancelled' }).where(eq(features.id, feature.id));
+      await this.appendTx(tx, 'feature', feature.id, 'feature.cancelled', input.actorId, {
+        from,
+        to: 'cancelled',
+        compensating: true,
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      });
+      return this.publicFeature({ ...feature, state: 'cancelled' });
     });
   }
 

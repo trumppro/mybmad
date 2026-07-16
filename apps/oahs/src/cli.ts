@@ -29,6 +29,10 @@ import {
   projectLsCommand,
   projectShowCommand,
   featureCreateCommand,
+  featureAdvanceCommand,
+  featureApproveCommand,
+  featureRejectCommand,
+  featureCancelCommand,
   gatePolicySetCommand,
   governanceSetCommand,
   grantCommand,
@@ -372,6 +376,35 @@ export function buildProgram(): Command {
         featureCreateCommand(clientFrom(opts), {
           ...(opts.project !== undefined ? { project: opts.project } : {}),
           ...(opts.name !== undefined ? { name: opts.name } : {}),
+        }),
+      ),
+    );
+  withClientFlags(feature.command('advance <featureId>'))
+    .description('advance a feature along a non-gated edge (backlog→spec→design, breakdown→executing, executing→handoff)')
+    .requiredOption('--to <state>', 'target feature state')
+    .action(async (featureId: string, opts: ClientFlags & { to: string }) =>
+      emit(() => featureAdvanceCommand(clientFrom(opts), { featureId, to: opts.to })),
+    );
+  withClientFlags(feature.command('approve <featureId>'))
+    .description('approve a feature gate (design_approval fires design→breakdown; handoff_approval fires handoff→done)')
+    .requiredOption('--gate <gate>', 'design_approval | handoff_approval')
+    .action(async (featureId: string, opts: ClientFlags & { gate: string }) =>
+      emit(() => featureApproveCommand(clientFrom(opts), { featureId, gate: opts.gate })),
+    );
+  withClientFlags(feature.command('reject <featureId>'))
+    .description('reject a feature gate (fires the deterministic one-step loopback)')
+    .requiredOption('--gate <gate>', 'design_approval | handoff_approval')
+    .action(async (featureId: string, opts: ClientFlags & { gate: string }) =>
+      emit(() => featureRejectCommand(clientFrom(opts), { featureId, gate: opts.gate })),
+    );
+  withClientFlags(feature.command('cancel <featureId>'))
+    .description('cancel a feature (privileged) — terminal from any non-terminal state')
+    .option('--reason <reason>', 'optional cancellation note')
+    .action(async (featureId: string, opts: ClientFlags & { reason?: string }) =>
+      emit(() =>
+        featureCancelCommand(clientFrom(opts), {
+          featureId,
+          ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
         }),
       ),
     );

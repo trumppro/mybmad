@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import {
   BLOCKED_REASONS,
+  FEATURE_STATES,
   WORK_ITEM_KINDS,
   WORK_ITEM_STATES,
   type SpineEngine,
@@ -246,6 +247,40 @@ export const COMMANDS = [
     z.object({ featureId: z.string().min(1) }),
   ),
 
+  // -- feature FSM (Phase 9, roadmap §9) ----------------------------------------
+  def(
+    'feature_advance',
+    'Advance a feature along a permitted non-gated edge (backlog→spec→design, breakdown→executing, executing→handoff). Gate-fired arrows use approve_feature_gate.',
+    z.object({
+      featureId: z.string().min(1),
+      to: z.enum(FEATURE_STATES),
+    }),
+  ),
+  def(
+    'approve_feature_gate',
+    'Approve a feature gate: design_approval fires design→breakdown (In-TDD checkpoint: verification must be pinned); handoff_approval fires handoff→done. Quorum is gate-policy data (§3).',
+    z.object({
+      featureId: z.string().min(1),
+      gate: z.enum(['design_approval', 'handoff_approval']),
+    }),
+  ),
+  def(
+    'reject_feature_gate',
+    'Reject a feature gate: fires the one-step loopback as a system effect (design_approval→spec, handoff_approval→executing) and resets the quorum round.',
+    z.object({
+      featureId: z.string().min(1),
+      gate: z.enum(['design_approval', 'handoff_approval']),
+    }),
+  ),
+  def(
+    'cancel_feature',
+    'Cancel a feature (privileged, feature.cancel): terminal `cancelled` from any non-terminal state — a compensating event recording a product decision.',
+    z.object({
+      featureId: z.string().min(1),
+      reason: z.string().optional(),
+    }),
+  ),
+
   // -- entitlements (Phase 2, roadmap §3) ---------------------------------------
   // Authority for this group is decided by the ENGINE from the caller's
   // governance role ("entitlement = plan × governance role × delivery role,
@@ -306,7 +341,7 @@ export const COMMANDS = [
     'set_gate_policy',
     'Set a gate definition as DATA (roadmap §3): min_approvals quorum and required_actor_types — human-only is a default, not a hardcode.',
     z.object({
-      gate: z.enum(['spec_approval', 'review_approval']),
+      gate: z.enum(['spec_approval', 'review_approval', 'design_approval', 'handoff_approval']),
       policy: z.object({
         minApprovals: z.number().int().positive().optional().describe('distinct approvers required per review round'),
         requiredActorTypes: z

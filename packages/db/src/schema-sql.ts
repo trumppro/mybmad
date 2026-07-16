@@ -72,6 +72,12 @@ CREATE TABLE IF NOT EXISTS features (
 ALTER TABLE features ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE features ADD COLUMN IF NOT EXISTS name TEXT;
 
+-- Phase 9 (roadmap §9): the feature state 'in_progress' is renamed to
+-- 'executing' (portal vocabulary "In Implementation"). Idempotent by its WHERE
+-- clause — re-running matches zero rows once migrated. (SCHEMA_SQL is applied on
+-- every DB open, so the WHERE clause IS the run-once guard.)
+UPDATE features SET state = 'executing' WHERE state = 'in_progress';
+
 CREATE TABLE IF NOT EXISTS work_items (
   id TEXT PRIMARY KEY,
   seq SERIAL NOT NULL,
@@ -113,7 +119,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS claims_one_live_per_item
 
 CREATE TABLE IF NOT EXISTS gate_decisions (
   seq SERIAL PRIMARY KEY,
-  work_item_id TEXT NOT NULL,
+  work_item_id TEXT,
+  feature_id TEXT,
   gate TEXT NOT NULL,
   decision TEXT NOT NULL,
   actor_id TEXT NOT NULL,
@@ -122,6 +129,21 @@ CREATE TABLE IF NOT EXISTS gate_decisions (
 
 -- Phase 2 upgrade path for durable data dirs created under Phase 1 (story 13).
 ALTER TABLE gate_decisions ADD COLUMN IF NOT EXISTS round INTEGER NOT NULL DEFAULT 0;
+
+-- Phase 9 (roadmap §9): feature gate decisions carry a feature_id instead of a
+-- work_item_id — exactly one is set. Durable-dir upgrade: add the column and
+-- relax work_item_id to nullable; then pin the exclusivity with a CHECK. PGlite
+-- has no ADD CONSTRAINT IF NOT EXISTS, so the constraint add is guarded by a DO
+-- block (SCHEMA_SQL re-runs on every open).
+ALTER TABLE gate_decisions ADD COLUMN IF NOT EXISTS feature_id TEXT;
+ALTER TABLE gate_decisions ALTER COLUMN work_item_id DROP NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'gate_decisions_target_xor') THEN
+    ALTER TABLE gate_decisions ADD CONSTRAINT gate_decisions_target_xor
+      CHECK ((work_item_id IS NOT NULL) <> (feature_id IS NOT NULL));
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS evidence (
   seq SERIAL PRIMARY KEY,

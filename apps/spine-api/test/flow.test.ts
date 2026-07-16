@@ -206,9 +206,9 @@ describe('spine-api end-to-end flow (HTTP only)', () => {
     expect(item.state).toBe('done');
     const fetched = await po.call<WorkItem>('get_work_item', { workItemId: 's1' });
     expect(fetched.state).toBe('done');
-    // epic-lift happened when s1 first left backlog
+    // epic-lift happened when s1 first left backlog (§9: target renamed to executing)
     const lifted = await po.call<Feature>('get_feature', { featureId: feature.id });
-    expect(lifted.state).toBe('in_progress');
+    expect(lifted.state).toBe('executing');
   });
 
   it('s2: an empty diff denies the advance to review (fake-done deny, 422)', async () => {

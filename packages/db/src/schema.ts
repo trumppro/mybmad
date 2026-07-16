@@ -16,6 +16,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  check,
   integer,
   jsonb,
   pgTable,
@@ -111,7 +112,7 @@ export const features = pgTable('features', {
   // '' = not yet backfilled; init() attaches orphans to the default project.
   projectId: text('project_id').notNull().default(''),
   name: text('name'),
-  state: text('state').notNull(), // 'backlog' | 'in_progress' | 'done'
+  state: text('state').notNull(), // §9 FEATURE_STATES: backlog|spec|design|breakdown|executing|handoff|done|cancelled
   dispatchHold: boolean('dispatch_hold').notNull().default(false),
 });
 
@@ -170,15 +171,24 @@ export const claims = pgTable(
 // ---------------------------------------------------------------------------
 // gate_decisions — permission snapshot + decision record (roadmap §1.4)
 // ---------------------------------------------------------------------------
-export const gateDecisions = pgTable('gate_decisions', {
-  seq: serial('seq').primaryKey(),
-  workItemId: text('work_item_id').notNull(),
-  gate: text('gate').notNull(), // 'spec_approval' | 'review_approval'
-  decision: text('decision').notNull(), // 'approved' | 'rejected'
-  actorId: text('actor_id').notNull(),
-  /** review round the decision belongs to (= review_loop_iteration at decision time) */
-  round: integer('round').notNull().default(0),
-});
+export const gateDecisions = pgTable(
+  'gate_decisions',
+  {
+    seq: serial('seq').primaryKey(),
+    // Exactly one of workItemId / featureId is set (work-item gate vs feature
+    // gate, §9). The CHECK below is the invariant; both are nullable here.
+    workItemId: text('work_item_id'),
+    featureId: text('feature_id'),
+    gate: text('gate').notNull(), // 'spec_approval' | 'review_approval' | 'design_approval' | 'handoff_approval'
+    decision: text('decision').notNull(), // 'approved' | 'rejected'
+    actorId: text('actor_id').notNull(),
+    /** the round the decision belongs to (work item: review_loop_iteration; feature: prior-rejection count) */
+    round: integer('round').notNull().default(0),
+  },
+  (t) => [
+    check('gate_decisions_target_xor', sql`(${t.workItemId} IS NOT NULL) <> (${t.featureId} IS NOT NULL)`),
+  ],
+);
 
 // ---------------------------------------------------------------------------
 // evidence — machine-collected facts; seq orders "latest" semantics

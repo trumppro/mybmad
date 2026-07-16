@@ -26,6 +26,9 @@ import {
   type Actor,
   type ActorType,
   type AdvanceInput,
+  type FeatureAdvanceInput,
+  type FeatureGateDecisionInput,
+  type FeatureState,
   type AgentJob,
   type AuthzExplanation,
   type BlockedReason,
@@ -105,6 +108,51 @@ const TRANSITIONS: TransitionRule[] = [
   },
 ];
 
+/**
+ * The feature (epic) transition table (roadmap §9). Only the NON-gated hops
+ * live here — like the work-item table, the gate-fired arrows (design→breakdown
+ * via design_approval, handoff→done via handoff_approval, and both loopbacks)
+ * are fired directly by approveFeatureGate/rejectFeatureGate, not by advance.
+ * `cancelled` (from any non-terminal state) is fired by cancelFeature.
+ */
+type FeatureGuard = 'children_done' | 'tests_pinned';
+
+interface FeatureTransitionRule {
+  from: FeatureState;
+  to: FeatureState;
+  permission: Permission;
+  guards: FeatureGuard[];
+}
+
+const FEATURE_TRANSITIONS: FeatureTransitionRule[] = [
+  { from: 'backlog', to: 'spec', permission: 'feature.advance', guards: [] },
+  { from: 'spec', to: 'design', permission: 'feature.advance', guards: [] },
+  { from: 'breakdown', to: 'executing', permission: 'feature.advance', guards: [] },
+  { from: 'executing', to: 'handoff', permission: 'feature.advance', guards: ['children_done'] },
+];
+
+/**
+ * The two feature GATE codes and their fixed effects. `to` is the forward
+ * (approve) target; `back` is the one-step loopback on rejection; `guard`, if
+ * present, is the entry guard checked when the quorum completes.
+ */
+function featureGateSpec(gate: GateCode): {
+  permission: Permission;
+  expected: FeatureState;
+  to: FeatureState;
+  back: FeatureState;
+  guard?: FeatureGuard;
+} {
+  switch (gate) {
+    case 'design_approval':
+      return { permission: 'gate.design.approve', expected: 'design', to: 'breakdown', back: 'spec', guard: 'tests_pinned' };
+    case 'handoff_approval':
+      return { permission: 'gate.handoff.approve', expected: 'handoff', to: 'done', back: 'executing' };
+    default:
+      throw new GuardFailedError(`not a feature gate: ${gate}`);
+  }
+}
+
 interface WorkItemRow extends WorkItem {
   dependsOn: string[];
 }
@@ -114,11 +162,17 @@ interface ClaimRow extends Claim {
 }
 
 interface GateDecisionRow {
-  workItemId: string;
+  /** exactly one of workItemId / featureId is set (work-item gate vs feature gate). */
+  workItemId: string | null;
+  featureId: string | null;
   gate: GateCode;
   decision: 'approved' | 'rejected';
   actorId: string;
-  /** review round the decision belongs to (= reviewLoopIteration at decision time) */
+  /**
+   * The round the decision belongs to. For work items = reviewLoopIteration at
+   * decision time. For features = the count of prior rejections for that
+   * feature+gate (a rejection resets the quorum by advancing the round).
+   */
   round: number;
 }
 
@@ -1025,10 +1079,13 @@ class EngineImpl implements SpineEngine {
     if (from === 'backlog' && to !== 'backlog') {
       const feature = this.features.get(item.featureId);
       if (feature && feature.state === 'backlog') {
-        feature.state = 'in_progress';
+        // §9: the projector jumps straight to `executing` (was `in_progress`),
+        // SKIPPING the gated stages — the degenerate/back-compat path for
+        // features that never formally walk spec→design→breakdown.
+        feature.state = 'executing';
         this.append('feature', feature.id, 'feature.state_changed', this.systemActorId, {
           from: 'backlog',
-          to: 'in_progress',
+          to: 'executing',
         }, { causationId: String(event.globalSeq) });
       }
     }
@@ -1182,6 +1239,7 @@ class EngineImpl implements SpineEngine {
   private recordApproval(item: WorkItemRow, gate: GateCode, actorId: string): void {
     this.gateDecisions.push({
       workItemId: item.id,
+      featureId: null,
       gate,
       decision: 'approved',
       actorId,
@@ -1244,6 +1302,7 @@ class EngineImpl implements SpineEngine {
     }
     this.gateDecisions.push({
       workItemId: item.id,
+      featureId: null,
       gate: 'review_approval',
       decision: 'rejected',
       actorId: input.actorId,
@@ -1272,6 +1331,182 @@ class EngineImpl implements SpineEngine {
     // §1.2: the loopback is a system effect — no claim-holder participation.
     item.reviewLoopIteration += 1;
     return this.executeTransition(item, 'in_progress', this.systemActorId, undefined, String(decisionEvent.globalSeq));
+  }
+
+  // -- feature FSM (Phase 9, roadmap §9) ---------------------------------------
+
+  private mustGetFeature(featureId: string): Feature {
+    const feature = this.features.get(featureId);
+    if (!feature) throw new GuardFailedError(`unknown feature: ${featureId}`);
+    return feature;
+  }
+
+  /** Mutate + append feature.state_changed. Shared by advance and the gate firings. */
+  private executeFeatureTransition(
+    feature: Feature,
+    to: FeatureState,
+    actorId: string,
+    causationId?: string,
+  ): Feature {
+    const from = feature.state;
+    feature.state = to;
+    this.append(
+      'feature',
+      feature.id,
+      'feature.state_changed',
+      actorId,
+      { from, to },
+      causationId !== undefined ? { causationId } : undefined,
+    );
+    return this.copyFeature(feature);
+  }
+
+  private checkFeatureGuard(guard: FeatureGuard, feature: Feature): void {
+    switch (guard) {
+      case 'children_done': {
+        const notDone = [...this.workItems.values()].filter(
+          (wi) => wi.featureId === feature.id && wi.state !== 'done',
+        );
+        if (notDone.length > 0) {
+          throw new GuardFailedError(`feature has ${String(notDone.length)} work item(s) not done`);
+        }
+        return;
+      }
+      case 'tests_pinned': {
+        // "In TDD" checkpoint (D7): the test-first pass must have authored the
+        // pinned verification commands — at least one story of the feature
+        // carries a non-empty pinnedVerification.
+        const anyPinned = [...this.workItems.values()].some(
+          (wi) => wi.featureId === feature.id && (wi.pinnedVerification?.length ?? 0) > 0,
+        );
+        if (!anyPinned) {
+          throw new GuardFailedError('In-TDD checkpoint: no pinned verification commands authored for this feature');
+        }
+        return;
+      }
+    }
+  }
+
+  featureAdvance(input: FeatureAdvanceInput): Feature {
+    const feature = this.mustGetFeature(input.featureId);
+    const rule = FEATURE_TRANSITIONS.find((t) => t.from === feature.state && t.to === input.to);
+    if (!rule) throw new InvalidTransitionError(feature.state, input.to);
+    this.requirePermission(input.actorId, rule.permission);
+    for (const guard of rule.guards) this.checkFeatureGuard(guard, feature);
+    return this.executeFeatureTransition(feature, input.to, input.actorId);
+  }
+
+  /** rejections so far for this feature+gate — the current quorum round. */
+  private currentFeatureRound(featureId: string, gate: GateCode): number {
+    return this.gateDecisions.filter(
+      (d) => d.featureId === featureId && d.gate === gate && d.decision === 'rejected',
+    ).length;
+  }
+
+  private featureRoundApprovers(feature: Feature, gate: GateCode): Actor[] {
+    const round = this.currentFeatureRound(feature.id, gate);
+    const ids = new Set(
+      this.gateDecisions
+        .filter(
+          (d) =>
+            d.featureId === feature.id &&
+            d.gate === gate &&
+            d.decision === 'approved' &&
+            d.round === round,
+        )
+        .map((d) => d.actorId),
+    );
+    return [...ids].flatMap((id) => {
+      const actor = this.actors.get(id);
+      return actor ? [actor] : [];
+    });
+  }
+
+  private featureQuorumWouldBeMet(feature: Feature, gate: GateCode, nextApproverId: string): boolean {
+    const policy = this.gatePolicies.get(gate) ?? {};
+    const min = policy.minApprovals ?? 1;
+    const required = policy.requiredActorTypes ?? [];
+    const approvers = this.featureRoundApprovers(feature, gate);
+    const nextActor = this.actors.get(nextApproverId);
+    if (nextActor && !approvers.some((a) => a.id === nextActor.id)) approvers.push(nextActor);
+    if (approvers.length < min) return false;
+    for (const type of required) {
+      if (!approvers.some((a) => a.type === type)) return false;
+    }
+    return true;
+  }
+
+  private recordFeatureApproval(feature: Feature, gate: GateCode, actorId: string): void {
+    const round = this.currentFeatureRound(feature.id, gate);
+    this.gateDecisions.push({
+      workItemId: null,
+      featureId: feature.id,
+      gate,
+      decision: 'approved',
+      actorId,
+      round,
+    });
+    this.append('feature', feature.id, 'gate.approved', actorId, { gate, round, featureId: feature.id });
+  }
+
+  approveFeatureGate(input: FeatureGateDecisionInput): Feature {
+    const feature = this.mustGetFeature(input.featureId);
+    const { permission, expected, to, guard } = featureGateSpec(input.gate);
+    this.requirePermission(input.actorId, permission);
+    if (feature.state !== expected) {
+      throw new GuardFailedError(`${input.gate} applies to ${expected} features, not ${feature.state}`);
+    }
+    if (!this.featureQuorumWouldBeMet(feature, input.gate, input.actorId)) {
+      this.recordFeatureApproval(feature, input.gate, input.actorId);
+      return this.copyFeature(feature); // decision recorded; quorum pending (gate policy is data, §3)
+    }
+    // Entry guard (e.g. In-TDD tests_pinned) checked exactly when the quorum
+    // would complete, so a non-completing approval records nothing extra.
+    if (guard !== undefined) this.checkFeatureGuard(guard, feature);
+    this.recordFeatureApproval(feature, input.gate, input.actorId);
+    return this.executeFeatureTransition(feature, to, input.actorId);
+  }
+
+  rejectFeatureGate(input: FeatureGateDecisionInput): Feature {
+    const feature = this.mustGetFeature(input.featureId);
+    const { permission, expected, back } = featureGateSpec(input.gate);
+    // Authority to reject = the same grant that approves the gate.
+    this.requirePermission(input.actorId, permission);
+    if (feature.state !== expected) {
+      throw new GuardFailedError(`${input.gate} rejection applies to ${expected} features, not ${feature.state}`);
+    }
+    this.gateDecisions.push({
+      workItemId: null,
+      featureId: feature.id,
+      gate: input.gate,
+      decision: 'rejected',
+      actorId: input.actorId,
+      round: this.currentFeatureRound(feature.id, input.gate),
+    });
+    const decisionEvent = this.append('feature', feature.id, 'gate.rejected', input.actorId, {
+      gate: input.gate,
+      featureId: feature.id,
+    });
+    // The loopback is a system effect — one step back, causation = the decision.
+    return this.executeFeatureTransition(feature, back, this.systemActorId, String(decisionEvent.globalSeq));
+  }
+
+  cancelFeature(input: { featureId: string; actorId: string; reason?: string }): Feature {
+    const feature = this.mustGetFeature(input.featureId);
+    this.requirePermission(input.actorId, 'feature.cancel');
+    if (feature.state === 'done' || feature.state === 'cancelled') {
+      throw new GuardFailedError(`cannot cancel a terminal feature (${feature.state})`);
+    }
+    const from = feature.state;
+    feature.state = 'cancelled';
+    // Compensating event (state.downgrade mold): the record of a product decision.
+    this.append('feature', feature.id, 'feature.cancelled', input.actorId, {
+      from,
+      to: 'cancelled',
+      compensating: true,
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+    });
+    return this.copyFeature(feature);
   }
 
   // -- collaboration (Phase 3, roadmap §5) ---------------------------------------

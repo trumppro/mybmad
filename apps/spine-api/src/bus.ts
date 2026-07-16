@@ -14,6 +14,7 @@ import {
   type AgentJob,
   type BlockedReason,
   type Evidence,
+  type FeatureState,
   type GateCode,
   type GovernanceRole,
   type MemoryKind,
@@ -68,6 +69,9 @@ interface SubmitEvidenceIn { workItemId: string; evidence: Evidence; fencingToke
 interface ApproveGateIn { workItemId: string; gate: GateCode; pinnedVerification?: string[] | undefined }
 interface RejectGateIn { workItemId: string; gate: GateCode }
 interface FeatureIn { featureId: string }
+interface FeatureAdvanceIn { featureId: string; to: FeatureState }
+interface FeatureGateIn { featureId: string; gate: GateCode }
+interface CancelFeatureIn { featureId: string; reason?: string | undefined }
 interface ListWorkItemsIn { state?: WorkItemState | undefined; featureId?: string | undefined; projectId?: string | undefined; claimable?: boolean | undefined }
 interface QueryEventsIn { streamId?: string | undefined }
 interface CreateThreadIn {
@@ -423,6 +427,28 @@ export function createCommandBus(
       case 'release_dispatch_hold': {
         const p = parsed as FeatureIn;
         return engine.releaseDispatchHold({ featureId: p.featureId, actorId: ctx.actorId });
+      }
+
+      // -- feature FSM (Phase 9, roadmap §9) ------------------------------------
+      case 'feature_advance': {
+        const p = parsed as FeatureAdvanceIn;
+        return engine.featureAdvance({ featureId: p.featureId, to: p.to, actorId: ctx.actorId });
+      }
+      case 'approve_feature_gate': {
+        const p = parsed as FeatureGateIn;
+        return engine.approveFeatureGate({ featureId: p.featureId, gate: p.gate, actorId: ctx.actorId });
+      }
+      case 'reject_feature_gate': {
+        const p = parsed as FeatureGateIn;
+        return engine.rejectFeatureGate({ featureId: p.featureId, gate: p.gate, actorId: ctx.actorId });
+      }
+      case 'cancel_feature': {
+        const p = parsed as CancelFeatureIn;
+        return engine.cancelFeature({
+          featureId: p.featureId,
+          actorId: ctx.actorId,
+          ...(p.reason !== undefined ? { reason: p.reason } : {}),
+        });
       }
 
       // -- collaboration (Phase 3, roadmap §5) ----------------------------------

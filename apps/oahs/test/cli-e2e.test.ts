@@ -253,7 +253,7 @@ describe('oahs CLI command functions against a live spine-api', () => {
     const out = await statusCommand(po);
     expect(out).toMatch(/done {2,}[^\n]*s1/);
     expect(out).toMatch(/backlog {2,}[^\n]*s2/);
-    expect(out).toMatch(new RegExp(`${featureId} {2,}in_progress {2,}false`));
+    expect(out).toMatch(new RegExp(`${featureId} {2,}executing {2,}false`));
   });
 
   it('events prints the audit trail; [streamId] scopes it', async () => {

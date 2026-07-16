@@ -53,8 +53,8 @@ export class ConflictError extends Error {
 /** Transition not declared in the table (includes never-downgrade rejections). */
 export class InvalidTransitionError extends Error {
   constructor(
-    public readonly from: WorkItemState,
-    public readonly to: WorkItemState,
+    public readonly from: WorkItemState | FeatureState,
+    public readonly to: WorkItemState | FeatureState,
   ) {
     super(`invalid transition: ${from} -> ${to}`);
     this.name = 'InvalidTransitionError';
@@ -85,6 +85,26 @@ export const WORK_ITEM_STATES = [
 ] as const;
 export type WorkItemState = (typeof WORK_ITEM_STATES)[number];
 
+/**
+ * The feature (epic) FSM (roadmap §9): the department handoff as gate-fired
+ * states. `executing` is the former `in_progress` (renamed for portal-vocabulary
+ * parity — "In Implementation"). `cancelled` is terminal, reachable from every
+ * non-terminal state via the privileged `feature.cancel`. Board labels (In
+ * Design / In TDD / Ready for Impl / …) are a presentation map over these,
+ * never new states.
+ */
+export const FEATURE_STATES = [
+  'backlog',
+  'spec',
+  'design',
+  'breakdown',
+  'executing',
+  'handoff',
+  'done',
+  'cancelled',
+] as const;
+export type FeatureState = (typeof FEATURE_STATES)[number];
+
 /** blocked is an OVERLAY, not a state (roadmap D8). Taxonomy from dev-auto HALT. */
 export const BLOCKED_REASONS = [
   'unclear_intent',
@@ -107,8 +127,11 @@ export type Permission =
   | 'gate.spec.approve'
   | 'gate.review.approve'
   | 'gate.review.reject' // Phase 2: rejection-loopback WITHOUT done-approval (roadmap Phase 2 exit criterion)
+  | 'gate.design.approve' // Phase 9 §9: tech-lead approves the feature design (design→breakdown)
+  | 'gate.handoff.approve' // Phase 9 §9: PO feature acceptance (handoff→done)
   | 'feature.init'
   | 'feature.advance'
+  | 'feature.cancel' // Phase 9 §9: privileged cancel — a product decision, from any non-terminal state
   | 'dispatch.release_hold'
   | 'intent.edit'
   | 'state.downgrade'
@@ -161,8 +184,8 @@ export const AGENT_GATE_APPROVE_PERMISSIONS: readonly Permission[] = [
  * Rules layer. An assignment grants the bundle; revocation removes it.
  */
 export const DELIVERY_ROLES: Record<string, readonly Permission[]> = {
-  product_owner: ['task.plan', 'feature.init', 'feature.advance', 'gate.spec.approve', 'dispatch.release_hold'],
-  tech_lead: ['task.plan', 'gate.review.approve', 'gate.review.reject', 'state.downgrade', 'ops.force_release_claim'],
+  product_owner: ['task.plan', 'feature.init', 'feature.advance', 'gate.spec.approve', 'gate.handoff.approve', 'feature.cancel', 'dispatch.release_hold'],
+  tech_lead: ['task.plan', 'gate.review.approve', 'gate.review.reject', 'gate.design.approve', 'state.downgrade', 'ops.force_release_claim'],
   reviewer: ['gate.review.approve', 'gate.review.reject'],
   developer: ['task.claim', 'task.advance', 'task.block'],
   qa: ['task.block'],
@@ -215,7 +238,7 @@ export interface AuthzExplanation {
   versions: { plan: number; policy: number };
 }
 
-export type GateCode = 'spec_approval' | 'review_approval';
+export type GateCode = 'spec_approval' | 'review_approval' | 'design_approval' | 'handoff_approval';
 
 export type EvidenceKind =
   | 'test_run' // {command, exitCode}  — command MUST match a pinned one
@@ -307,7 +330,7 @@ export interface Feature {
   projectId: string;
   /** Optional human name — features stop being anonymous (Wave 2). */
   name: string | null;
-  state: 'backlog' | 'in_progress' | 'done';
+  state: FeatureState;
   /** true while a done_checkpoint hold is active: no further dispatch in this feature */
   dispatchHold: boolean;
 }
@@ -502,6 +525,20 @@ export interface GateDecisionInput {
   pinnedVerification?: string[];
 }
 
+/** Feature FSM commands (roadmap §9): the feature analogue of AdvanceInput/GateDecisionInput. */
+export interface FeatureAdvanceInput {
+  featureId: string;
+  to: FeatureState;
+  actorId: string;
+}
+
+export interface FeatureGateDecisionInput {
+  featureId: string;
+  /** design_approval | handoff_approval — the two feature-level gate codes. */
+  gate: GateCode;
+  actorId: string;
+}
+
 export interface SpineEngine {
   /** Audit a TokenStore credential op (issued|reissued) with a hash prefix only (§8). */
   noteTokenEvent(input: { actorId: string; kind: 'issued' | 'reissued'; tokenHashPrefix: string }): void;
@@ -567,6 +604,16 @@ export interface SpineEngine {
   approveGate(input: GateDecisionInput): WorkItem;
   /** Rejection fires the loopback as a system effect — no claim holder involvement (roadmap §1.2). */
   rejectGate(input: GateDecisionInput): WorkItem;
+
+  // -- feature FSM (Phase 9, roadmap §9) --------------------------------------
+  /** Move a feature along a permitted non-gated edge (backlog→spec→design, breakdown→executing, executing→handoff). */
+  featureAdvance(input: FeatureAdvanceInput): Feature;
+  /** Approve a feature gate: design_approval fires design→breakdown (In-TDD checkpoint); handoff_approval fires handoff→done. */
+  approveFeatureGate(input: FeatureGateDecisionInput): Feature;
+  /** Reject a feature gate: fires the one-step loopback as a system effect (design→spec / handoff→executing). */
+  rejectFeatureGate(input: FeatureGateDecisionInput): Feature;
+  /** Privileged cancel (gated on feature.cancel): terminal `cancelled` from any non-terminal state; a compensating event. */
+  cancelFeature(input: { featureId: string; actorId: string; reason?: string }): Feature;
 
   // -- dispatch (roadmap §2.3) -------------------------------------------------
   /** Refuses state=done items; returns entry-state context for the runner. */

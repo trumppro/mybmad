@@ -4,14 +4,21 @@ This suite is the **specification** of the spine engine. It was written *before*
 
 Run: `pnpm test` (in `packages/core`). History: the suite was born **113 red / 2 green** against `NotImplementedError` stubs; the in-memory reference engine (story "1"–"10" domain, `src/engine.ts`) turned it **115/115 green**. Two inter-cluster contradictions surfaced during implementation and were arbitrated below (marked ⚖); each required editing exactly one pin, recorded here.
 
-Files: `fsm-transitions` (14) · `blocked-overlay` (9) · `epic-lift` (4) · `claims` (17) · `concurrency` (7) · `gates-evidence` (12) · `review-loop` (6) · `stories-import` (13) · `intent-hash` (12) · `checkpoints-dispatch` (12) · `reconcile` (9).
+Files: `fsm-transitions` (14) · `blocked-overlay` (9) · `epic-lift` (4) · `feature-fsm` (18) · `claims` (17) · `concurrency` (7) · `gates-evidence` (12) · `review-loop` (6) · `stories-import` (13) · `intent-hash` (12) · `checkpoints-dispatch` (12) · `reconcile` (9).
 
 ## Interpretation pins
 
 Where the prose was ambiguous or sources conflicted, the suite **pins one reading**. Changing a pin = changing the spec. The load-bearing ones:
 
 ### Arbitrated conflicts (roadmap wins over playbook prose)
-- **Epic-lift trigger**: sprint-planning says "when first story is *created*"; roadmap §1.2 says "first child *leaving backlog*". Suite follows the roadmap: `createWorkItem` does not lift; `backlog→draft` does.
+- **Epic-lift trigger**: sprint-planning says "when first story is *created*"; roadmap §1.2 says "first child *leaving backlog*". Suite follows the roadmap: `createWorkItem` does not lift; `backlog→draft` does. **§9 rename:** the projector target is now `executing` (was `in_progress`); the projector still jumps straight there, skipping the gated stages (the degenerate/back-compat path).
+
+### Feature FSM (roadmap §9, `feature-fsm`)
+- **States** `backlog → spec → design → breakdown → executing → handoff → done` + terminal `cancelled`. `executing` is the renamed `in_progress`. Board labels (In Design / **In TDD** / Ready for Impl / …) are a presentation map, never states.
+- **Two gate-fired arrows, the rest permitted advances.** `design_approval` fires `design→breakdown` (reject loops `design→spec`); `handoff_approval` fires `handoff→done` (reject loops `handoff→executing`). `feature_advance` covers `backlog→spec`, `spec→design`, `breakdown→executing`, `executing→handoff`. Skipping a state, or advancing out of a terminal state, is `InvalidTransitionError`. `done` is reachable ONLY through the handoff gate.
+- **In-TDD checkpoint = `tests_pinned` entry-guard** on `design→breakdown`: at least one story of the feature carries a non-empty `pinnedVerification` (the test-first tests were authored, D7). `executing→handoff` carries `children_done` (no child outside `done`).
+- **Loopbacks are system-authored** with `causationId` = the gate-decision event, mirroring `rejectGate`. Feature gate decisions live in `gate_decisions` with `feature_id` set and `work_item_id` null (a CHECK pins the XOR). The quorum round for a feature gate = the count of prior rejections for that feature+gate, so a rejection resets the quorum (reused `round` semantics).
+- **Cancel** (`feature.cancel`, a product decision) reaches terminal `cancelled` from any non-terminal state, appending a compensating `feature.cancelled` event; `done`/`cancelled` refuse it. Gate policies (`set_gate_policy`) apply to the feature gate codes exactly as to `spec_approval`.
 - **Worker push**: dev-auto says "do not push"; roadmap §1.4 makes `final_revision_reachable_on_remote` a done-gate guard. Roadmap wins.
 - **Review-loop counter after the blocking 6th rejection**: stays at 5 (counts *performed* loopbacks; dev-auto's file-side "write 6 then halt" is not adopted — DB is the only counter, roadmap §1.1). The item stays `in_review` + blocked overlay `review_non_convergence`; `rejectGate` records the decision and returns the blocked item rather than throwing.
 
