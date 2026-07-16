@@ -155,6 +155,8 @@ export const claims = pgTable(
     seq: serial('seq').notNull(),
     workItemId: text('work_item_id').notNull(),
     actorId: text('actor_id').notNull(),
+    /** §9.4: 'work' | 'review' — a separate live-claim slot per kind. */
+    kind: text('kind').notNull().default('work'),
     fencingToken: integer('fencing_token').notNull(),
     /** engine-clock milliseconds (JS field `now`), never SQL now() */
     leaseExpiresAt: bigint('lease_expires_at', { mode: 'number' }).notNull(),
@@ -162,9 +164,9 @@ export const claims = pgTable(
     ttlMs: bigint('ttl_ms', { mode: 'number' }).notNull(),
   },
   (t) => [
-    // roadmap §1.3: "One live claim per work item, enforced by a partial
-    // unique index — races lose by constraint, not by application logic."
-    uniqueIndex('claims_one_live_per_item').on(t.workItemId).where(sql`released = false`),
+    // roadmap §1.3 / §9.4: "One live claim per (work item, kind), enforced by a
+    // partial unique index — races lose by constraint, not by application logic."
+    uniqueIndex('claims_one_live_per_item_kind').on(t.workItemId, t.kind).where(sql`released = false`),
   ],
 );
 
@@ -315,15 +317,28 @@ export const agentMemories = pgTable(
 // agent_jobs — router-materialized, reply-only context (§5.4): NEVER a claim,
 // never lifecycle authority. depth counts agent-mention-agent hops.
 // ---------------------------------------------------------------------------
-export const agentJobs = pgTable('agent_jobs', {
-  id: text('id').primaryKey(),
-  seq: serial('seq').notNull(),
-  agentActorId: text('agent_actor_id').notNull(),
-  threadId: text('thread_id').notNull(),
-  messageId: text('message_id').notNull(),
-  workItemId: text('work_item_id'),
-  featureId: text('feature_id'),
-  status: text('status').notNull(), // 'queued' | 'done' | 'blocked'
-  depth: integer('depth').notNull().default(0),
-  note: text('note'),
-});
+export const agentJobs = pgTable(
+  'agent_jobs',
+  {
+    id: text('id').primaryKey(),
+    seq: serial('seq').notNull(),
+    agentActorId: text('agent_actor_id').notNull(),
+    // §9.4: null for a REVIEW job (materialized from in_review, not a mention).
+    threadId: text('thread_id'),
+    messageId: text('message_id'),
+    workItemId: text('work_item_id'),
+    featureId: text('feature_id'),
+    status: text('status').notNull(), // 'queued' | 'done' | 'blocked'
+    depth: integer('depth').notNull().default(0),
+    /** §9.4: non-null marks a review job; one per (workItemId, reviewRound). */
+    reviewRound: integer('review_round'),
+    note: text('note'),
+  },
+  (t) => [
+    // §9.4: exactly one review job per (work item, round) — the constraint that
+    // makes concurrent reviewer dispatch materialize exactly one job.
+    uniqueIndex('agent_jobs_one_review_per_round')
+      .on(t.workItemId, t.reviewRound)
+      .where(sql`review_round IS NOT NULL`),
+  ],
+);

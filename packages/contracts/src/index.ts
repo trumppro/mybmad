@@ -184,6 +184,14 @@ export const COMMANDS = [
     }),
   ),
   def(
+    'claim_review',
+    'Claim an in_review item for review (§9.4, kind=review). Requires gate.review.approve OR .reject. One live review claim per item — two concurrent calls: one wins, the loser gets a 409.',
+    z.object({
+      workItemId,
+      ttlMs: z.number().int().positive().optional(),
+    }),
+  ),
+  def(
     'heartbeat',
     'Renew the lease of a live claim (the holder, or a caller presenting the live fencing token).',
     z.object({ claimId: z.string().min(1), fencingToken: z.number().int().optional() }),
@@ -356,6 +364,10 @@ export const COMMANDS = [
           .array(z.enum(['user', 'agent', 'system']))
           .optional()
           .describe('at least one approver of each listed type is required'),
+        autoDispatchReviewer: z
+          .string()
+          .optional()
+          .describe('§9.4: reviewer actor id — entering in_review materializes one review job per round for this actor'),
       }),
     }),
   ),

@@ -62,12 +62,24 @@ export async function inboxCommand(client: OahsClient): Promise<string> {
     awaitingSpec: WorkItem[];
     awaitingReview: WorkItem[];
   }>('inbox');
+  // §9.4: mark review items that already have a live review claim (someone is
+  // on it) so a reviewer doesn't race for one already taken.
+  const liveClaims = await client.call<Claim[]>('list_claims');
+  const reviewClaimed = new Set(
+    // Exclude expired-but-unreleased review claims: those items are actually
+    // re-claimable (liveClaim gates claim_review on the lease), not taken.
+    liveClaims.filter((c) => c.kind === 'review' && c.expired !== true).map((c) => c.workItemId),
+  );
+  const reviewRow = (item: WorkItem): Cell[] => [
+    ...workItemRow(item),
+    reviewClaimed.has(item.id) ? 'claimed' : '-',
+  ];
   return [
     'awaiting spec approval:',
     renderTable(WORK_ITEM_HEADERS, awaitingSpec.map(workItemRow)),
     '',
     'awaiting review decision:',
-    renderTable(WORK_ITEM_HEADERS, awaitingReview.map(workItemRow)),
+    renderTable([...WORK_ITEM_HEADERS, 'review'], awaitingReview.map(reviewRow)),
   ].join('\n');
 }
 
@@ -154,6 +166,19 @@ export async function rejectCommand(client: OahsClient, opts: RejectOptions): Pr
     `state: ${item.state}`,
     `blockedReason: ${item.blockedReason ?? '-'}`,
     `reviewLoopIteration: ${item.reviewLoopIteration}`,
+  ].join('\n');
+}
+
+/** §9.4: claim an in_review item for review. One live review claim per item by constraint. */
+export async function claimReviewCommand(
+  client: OahsClient,
+  opts: { workItemId: string },
+): Promise<string> {
+  const claim = await client.call<Claim>('claim_review', { workItemId: opts.workItemId });
+  return [
+    `claimed ${opts.workItemId} for review`,
+    `claimId: ${claim.id}`,
+    `fencingToken: ${claim.fencingToken}`,
   ].join('\n');
 }
 

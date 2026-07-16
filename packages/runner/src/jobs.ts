@@ -87,21 +87,23 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
   const { client, agentActorId } = options;
   const log = options.log ?? defaultRunnerLog;
 
-  // 1 — poll: this agent's queued jobs only; take the first.
+  // 1 — poll: this agent's queued MENTION jobs only; take the first. Review
+  // jobs (§9.4: reviewRound set, no thread) are not served by this mention loop.
   const queued = await client.call<AgentJob[]>('list_agent_jobs', {
     agentActorId,
     status: 'queued',
   });
-  const job = queued[0];
-  if (job === undefined) return { handled: false };
-  log(`job ${job.id} picked up (thread ${job.threadId})`);
+  const job = queued.find((j) => j.threadId !== null && j.reviewRound === null);
+  if (job === undefined || job.threadId === null) return { handled: false };
+  const threadId: string = job.threadId; // narrowed: mention jobs always have a thread
+  log(`job ${job.id} picked up (thread ${threadId})`);
 
   // 2 — read the thread THROUGH the rails. 403 = the agent may not see this
   // context (private thread, never invited) → blocked, note only. No retry,
   // no privilege: visibility is the engine's call.
   let messages: Message[];
   try {
-    messages = await client.call<Message[]>('list_messages', { threadId: job.threadId });
+    messages = await client.call<Message[]>('list_messages', { threadId: threadId });
   } catch (error) {
     if (isRemoteError(error, 'PermissionDeniedError')) {
       await client.call('complete_agent_job', {
@@ -123,7 +125,7 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
       'list_threads',
       {},
     );
-    const thread = visibleThreads.find((t) => t.id === job.threadId);
+    const thread = visibleThreads.find((t) => t.id === threadId);
     if (thread?.featureId != null) {
       const feature = await client.call<{ projectId: string }>('get_feature', {
         featureId: thread.featureId,
@@ -140,7 +142,7 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
   let memories: AgentMemory[] = [];
   try {
     const recalled = await client.call<AgentMemory[]>('search_agent_memory', {
-      contextThreadId: job.threadId,
+      contextThreadId: threadId,
       ...(projectId !== undefined ? { projectId } : {}),
     });
     memories = recalled.slice(-RECALL_LIMIT);
@@ -158,7 +160,7 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
     const command = options.agentCmd
       .replaceAll('{CONTEXT_FILE}', contextFile)
       .replaceAll('{REPLY_FILE}', replyFile)
-      .replaceAll('{THREAD_ID}', job.threadId)
+      .replaceAll('{THREAD_ID}', threadId)
       .replaceAll('{JOB_ID}', job.id);
     const invoked = spawnSync('bash', ['-lc', command], {
       cwd: dir,
@@ -184,7 +186,7 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
     // 6 — reply with the reverse mention to whoever triggered the job.
     const trigger = messages.find((m) => m.id === job.messageId);
     await client.call<Message>('post_message', {
-      threadId: job.threadId,
+      threadId: threadId,
       body: reply,
       ...(trigger !== undefined ? { mentions: [trigger.authorId] } : {}),
     });
@@ -198,15 +200,15 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
     try {
       await client.call('append_agent_memory', {
         kind: 'episodic',
-        content: `job ${job.id} in thread ${job.threadId}: ${reply.slice(0, MEMORY_REPLY_HEAD)}`,
-        sourceThreadId: job.threadId,
+        content: `job ${job.id} in thread ${threadId}: ${reply.slice(0, MEMORY_REPLY_HEAD)}`,
+        sourceThreadId: threadId,
         ...(projectId !== undefined ? { projectId } : {}),
       });
     } catch {
       /* learning is additive, never load-bearing */
     }
 
-    log(`job ${job.id} → done (replied in thread ${job.threadId})`);
+    log(`job ${job.id} → done (replied in thread ${threadId})`);
     return { handled: true, jobId: job.id, outcome: 'done' };
   } finally {
     rmSync(dir, { recursive: true, force: true });

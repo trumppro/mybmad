@@ -63,6 +63,7 @@ const METHODS: Array<keyof SpineEngine> = [
   'createWorkItem',
   'importStories',
   'claimTask',
+  'claimReview',
   'heartbeat',
   'releaseClaim',
   'forceReleaseClaim',

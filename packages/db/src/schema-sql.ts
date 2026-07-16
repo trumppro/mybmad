@@ -107,15 +107,22 @@ CREATE TABLE IF NOT EXISTS claims (
   seq SERIAL NOT NULL,
   work_item_id TEXT NOT NULL,
   actor_id TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'work',
   fencing_token INTEGER NOT NULL,
   lease_expires_at BIGINT NOT NULL,
   released BOOLEAN NOT NULL DEFAULT FALSE,
   ttl_ms BIGINT NOT NULL
 );
 
--- roadmap §1.3: one live claim per work item — races lose by constraint.
-CREATE UNIQUE INDEX IF NOT EXISTS claims_one_live_per_item
-  ON claims (work_item_id) WHERE released = false;
+-- Phase 9.4 upgrade path: claims carry a kind ('work' | 'review').
+ALTER TABLE claims ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'work';
+
+-- roadmap §1.3 / §9.4: one live claim per (work item, kind) — races lose by
+-- constraint. The old single-column index is dropped in favour of the per-kind
+-- one so a work claim and a review claim can coexist on the same item.
+DROP INDEX IF EXISTS claims_one_live_per_item;
+CREATE UNIQUE INDEX IF NOT EXISTS claims_one_live_per_item_kind
+  ON claims (work_item_id, kind) WHERE released = false;
 
 CREATE TABLE IF NOT EXISTS gate_decisions (
   seq SERIAL PRIMARY KEY,
@@ -246,12 +253,23 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
   id TEXT PRIMARY KEY,
   seq SERIAL NOT NULL,
   agent_actor_id TEXT NOT NULL,
-  thread_id TEXT NOT NULL,
-  message_id TEXT NOT NULL,
+  thread_id TEXT,
+  message_id TEXT,
   work_item_id TEXT,
   feature_id TEXT,
   status TEXT NOT NULL,
   depth INTEGER NOT NULL DEFAULT 0,
+  review_round INTEGER,
   note TEXT
 );
+
+-- Phase 9.4: a REVIEW job (review_round NOT NULL) has no triggering mention, so
+-- thread_id/message_id become nullable; and exactly one review job may exist per
+-- (work_item_id, review_round) — the constraint that makes concurrent reviewer
+-- dispatch materialize exactly one job.
+ALTER TABLE agent_jobs ALTER COLUMN thread_id DROP NOT NULL;
+ALTER TABLE agent_jobs ALTER COLUMN message_id DROP NOT NULL;
+ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS review_round INTEGER;
+CREATE UNIQUE INDEX IF NOT EXISTS agent_jobs_one_review_per_round
+  ON agent_jobs (work_item_id, review_round) WHERE review_round IS NOT NULL;
 `;

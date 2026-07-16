@@ -41,6 +41,7 @@ import {
   type ThreadKind,
   type ThreadVisibility,
   type Claim,
+  type ClaimKind,
   type CreateWorkItemInput,
   type DivergenceReport,
   type Evidence,
@@ -395,25 +396,34 @@ class EngineImpl implements SpineEngine {
     }
   }
 
-  private liveClaim(workItemId: string): ClaimRow | null {
+  /** All live (unreleased, unexpired) claims on an item — work and review (§9.4). */
+  private liveClaimsOf(workItemId: string): ClaimRow[] {
+    const out: ClaimRow[] = [];
     for (const claimId of this.claimsByItem.get(workItemId) ?? []) {
       const claim = this.claims.get(claimId);
-      if (claim && !claim.released && claim.leaseExpiresAt > this.currentTime()) return claim;
+      if (claim && !claim.released && claim.leaseExpiresAt > this.currentTime()) out.push(claim);
     }
-    return null;
+    return out;
+  }
+
+  /** The live claim of a given kind (default 'work') — one per (item, kind) by constraint. */
+  private liveClaim(workItemId: string, kind: ClaimKind = 'work'): ClaimRow | null {
+    return this.liveClaimsOf(workItemId).find((c) => c.kind === kind) ?? null;
   }
 
   /**
    * A PRESENTED token is always validated, on every command (conformance pin,
-   * claims.test.ts): stale/foreign/no-live-claim → ConflictError + audit event.
+   * claims.test.ts): it must match SOME live claim on the item (work or review,
+   * §9.4 — the token is the capability, not the kind); else ConflictError +
+   * audit event.
    */
   private validatePresentedToken(item: WorkItemRow, fencingToken: number | undefined, actorId: string): void {
     if (fencingToken === undefined) return;
-    const live = this.liveClaim(item.id);
-    if (live === null || live.fencingToken !== fencingToken) {
+    const live = this.liveClaimsOf(item.id);
+    if (!live.some((c) => c.fencingToken === fencingToken)) {
       this.append('work_item', item.id, 'fencing.rejected', actorId, {
         presentedToken: fencingToken,
-        liveToken: live?.fencingToken ?? null,
+        liveToken: live[0]?.fencingToken ?? null,
       });
       throw new ConflictError(`stale or foreign fencing token for work item ${item.id}`);
     }
@@ -824,12 +834,43 @@ class EngineImpl implements SpineEngine {
   // -- claims (roadmap §1.3) ---------------------------------------------------
 
   claimTask(input: { workItemId: string; actorId: string; ttlMs?: number }): Claim {
+    return this.claimOfKind({ ...input, kind: 'work', permission: 'task.claim' });
+  }
+
+  /**
+   * §9.4: claim an in_review item for REVIEW. Reuses the work-claim internals
+   * with kind='review' — a separate live-claim slot (one review claim per item
+   * by constraint), fencing per claim. Authority = gate.review.approve OR reject
+   * (the reviewer agent holds only the latter). Two concurrent calls: one wins,
+   * the loser gets ConflictError and leaves no row behind.
+   */
+  claimReview(input: { workItemId: string; actorId: string; ttlMs?: number }): Claim {
     const item = this.mustGetItem(input.workItemId);
-    this.requirePermission(input.actorId, 'task.claim');
-    if (this.liveClaim(item.id) !== null) {
-      // One live claim per work item — races lose by constraint (§1.3);
+    if (
+      !this.hasPermission(input.actorId, 'gate.review.approve') &&
+      !this.hasPermission(input.actorId, 'gate.review.reject')
+    ) {
+      throw new PermissionDeniedError('gate.review.approve', input.actorId);
+    }
+    if (item.state !== 'in_review') {
+      throw new GuardFailedError(`review claim applies to in_review items, not ${item.state}`);
+    }
+    return this.claimOfKind({ ...input, kind: 'review' });
+  }
+
+  private claimOfKind(input: {
+    workItemId: string;
+    actorId: string;
+    ttlMs?: number;
+    kind: ClaimKind;
+    permission?: Permission;
+  }): Claim {
+    const item = this.mustGetItem(input.workItemId);
+    if (input.permission !== undefined) this.requirePermission(input.actorId, input.permission);
+    if (this.liveClaim(item.id, input.kind) !== null) {
+      // One live claim per (work item, kind) — races lose by constraint (§1.3/§9.4);
       // the loser leaves no row behind.
-      throw new ConflictError(`work item ${item.id} already has a live claim`);
+      throw new ConflictError(`work item ${item.id} already has a live ${input.kind} claim`);
     }
     const ttlMs = input.ttlMs ?? 15 * 60 * 1000;
     const token = (this.fencingCounter.get(item.id) ?? 0) + 1;
@@ -838,6 +879,7 @@ class EngineImpl implements SpineEngine {
       id: this.nextId('claim'),
       workItemId: item.id,
       actorId: input.actorId,
+      kind: input.kind,
       fencingToken: token,
       leaseExpiresAt: this.currentTime() + ttlMs,
       released: false,
@@ -845,7 +887,11 @@ class EngineImpl implements SpineEngine {
     };
     this.claims.set(claim.id, claim);
     this.claimsByItem.set(item.id, [...(this.claimsByItem.get(item.id) ?? []), claim.id]);
-    this.append('work_item', item.id, 'work_item.claimed', input.actorId, { claimId: claim.id, fencingToken: token });
+    this.append('work_item', item.id, 'work_item.claimed', input.actorId, {
+      claimId: claim.id,
+      fencingToken: token,
+      kind: input.kind,
+    });
     return this.copyClaim(claim);
   }
 
@@ -1123,6 +1169,12 @@ class EngineImpl implements SpineEngine {
           workItemId: item.id,
         }, { causationId: String(event.globalSeq) });
       }
+    }
+
+    // §9.4: entering in_review auto-dispatches ONE review job per round when the
+    // review_approval gate policy names a reviewer.
+    if (to === 'in_review') {
+      this.materializeReviewJob(item, event);
     }
 
     // Rails → chat: narrate the transition into bound task threads (§5.2).
@@ -1706,6 +1758,7 @@ class EngineImpl implements SpineEngine {
       featureId: thread.featureId,
       status: 'queued',
       depth,
+      reviewRound: null,
       note: null,
     };
     this.agentJobs.set(job.id, job);
@@ -1721,6 +1774,44 @@ class EngineImpl implements SpineEngine {
 
   private pushNotification(actorId: string, source: Notification['source'], refId: string): void {
     this.notifications.push({ id: this.nextId('ntf'), actorId, source, refId, read: false });
+  }
+
+  /**
+   * §9.4: materialize exactly ONE review job per review round when the
+   * review_approval gate policy names an autoDispatchReviewer. A review job has
+   * no thread/message (it is not a mention) and carries reviewRound; the memory
+   * check here is the analog of the (workItemId, reviewRound) partial unique
+   * index — a second entry into in_review in the SAME round creates nothing.
+   */
+  private materializeReviewJob(item: WorkItemRow, causeEvent: SpineEvent): void {
+    const reviewerId = this.gatePolicies.get('review_approval')?.autoDispatchReviewer;
+    if (reviewerId === undefined) return;
+    const round = item.reviewLoopIteration;
+    const exists = [...this.agentJobs.values()].some(
+      (j) => j.workItemId === item.id && j.reviewRound === round,
+    );
+    if (exists) return;
+    const job: AgentJob = {
+      id: this.nextId('job'),
+      agentActorId: reviewerId,
+      threadId: null,
+      messageId: null,
+      workItemId: item.id,
+      featureId: item.featureId,
+      status: 'queued',
+      depth: 0,
+      reviewRound: round,
+      note: null,
+    };
+    this.agentJobs.set(job.id, job);
+    this.append(
+      'agent_job',
+      job.id,
+      'agent_job.created',
+      this.systemActorId,
+      { agentActorId: reviewerId, workItemId: item.id, reviewRound: round },
+      { causationId: String(causeEvent.globalSeq) },
+    );
   }
 
   listThreads(filter?: { featureId?: string; workItemId?: string; actorId?: string }): Thread[] {

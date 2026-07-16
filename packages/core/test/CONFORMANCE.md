@@ -4,7 +4,7 @@ This suite is the **specification** of the spine engine. It was written *before*
 
 Run: `pnpm test` (in `packages/core`). History: the suite was born **113 red / 2 green** against `NotImplementedError` stubs; the in-memory reference engine (story "1"–"10" domain, `src/engine.ts`) turned it **115/115 green**. Two inter-cluster contradictions surfaced during implementation and were arbitrated below (marked ⚖); each required editing exactly one pin, recorded here.
 
-Files: `fsm-transitions` (14) · `blocked-overlay` (9) · `epic-lift` (4) · `feature-fsm` (19) · `claims` (17) · `concurrency` (7) · `gates-evidence` (12) · `review-loop` (6) · `stories-import` (13) · `intent-hash` (12) · `intent-wired` (5) · `checkpoints-dispatch` (12) · `reconcile` (9).
+Files: `fsm-transitions` (14) · `blocked-overlay` (9) · `epic-lift` (4) · `feature-fsm` (19) · `review-dispatch` (8) · `claims` (17) · `concurrency` (7) · `gates-evidence` (12) · `review-loop` (6) · `stories-import` (13) · `intent-hash` (12) · `intent-wired` (5) · `checkpoints-dispatch` (12) · `reconcile` (9).
 
 ## Interpretation pins
 
@@ -19,6 +19,11 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 - **In-TDD checkpoint = `tests_pinned` entry-guard** on `design→breakdown`: at least one story of the feature carries a non-empty `pinnedVerification` (the test-first tests were authored, D7). `executing→handoff` carries `children_done` (no child outside `done`).
 - **Loopbacks are system-authored** with `causationId` = the gate-decision event, mirroring `rejectGate`. Feature gate decisions live in `gate_decisions` with `feature_id` set and `work_item_id` null (a CHECK pins the XOR). The quorum round for a feature gate = the count of prior rejections for that feature+gate, so a rejection resets the quorum (reused `round` semantics).
 - **Cancel** (`feature.cancel`, a product decision) reaches terminal `cancelled` from any non-terminal state, appending a compensating `feature.cancelled` event; `done`/`cancelled` refuse it. Gate policies (`set_gate_policy`) apply to the feature gate codes exactly as to `spec_approval`.
+
+### Atomic reviewer dispatch (roadmap §9.4, `review-dispatch`)
+- **Claims carry a `kind`** (`'work' | 'review'`). The live-claim constraint is per `(work_item_id, kind)`, so a work claim and a review claim COEXIST on one item, each with its own fencing token. Two concurrent `claim_review` calls: one wins, the loser gets `ConflictError` (constraint, not app logic). A presented token is valid iff it matches SOME live claim on the item (work or review) — the token is the capability, not the kind.
+- **`claim_review`** requires `gate.review.approve` OR `gate.review.reject` and applies only to `in_review` items.
+- **Auto-dispatch**: when the `review_approval` gate policy names `autoDispatchReviewer`, entering `in_review` materializes EXACTLY ONE review `agent_job` for that actor, `reviewRound = reviewLoopIteration`, `threadId`/`messageId` null. A review job is an `agent_job` with `reviewRound` non-null; the partial unique index `(work_item_id, review_round)` makes a second entry into `in_review` in the same round a no-op. The mention jobs loop ignores review jobs.
 - **Worker push**: dev-auto says "do not push"; roadmap §1.4 makes `final_revision_reachable_on_remote` a done-gate guard. Roadmap wins.
 - **Review-loop counter after the blocking 6th rejection**: stays at 5 (counts *performed* loopbacks; dev-auto's file-side "write 6 then halt" is not adopted — DB is the only counter, roadmap §1.1). The item stays `in_review` + blocked overlay `review_non_convergence`; `rejectGate` records the decision and returns the blocked item rather than throwing.
 

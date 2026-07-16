@@ -45,7 +45,11 @@ interface SetWorkspacePolicyIn {
 }
 interface SetGatePolicyIn {
   gate: GateCode;
-  policy: { minApprovals?: number | undefined; requiredActorTypes?: ActorType[] | undefined };
+  policy: {
+    minApprovals?: number | undefined;
+    requiredActorTypes?: ActorType[] | undefined;
+    autoDispatchReviewer?: string | undefined;
+  };
 }
 interface AuthzExplainIn { actorId: string; permission: string }
 interface ImportStoriesIn { featureId: string; yaml: string }
@@ -347,6 +351,9 @@ export function createCommandBus(
             ...(p.policy.requiredActorTypes !== undefined
               ? { requiredActorTypes: [...p.policy.requiredActorTypes] }
               : {}),
+            ...(p.policy.autoDispatchReviewer !== undefined
+              ? { autoDispatchReviewer: p.policy.autoDispatchReviewer }
+              : {}),
           },
           byActorId: ctx.actorId,
         });
@@ -365,6 +372,14 @@ export function createCommandBus(
       case 'claim_task': {
         const p = parsed as ClaimTaskIn;
         return engine.claimTask({
+          workItemId: p.workItemId,
+          actorId: ctx.actorId,
+          ...(p.ttlMs !== undefined ? { ttlMs: p.ttlMs } : {}),
+        });
+      }
+      case 'claim_review': {
+        const p = parsed as ClaimTaskIn;
+        return engine.claimReview({
           workItemId: p.workItemId,
           actorId: ctx.actorId,
           ...(p.ttlMs !== undefined ? { ttlMs: p.ttlMs } : {}),

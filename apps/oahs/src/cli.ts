@@ -22,6 +22,7 @@ import {
   intentRebaselineCommand,
   authzCommand,
   claimLsCommand,
+  claimReviewCommand,
   claimReleaseCommand,
   doclintCommand,
   eventsCommand,
@@ -724,6 +725,11 @@ export function buildProgram(): Command {
       emit(() =>
         claimLsCommand(clientFrom(opts), opts.released === true ? { released: true } : {}),
       ),
+    );
+  withClientFlags(claim.command('review <workItemId>'))
+    .description('claim an in_review item for review (§9.4); requires a review-gate grant')
+    .action(async (workItemId: string, opts: ClientFlags) =>
+      emit(() => claimReviewCommand(clientFrom(opts), { workItemId })),
     );
   withClientFlags(claim.command('release <workItemId>'))
     .description('force-release EVERY live claim on a work item (dead-runner recovery)')

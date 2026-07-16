@@ -213,6 +213,11 @@ export interface GatePolicy {
   minApprovals?: number;
   /** at least one approver of each listed type is required (e.g. ['user']) */
   requiredActorTypes?: ActorType[];
+  /**
+   * §9.4: when set on the review_approval gate, entering `in_review` materializes
+   * exactly one review agent_job per review round for this reviewer actor.
+   */
+  autoDispatchReviewer?: string;
 }
 
 export interface RoleAssignment {
@@ -354,10 +359,15 @@ export interface WorkItem {
   stateVersion: number;
 }
 
+/** Claim kind (§9.4): a work claim serializes execution; a review claim serializes reviewer dispatch. */
+export type ClaimKind = 'work' | 'review';
+
 export interface Claim {
   id: string;
   workItemId: string;
   actorId: string;
+  /** 'work' by default; 'review' for reviewer-dispatch claims (§9.4). One live claim per (item, kind). */
+  kind: ClaimKind;
   fencingToken: number;
   leaseExpiresAt: number; // engine-clock ms
   released: boolean;
@@ -445,12 +455,15 @@ export interface Notification {
 export interface AgentJob {
   id: string;
   agentActorId: string;
-  threadId: string;
-  messageId: string; // the triggering mention
-  workItemId: string | null; // context when the thread is task-bound
+  /** null for a review job (§9.4): materialized from an in_review transition, not a mention. */
+  threadId: string | null;
+  messageId: string | null; // the triggering mention (null for a review job)
+  workItemId: string | null; // context when the thread is task-bound (always set for a review job)
   featureId: string | null;
   status: 'queued' | 'done' | 'blocked';
   depth: number; // 0 = human-triggered; +1 per agent-mention-agent hop
+  /** review round (§9.4): non-null marks a REVIEW job; one per (workItemId, reviewRound) by constraint. */
+  reviewRound: number | null;
   note: string | null;
 }
 
@@ -588,6 +601,8 @@ export interface SpineEngine {
 
   // -- claims (roadmap §1.3) -------------------------------------------------
   claimTask(input: { workItemId: string; actorId: string; ttlMs?: number }): Claim;
+  /** §9.4: claim an in_review item for review (kind='review'); requires gate.review.approve OR .reject. One live review claim per item by constraint. */
+  claimReview(input: { workItemId: string; actorId: string; ttlMs?: number }): Claim;
   heartbeat(input: { claimId: string; actorId: string; fencingToken?: number }): void;
   releaseClaim(input: { claimId: string; actorId: string; fencingToken?: number; reason?: string }): void;
   /** Privileged ops recovery (roadmap §8): gated on `ops.force_release_claim`. */

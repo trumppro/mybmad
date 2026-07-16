@@ -48,6 +48,7 @@ import {
   type AuthzExplanation,
   type BlockedReason,
   type Claim,
+  type ClaimKind,
   type CreateWorkItemInput,
   type DivergenceReport,
   type Evidence,
@@ -515,8 +516,9 @@ export class PgEngine {
     }
   }
 
-  private async liveClaim(workItemId: string): Promise<ClaimRow | null> {
-    const rows = await this.db
+  /** All live claims on an item — work and review (§9.4). */
+  private async liveClaimsOf(workItemId: string): Promise<ClaimRow[]> {
+    return this.db
       .select()
       .from(claims)
       .where(
@@ -526,9 +528,13 @@ export class PgEngine {
           gt(claims.leaseExpiresAt, this.currentTime()),
         ),
       )
-      .orderBy(asc(claims.seq))
-      .limit(1);
-    return rows[0] ?? null;
+      .orderBy(asc(claims.seq));
+  }
+
+  /** The live claim of a given kind (default 'work') — one per (item, kind) by constraint. */
+  private async liveClaim(workItemId: string, kind: ClaimKind = 'work'): Promise<ClaimRow | null> {
+    const rows = await this.liveClaimsOf(workItemId);
+    return rows.find((c) => c.kind === kind) ?? null;
   }
 
   /**
@@ -543,12 +549,12 @@ export class PgEngine {
     actorId: string,
   ): Promise<void> {
     if (fencingToken === undefined) return;
-    const live = await this.liveClaim(item.id);
-    if (live === null || live.fencingToken !== fencingToken) {
+    const live = await this.liveClaimsOf(item.id);
+    if (!live.some((c) => c.fencingToken === fencingToken)) {
       await this.db.transaction(async (tx) => {
         await this.appendTx(tx, 'work_item', item.id, 'fencing.rejected', actorId, {
           presentedToken: fencingToken,
-          liveToken: live?.fencingToken ?? null,
+          liveToken: live[0]?.fencingToken ?? null,
         });
       });
       throw new ConflictError(`stale or foreign fencing token for work item ${item.id}`);
@@ -616,6 +622,7 @@ export class PgEngine {
       id: row.id,
       workItemId: row.workItemId,
       actorId: row.actorId,
+      kind: (row.kind as ClaimKind | null) ?? 'work',
       fencingToken: row.fencingToken,
       leaseExpiresAt: row.leaseExpiresAt,
       released: row.released,
@@ -1166,20 +1173,48 @@ export class PgEngine {
   // -- claims (roadmap §1.3) ---------------------------------------------------
 
   async claimTask(input: { workItemId: string; actorId: string; ttlMs?: number }): Promise<Claim> {
+    return this.claimOfKind({ ...input, kind: 'work', permission: 'task.claim' });
+  }
+
+  /** §9.4: mirror of the reference engine — review claim, kind='review'. */
+  async claimReview(input: { workItemId: string; actorId: string; ttlMs?: number }): Promise<Claim> {
     const item = await this.mustGetItem(input.workItemId);
-    await this.requirePermission(input.actorId, 'task.claim');
+    if (
+      !(await this.hasPermission(input.actorId, 'gate.review.approve')) &&
+      !(await this.hasPermission(input.actorId, 'gate.review.reject'))
+    ) {
+      throw new PermissionDeniedError('gate.review.approve', input.actorId);
+    }
+    if (item.state !== 'in_review') {
+      throw new GuardFailedError(`review claim applies to in_review items, not ${item.state}`);
+    }
+    return this.claimOfKind({ ...input, kind: 'review' });
+  }
+
+  private async claimOfKind(input: {
+    workItemId: string;
+    actorId: string;
+    ttlMs?: number;
+    kind: ClaimKind;
+    permission?: Permission;
+  }): Promise<Claim> {
+    const item = await this.mustGetItem(input.workItemId);
+    if (input.permission !== undefined) await this.requirePermission(input.actorId, input.permission);
     const ttlMs = input.ttlMs ?? 15 * 60 * 1000;
     const claimId = this.nextId('claim');
     try {
       return await this.db.transaction(async (tx) => {
-        // Sweep: an EXPIRED lease returns the item to the pool — flip its
-        // released flag so the partial unique index only guards live claims.
+        // Sweep: an EXPIRED lease of THIS kind returns the slot to the pool —
+        // flip its released flag so the per-(item,kind) index only guards live
+        // claims. Kind-scoped so claiming one kind never touches an expired
+        // claim of the other kind (parity with the reference engine, §9.4).
         await tx
           .update(claims)
           .set({ released: true })
           .where(
             and(
               eq(claims.workItemId, item.id),
+              eq(claims.kind, input.kind),
               eq(claims.released, false),
               lte(claims.leaseExpiresAt, this.currentTime()),
             ),
@@ -1195,12 +1230,13 @@ export class PgEngine {
         )[0];
         const token = (counterRow?.lastFencingToken ?? 0) + 1;
         await tx.update(workItems).set({ lastFencingToken: token }).where(eq(workItems.id, item.id));
-        // The partial unique index claims_one_live_per_item decides the race:
-        // a live claim makes this INSERT fail — the loser leaves no row.
+        // The partial unique index (work_item_id, kind) decides the race:
+        // a live claim of this kind makes this INSERT fail — loser leaves no row.
         await tx.insert(claims).values({
           id: claimId,
           workItemId: item.id,
           actorId: input.actorId,
+          kind: input.kind,
           fencingToken: token,
           leaseExpiresAt: this.currentTime() + ttlMs,
           released: false,
@@ -1209,11 +1245,13 @@ export class PgEngine {
         await this.appendTx(tx, 'work_item', item.id, 'work_item.claimed', input.actorId, {
           claimId,
           fencingToken: token,
+          kind: input.kind,
         });
         return {
           id: claimId,
           workItemId: item.id,
           actorId: input.actorId,
+          kind: input.kind,
           fencingToken: token,
           leaseExpiresAt: this.currentTime() + ttlMs,
           released: false,
@@ -1221,7 +1259,7 @@ export class PgEngine {
       });
     } catch (error) {
       if (isUniqueViolation(error)) {
-        throw new ConflictError(`work item ${item.id} already has a live claim`);
+        throw new ConflictError(`work item ${item.id} already has a live ${input.kind} claim`);
       }
       throw error;
     }
@@ -1564,6 +1602,63 @@ export class PgEngine {
           { workItemId: item.id },
           { causationId: String(event.globalSeq) },
         );
+      }
+    }
+
+    // §9.4: entering in_review auto-dispatches ONE review job per round when the
+    // review_approval gate policy names a reviewer. The partial unique index
+    // (work_item_id, review_round) is the idempotency — ON CONFLICT DO NOTHING
+    // makes a second entry into in_review in the same round a no-op.
+    if (to === 'in_review') {
+      // Read the policy via `tx` — never this.db inside a this.db.transaction
+      // (single-connection PGlite deadlocks).
+      const policyRows = await tx
+        .select({ policy: gatePolicies.policy })
+        .from(gatePolicies)
+        .where(eq(gatePolicies.gate, 'review_approval'))
+        .limit(1);
+      const reviewerId = (policyRows[0]?.policy as GatePolicy | undefined)?.autoDispatchReviewer;
+      if (reviewerId !== undefined) {
+        const round = item.reviewLoopIteration;
+        // Mirror the memory engine EXACTLY: pre-check existence BEFORE consuming
+        // a nextId, so the no-op path (same-round re-entry) advances no id
+        // counter — otherwise the two engines' ids drift for identical input.
+        // The partial unique index stays the real guard against a concurrent race.
+        const already = await tx
+          .select({ id: agentJobs.id })
+          .from(agentJobs)
+          .where(and(eq(agentJobs.workItemId, item.id), eq(agentJobs.reviewRound, round)))
+          .limit(1);
+        if (already.length === 0) {
+          const jobId = this.nextId('job');
+          const inserted = await tx
+            .insert(agentJobs)
+            .values({
+              id: jobId,
+              agentActorId: reviewerId,
+              threadId: null,
+              messageId: null,
+              workItemId: item.id,
+              featureId: item.featureId,
+              status: 'queued',
+              depth: 0,
+              reviewRound: round,
+              note: null,
+            })
+            .onConflictDoNothing()
+            .returning({ id: agentJobs.id });
+          if (inserted.length > 0) {
+            await this.appendTx(
+              tx,
+              'agent_job',
+              jobId,
+              'agent_job.created',
+              this.systemActorId,
+              { agentActorId: reviewerId, workItemId: item.id, reviewRound: round },
+              { causationId: String(event.globalSeq) },
+            );
+          }
+        }
       }
     }
 
@@ -2136,6 +2231,7 @@ export class PgEngine {
       featureId: row.featureId,
       status: row.status as AgentJob['status'],
       depth: row.depth,
+      reviewRound: row.reviewRound ?? null,
       note: row.note,
     };
   }
@@ -2452,14 +2548,18 @@ export class PgEngine {
         status: input.status,
         note,
       });
-      // notify the mentioner — the reverse direction is a message + notification, nothing more (§5.4)
-      const trigger = (
-        await tx
-          .select({ authorId: messages.authorId })
-          .from(messages)
-          .where(eq(messages.id, job.messageId))
-          .limit(1)
-      )[0];
+      // notify the mentioner — the reverse direction is a message + notification,
+      // nothing more (§5.4). A review job (§9.4) has no triggering message.
+      const trigger =
+        job.messageId !== null
+          ? (
+              await tx
+                .select({ authorId: messages.authorId })
+                .from(messages)
+                .where(eq(messages.id, job.messageId))
+                .limit(1)
+            )[0]
+          : undefined;
       if (trigger) await this.pushNotificationTx(tx, trigger.authorId, 'job_completed', job.id);
       return this.publicJob({ ...job, status: input.status, note });
     });
