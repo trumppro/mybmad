@@ -339,7 +339,12 @@ describe('runner e2e — BYO worker loop against real git + in-process spine-api
       }),
     );
     expect(crashed.outcome).toBe('crashed');
-    expect(crashed.evidence).toEqual([]); // died before any report
+    // Died before any REPORT, but the pre-agent push-target anchor (§8) was
+    // already recorded — that is exactly what lets the adopt path below verify
+    // its push against a pre-tamper target.
+    expect(crashed.evidence?.map((e) => e.kind)).toEqual(['push_target']);
+    expect(evidenceOfKind(crashed, 'halt_report')).toHaveLength(0);
+    expect(evidenceOfKind(crashed, 'commit')).toHaveLength(0);
 
     // The claim is still live and the item sits in_progress with no report.
     const claimsAfterCrash = await po.call<Claim[]>('get_claims', { workItemId: '3' });

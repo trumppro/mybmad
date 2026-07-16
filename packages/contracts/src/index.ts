@@ -33,7 +33,7 @@ const fencingToken = z
 
 const evidenceSchema = z
   .object({
-    kind: z.enum(['test_run', 'git_diff', 'commit', 'halt_report', 'review_report', 'doc_lint', 'intent_hash', 'pr']),
+    kind: z.enum(['test_run', 'git_diff', 'commit', 'halt_report', 'review_report', 'doc_lint', 'intent_hash', 'pr', 'push_target']),
     payload: z.record(z.string(), z.unknown()),
   })
   .describe('Raw machine-collected evidence; the core computes verdicts, the runner never does');

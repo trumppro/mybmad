@@ -15,7 +15,9 @@
  *  5. invoke the coding agent (template; unmodified bmad-dev-auto content)
  *  6. parse HALT + Auto Run Result → halt_report evidence (verbatim)
  *  7. run PINNED verification commands only (allowlisted) → test_run evidence
- *  8. push branch → git_diff + commit evidence (remote reachability measured)
+ *  8. verify the push config matches the pre-agent snapshot, then push branch →
+ *     git_diff + commit evidence (remote reachability measured); a redirected
+ *     target, an added command knob, or a git-lfs repo is refused, not pushed (§8)
  *  9. advance_state / block_task per HALT status — the core computes verdicts
  * 10. crash recovery on re-claim: adopt a decently-finished worktree (terminal
  *     frontmatter + a real commit past its baseline) with late evidence
@@ -400,6 +402,98 @@ export function git(args: string[], cwd: string): string {
   return result.stdout.trim();
 }
 
+/** `git config --get-regexp <re>`, tolerant of exit 1 (no match); one
+ *  `key value` line per hit, across every scope (repo/worktree/include/global). */
+function gitConfigMatches(regex: string, cwd: string): string[] {
+  const args = [...HOOK_ISOLATION, 'config', '--get-regexp', regex];
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: buildGitEnv(args) });
+  if (result.status !== 0) return [];
+  return result.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * Repo-config keys that decide WHERE or HOW `git push`/`git ls-remote` behave
+ * beyond the URL — each agent-writable and each invisible to the URL set. Read
+ * as effective values (`--get-regexp`, all scopes), so an include.path'd or
+ * worktree-scoped value is seen too. Verified: each closes with detection.
+ *
+ *  - Transport redirect (diverts the bytes, URL unchanged): `http.*` (proxy and
+ *    its per-url form; sslVerify, whose disabling enables a MITM proxy),
+ *    `remote.<n>.proxy`, `core.gitProxy`.
+ *  - Command execution at push/ls-remote time (RCE holding the ssh-agent socket
+ *    the agent's own env is denied): `core.sshCommand`, `core.askPass` (runs on
+ *    an https 401, even under GIT_TERMINAL_PROMPT=0), `credential.*` (helper),
+ *    `remote.<n>.uploadpack` / `receivepack`.
+ *
+ * A denylist, so best-effort by nature: it names the knobs known to fire on the
+ * runner's push/ls-remote (`core.gitProxy` also covers the git:// proxy RCE). A
+ * knob outside it is the §10 sandbox's job. Reading the fingerprint itself never
+ * fires any of them — get-url and config are local, no network.
+ */
+// One alternation, so the fingerprint costs a SINGLE `git config` subprocess
+// rather than one per key. That matters: git() is spawnSync (blocks the event
+// loop), and finishRun already runs several before the push while the lease
+// heartbeat needs the loop free — fewer blocking calls, less heartbeat jitter.
+const PUSH_CONFIG_KEY_REGEX = (remoteRe: string): string =>
+  `^(http\\.|remote\\.${remoteRe}\\.(proxy|uploadpack|receivepack)|core\\.(gitproxy|sshcommand|askpass)|credential\\.)`;
+
+/**
+ * A fingerprint of everything that decides WHERE and HOW `git push <remote>`
+ * lands — captured before the agent runs and re-captured before the push, so
+ * any agent-written divergence is refused. Sorted, compared as a set.
+ *
+ * The push URL SET comes from `get-url --push --all` (every insteadOf /
+ * pushInsteadOf rewrite applied, every scope, every pushurl — `get-url --push`
+ * alone shows only the first pushurl, and a bare `config --get` shows the
+ * un-rewritten url). The rest are the redirect/RCE config keys above.
+ *
+ * This DETECTS divergence rather than pinning a value, which is why it closes
+ * the command knobs without the operator-config tension a `-c` override carries:
+ * a LEGITIMATE operator value — a global insteadOf, a corporate `http.proxy`, a
+ * custom `core.sshCommand`, a repo-local `uploadpack` for an off-PATH server
+ * binary — sits in BOTH captures and never false-blocks. Only a value that
+ * APPEARS during the run diverges. (A value that PREDATES the pre-agent snapshot
+ * is trusted — a prior agent poisoning shared/global config is §10 sandbox
+ * territory, like reading ~/.ssh.)
+ */
+function pushGuardFingerprint(remote: string, cwd: string): string[] {
+  const remoteRe = remote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const urls = git(['remote', 'get-url', '--push', '--all', remote], cwd)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((url) => `push-url ${url}`);
+  const config = gitConfigMatches(PUSH_CONFIG_KEY_REGEX(remoteRe), cwd).map((line) => `cfg ${line}`);
+  return [...urls, ...config].sort();
+}
+
+/** Two fingerprints equal? Both are pre-sorted by pushGuardFingerprint. */
+function samePushGuard(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((line, i) => line === b[i]);
+}
+
+/**
+ * Does the commit `<tree>` track files through git-lfs? True iff a committed
+ * `.gitattributes` (at any depth) has a line that BINDS a filter=lfs driver.
+ * Reads only the pushed tree and needs no git-lfs binary — the authoritative
+ * in-tree signal, since git-lfs tracking is always a committed filter=lfs.
+ *
+ * `-a` (not `-I`): the file being scanned is agent-controlled, and `-I` skips
+ * files git deems binary — an agent that adds `*.gitattributes binary` or a NUL
+ * byte would hide the marker from `-I` while lfs stays live for the reviewer.
+ * `^[^#]*` anchors past a comment so a stale `# …filter=lfs…` note is not a
+ * false positive. `git grep` exits 1 on no-match, which git() throws on, so this
+ * runs raw with the same HOOK_ISOLATION + env.
+ */
+function commitUsesLfs(tree: string, cwd: string): boolean {
+  const args = [...HOOK_ISOLATION, 'grep', '-a', '-l', '-e', '^[^#]*filter=lfs', tree, '--', '*.gitattributes'];
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: buildGitEnv(args) });
+  return result.status === 0 && result.stdout.trim().length > 0;
+}
+
 /**
  * Keep runner bookkeeping out of agent commits: the marker file and the
  * worktree root are added to $GIT_COMMON_DIR/info/exclude (shared by all
@@ -724,6 +818,16 @@ interface FinishArgs {
   forge?: { client: GitHubForge; baseBranch: string; title: string };
   /** §10.1: the job-scoped client for dispatch mutations (block/release/advance). */
   dispatch: Dispatch;
+  /**
+   * §8: the push-guard fingerprint (URL set + transport config) captured from a
+   * TRUSTED moment before the agent ran — the fresh run's own pre-agent
+   * snapshot, or (on the adopt path) the `push_target` evidence the crashed run
+   * recorded on the rails. finishRun refuses to push if the effective
+   * fingerprint has since diverged. Empty means no trusted anchor exists (a
+   * legacy item adopted from before this feature) — the push is refused rather
+   * than trusted.
+   */
+  trustedPushGuard: readonly string[];
   submit: (kind: Evidence['kind'], payload: Record<string, unknown>) => Promise<void>;
 }
 
@@ -770,6 +874,56 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
     nonEmpty: filesChanged > 0,
     branch: args.branch,
   });
+
+  // 8a — §8 push-config trust. Refuse (block, don't push) if the push-guard
+  // fingerprint has diverged from the trusted pre-agent snapshot, or if there is
+  // no trusted snapshot. Divergence means the agent wrote a redirect (remote.url
+  // / insteadOf / pushInsteadOf / pushurl / a transport proxy) — which
+  // exfiltrates the branch and forges reachableOnRemote, consumed by the
+  // done-gate — or a command knob (core.sshCommand / credential.helper /
+  // uploadpack / receivepack) that would run as the runner holding the ssh-agent
+  // socket. A loud block beats a dishonest record or an RCE. NOTE: this catches
+  // tampering during THIS run; config that predates the trusted snapshot (a
+  // prior agent poisoning shared/global config) is out of reach of any config
+  // reader and belongs to the §10 sandbox, like reading ~/.ssh.
+  const refusePush = async (reason: string, extra: Record<string, unknown>): Promise<'blocked'> => {
+    await args.submit('commit', {
+      sha: final,
+      branch: args.branch,
+      reachableOnRemote: false,
+      pushRefused: reason,
+      ...extra,
+    });
+    await dispatch.call('block_task', {
+      workItemId: workItem.id,
+      reason: 'other',
+      fencingToken: claim.fencingToken,
+    });
+    await dispatch.call('release_claim', { claimId: claim.id, reason });
+    return 'blocked';
+  };
+
+  const observedGuard = pushGuardFingerprint(args.remote, args.repoPath);
+  if (args.trustedPushGuard.length === 0) {
+    return refusePush('no recorded push target for this item — refusing to trust repo config', {
+      observedPushGuard: observedGuard,
+    });
+  }
+  if (!samePushGuard(observedGuard, args.trustedPushGuard)) {
+    return refusePush('push configuration changed since dispatch (redirect or command knob)', {
+      trustedPushGuard: [...args.trustedPushGuard],
+      observedPushGuard: observedGuard,
+    });
+  }
+  // 8b — §8 git-lfs. Client hooks are off (HOOK_ISOLATION), and git-lfs uploads
+  // its objects FROM the pre-push hook, so pushing an LFS repo lands a ref whose
+  // objects never uploaded — reachableOnRemote would be truthfully true while the
+  // branch is unusable. Refuse rather than certify a broken ref. (Re-enabling
+  // hooks on push is not the fix: it hands an agent-planted pre-push hook the
+  // ssh-agent socket this call carries.)
+  if (final !== args.baseline && commitUsesLfs(final, args.workDir)) {
+    return refusePush('repository uses git-lfs, which uploads objects from the pre-push hook the runner disables — the pushed ref would be unusable', {});
+  }
 
   // NOTE (§10.2): git is synchronous (spawnSync), so a push that runs longer
   // than the lease TTL blocks the heartbeat timer and lapses BOTH the lease and
@@ -848,6 +1002,31 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
 // ---------------------------------------------------------------------------
 // Crash-recovery scan (step 10)
 // ---------------------------------------------------------------------------
+
+/**
+ * §8: the trusted push-guard fingerprint the ORIGINAL dispatch recorded on the
+ * rails, for the adopt path (which has no pre-agent moment of its own). Takes
+ * the EARLIEST push_target for the remote — evidence is append-only and the
+ * agent cannot submit (no rails credential), but earliest-wins closes even a
+ * hypothetical late forgery.
+ *
+ * A `list_evidence` error is NOT swallowed: it propagates so workLoop backs off
+ * and retries with the worktree intact, exactly like every other rails call in
+ * the dispatch. Swallowing it to `[]` would turn a transient blip into a
+ * terminal block AND a deleted adoptable worktree. Only a SUCCESSFUL read that
+ * genuinely lacks the row (a pre-feature legacy item) returns `[]` ⇒ refuse.
+ */
+async function readTrustedPushGuard(
+  client: OahsClient,
+  workItemId: string,
+  remote: string,
+): Promise<string[]> {
+  const rows = await client.call<Evidence[]>('list_evidence', { workItemId });
+  const target = rows.find((e) => e.kind === 'push_target' && e.payload['remote'] === remote);
+  const guard = target?.payload['guard'];
+  if (!Array.isArray(guard)) return [];
+  return guard.filter((line): line is string => typeof line === 'string').sort();
+}
 
 interface WorktreeScan {
   adoptable: { dir: string; head: string; baseline: string } | null;
@@ -1095,11 +1274,16 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     if (options.failpoint === 'before_report') {
       return { ...base, outcome: 'crashed', details: 'failpoint before_report (adopt path)' };
     }
+    // §8: no agent runs on adopt, so there is no pre-agent moment THIS process —
+    // the trusted push guard comes from the `push_target` the crashed run
+    // recorded on the rails. Absent (a legacy item) → empty → finishRun refuses
+    // rather than trust the (possibly tampered) repo config.
     const outcome = await finishRun({
       ...finishArgs,
       workDir: dir,
       baseline,
       agentExitCode: null,
+      trustedPushGuard: await readTrustedPushGuard(client, workItem.id, remote),
     });
     removeWorktree(dir, repoPath);
     log(`${workItem.externalKey} → ${outcome === 'in_review' ? 'adopted_in_review' : outcome} (adopted ${dir})`);
@@ -1125,6 +1309,12 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
 
   // 2 — git plumbing: baseline, claim branch, claim-named worktree.
   const baseline = git(['rev-parse', 'HEAD'], repoPath);
+  // §8: snapshot the trusted push-guard fingerprint NOW, before the agent can
+  // touch repo config, and record it on the rails. finishRun refuses to push if
+  // the fingerprint later diverges; the rails copy lets a crash-adopt (which
+  // never re-invokes the agent) verify against this same pre-tamper anchor.
+  const trustedPushGuard = pushGuardFingerprint(remote, repoPath);
+  await submit('push_target', { remote, guard: trustedPushGuard });
   ensureGitExcludes(repoPath);
   mkdirSync(worktreesRoot, { recursive: true });
   const worktreeDir = join(worktreesRoot, claim.id);
@@ -1245,6 +1435,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     baseline,
     agentExitCode,
     agentLogPath,
+    trustedPushGuard,
   });
   removeWorktree(worktreeDir, repoPath);
   log(`${workItem.externalKey} → ${outcome}`);

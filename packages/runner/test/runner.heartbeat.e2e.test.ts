@@ -28,11 +28,11 @@ const STORIES_YAML = `
   description: the agent takes longer than the claim TTL
 `;
 
-// Sleeps ~700ms before finishing — longer than the 300ms claim TTL below.
+// Sleeps ~900ms before finishing — longer than the 500ms claim TTL below.
 const SLOW_AGENT = `
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-await new Promise((r) => setTimeout(r, 700));
+await new Promise((r) => setTimeout(r, 900));
 const specFile = process.env.OAHS_SPEC_FILE;
 mkdirSync('src', { recursive: true });
 writeFileSync('src/out.txt', 'slow work\\n');
@@ -143,7 +143,12 @@ describe('runner heartbeat under wall-clock leases', () => {
     const lines: string[] = [];
     const result = await runOnce(
       runnerOptions({
-        claimTtlMs: 300, // agent sleeps 700ms — without heartbeats this lease dies mid-run
+        // Agent sleeps 900ms — without heartbeats this lease dies mid-run. The TTL
+        // must also outlast finishRun's tail of synchronous git calls (diff, the
+        // §8 push-guard fingerprint, push, ls-remote), which block the heartbeat
+        // timer; 500ms keeps that margin under parallel-CI load while staying well
+        // under the agent's 900ms.
+        claimTtlMs: 500,
         heartbeatMs: 100,
         log: (line) => lines.push(line),
       }),

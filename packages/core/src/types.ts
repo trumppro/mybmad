@@ -259,7 +259,10 @@ export type EvidenceKind =
   | 'review_report' // LLM-authored; NEVER a guard, context only
   | 'doc_lint' // {schemaValid} for non-code work
   | 'intent_hash' // {algo, hash} — the measuring side's canonical frozen-region hash (§9.3)
-  | 'pr'; // §9.6: {action:'opened'|'merged_into_default', number, url?, mergedSha?} — forge facts the runner/CLI measure
+  | 'pr' // §9.6: {action:'opened'|'merged_into_default', number, url?, mergedSha?} — forge facts the runner/CLI measure
+  | 'push_target'; // §8: {remote, urls} — the effective push URL(s) captured PRE-agent, so a later
+  //   push whose target was redirected by agent-written git config is refused, not trusted. Runner
+  //   bookkeeping, never a gate input (the engine ignores it, like review_report).
 
 export interface Evidence {
   kind: EvidenceKind;
