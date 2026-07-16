@@ -18,13 +18,16 @@ Tests/spec first:
 
 Implementation:
 
-- [ ] `.github/workflows/oahs-ci.yaml` (new; do not touch the upstream BMAD workflows):
-      triggers `push` + `pull_request` with `paths: [packages/**, apps/**, Makefile,
-      .github/workflows/oahs-ci.yaml]`; runs on ubuntu-latest.
-- [ ] Steps: checkout → `actions/setup-node` with `node-version-file: .nvmrc` →
-      `corepack enable` → **generate the workspace file** (it is gitignored by design):
-      `printf 'packages:\n  - packages/*\n  - apps/*\nallowBuilds:\n  esbuild: true\n' > pnpm-workspace.yaml`
-      → `pnpm install` → the two grep steps → `make check`.
+- [ ] `.gitlab-ci.yml` (new; the repo remote is GitLab — a GitHub Actions workflow under
+      `.github/workflows/` would not run; do not touch the upstream BMAD workflows):
+      `workflow.rules` fire on branch pushes and merge requests; two jobs in the `test`
+      stage — a fast `spine-purity` job (greps only, no install) and a `check` job.
+- [ ] `check` job `before_script`: `corepack enable` → `corepack prepare pnpm@<version>
+      --activate` → **generate the workspace file** (it is gitignored by design):
+      `printf 'packages:\n  - packages/*\n  - apps/*\nallowBuilds:\n  esbuild: true\n
+      sharp: true\n  unrs-resolver: true\n' > pnpm-workspace.yaml` (in a YAML block scalar
+      — the `esbuild: true` colon-space breaks a plain scalar) → `pnpm install
+      --frozen-lockfile` → `make check`.
 - [ ] Add a third grep step gating unfinished-work markers in the platform's own docs:
       the doclint marker set over `delivery/ docs/oahs/` (exclude nothing; these trees
       must stay clean).

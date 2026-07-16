@@ -20,10 +20,8 @@ Every feature proposal must pass the thesis self-check:
 
 Two invariants are machine-checked in CI from day one:
 
-- **No LLM SDK inside the spine.** The core packages must not import any model-provider SDK. Lint rule, not a code-review convention.
+- **No LLM SDK inside the spine.** The core packages must not import any model-provider SDK. Enforced by a grep step in the platform CI (`.gitlab-ci.yml`, §8/D15), not a code-review convention.
 - **No writes outside the command bus.** No code path other than command handlers/projectors may write projection tables. Lint rule.
-
-> **Truth note (2026-07):** these checks do not exist yet. `.github/workflows/` runs only upstream BMAD quality checks; no workflow, lint rule, or hook greps for LLM SDKs or runs the oahs test suites. The invariants hold today (verified by hand), but enforcement is a manual habit until Phase 8 (§8) lands the net-new CI (D15).
 
 ### §0.2 Glossary (mandatory vocabulary)
 
@@ -254,7 +252,7 @@ What makes procurement say yes, none of it retrofit if §1 is built right:
 
 Before any new layer is built, the claims the docs already make must be true, and the wire surface must stop trusting politeness. Everything here is a defect fix or the enforcement of an existing promise — no new concepts.
 
-- **CI for the platform, net-new (D15).** Nothing in `.github/workflows/` builds, typechecks, or tests `packages/*`/`apps/*` — the 500+-test conformance discipline is enforced only by local habit (`make check`). One new workflow runs `make check` plus the two spine-purity greps (no LLM-provider SDK — §0.1; no `@oahs/gateway` import — §2.5; both over `core|db|contracts|spine-api`). This turns the §0.1 truth note back into the original sentence.
+- **CI for the platform, net-new (D15).** The upstream BMAD checks in `.github/workflows/` never build, typecheck, or test `packages/*`/`apps/*`, and the repo's remote is GitLab — so the platform pipeline is a net-new `.gitlab-ci.yml` (a GitHub Actions workflow would not run on the GitLab remote). It runs `make check` plus the two spine-purity greps (no LLM-provider SDK — §0.1; no `@oahs/gateway` import — §2.5; both over `core|db|contracts|spine-api`) and a no-unfinished-work-markers grep over `delivery/` + `docs/oahs/`. This makes the §0.1 invariants machine-checked for real.
 - **Close the ungated ops surface.** `force_release_claim` is currently open to ANY authenticated actor — a zero-grant agent can kill any live dispatch and invalidate the working runner's fencing token mid-run; the cockpit UI comment claims an `ops.force_release_claim` check that nothing performs. Implement `forceReleaseClaim` in the engine, gated on `ops.force_release_claim` (already in the tech_lead bundle), appending an audit event. `heartbeat` and `release_claim` verify the caller (claim-holder actor or presented fencing token) — today any party knowing a claimId can keep a zombie lease alive or release someone else's claim. `runner_announce`/`runner_heartbeat` gain a permission check so the fleet panel humans consult cannot be fed by phantom writers.
 - **Audit the credential plane.** `create_actor`'s token issuance and `list_tokens`/`reissue_token` never touch the event log — credential operations are invisible to the audit spine. Token ops append system-actor events (actor id + hash prefix, never the token).
 - **Event egress respects thread visibility.** `query_events` and `/events/stream` relay the full log to any authenticated actor; private-thread `message.posted` events are metadata-only but leak existence and author. Filter or mask stream events of private threads for non-participants.

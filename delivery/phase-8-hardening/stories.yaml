@@ -2,13 +2,15 @@
 # Schema: src/core-skills/bmad-spec/assets/stories-schema.md
 
 - id: "1"
-  title: Net-new CI workflow with invariant greps
+  title: Net-new CI pipeline with invariant greps
   description: >-
-    A GitHub workflow separate from upstream BMAD checks (D15): pnpm install,
-    typecheck, make check (all oahs suites), plus the two spine-purity greps
-    (no LLM-provider SDK, section 0.1; no @oahs/gateway import, section 2.5;
-    both over core/db/contracts/spine-api). Remove the truth notes in the
-    roadmap and OAHS.md once green on main.
+    A GitLab pipeline (.gitlab-ci.yml — the repo remote is GitLab; a GitHub
+    Actions workflow would not run) separate from upstream BMAD checks (D15):
+    pnpm install, make check (typecheck + all oahs suites), plus the two
+    spine-purity greps (no LLM-provider SDK, section 0.1; no @oahs/gateway
+    import, section 2.5; both over core/db/contracts/spine-api) and a
+    no-unfinished-work-markers grep over delivery/ and docs/oahs/. Remove the
+    truth notes in the roadmap and OAHS.md once green on main.
   spec_checkpoint: true
 
 - id: "2"

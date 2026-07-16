@@ -125,7 +125,7 @@ oahs stats reviews                            # review-loop iterations per kind 
 
 ### Model gateway (Phase 6 §2.5)
 
-A multi-provider gateway at the **runtime layer** — between agent runtimes and providers. `@oahs/gateway` speaks the OpenAI-compatible protocol (works with 9router, OpenRouter, or any compatible endpoint), routes friendly names to provider model ids, and meters token usage. **The deterministic spine is never a client of it** — an invariant grep keeps `@oahs/gateway` out of `core`, `db`, `contracts`, and `spine-api` (§0.1; the grep holds today but runs by hand — CI enforcement is Phase 8, roadmap §8). Config comes from env, never hardcoded:
+A multi-provider gateway at the **runtime layer** — between agent runtimes and providers. `@oahs/gateway` speaks the OpenAI-compatible protocol (works with 9router, OpenRouter, or any compatible endpoint), routes friendly names to provider model ids, and meters token usage. **The deterministic spine is never a client of it** — a CI grep (`.gitlab-ci.yml`) keeps `@oahs/gateway` out of `core`, `db`, `contracts`, and `spine-api` (§0.1). Config comes from env, never hardcoded:
 
 ```bash
 cp .env.example .env    # OAHS_MODEL_BASE_URL, OAHS_MODEL_API_KEY, OAHS_MODEL_DEFAULT
@@ -140,9 +140,9 @@ OAHS_TOKEN=<agent-token> oahs work --jobs \
 
 **Verified end-to-end against a live router**: a teammate driven by a real model read a mention, drafted a genuine PRD rate-limiting analysis, asked the PO a clarifying question back — all through the rails — recorded an episodic memory, and (audited) touched **zero** lifecycle events, holding no gate it wasn't granted. *AI does the work; rules run the process; permissioned actors hold the gates — now with a real AI.*
 
-## Invariants
+## Invariants (machine-checked)
 
-- **No LLM SDK inside the spine** — grep-lint; the spine never interprets, it checks. *(Truth note 2026-07: the grep is a manual habit — no CI runs it or the oahs test suites yet. Phase 8 (roadmap §8) makes these machine-checked for real.)*
+- **No LLM SDK inside the spine** — grep-lint in CI (`.gitlab-ci.yml`); the spine never interprets, it checks.
 - **No writes outside the command bus** — HTTP, MCP, CLI, and runner all execute the same handlers.
 - **Evidence is measured, verdicts are computed**: pinned commands only (an LLM-authored command is never a guard), fencing tokens on every worker mutation, empty diff = fake-done deny, push required for the done gate.
 - **Reconciliation is detect-only** (D6). Chat, when it lands (Phase 3), never mutates lifecycle.

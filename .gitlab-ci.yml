@@ -1,0 +1,59 @@
+# oahs platform CI — net-new, SEPARATE from the upstream BMAD checks in
+# .github/workflows/ (roadmap §8 / decision D15). The repo's remote is GitLab, so
+# the platform pipeline lives here, not in a GitHub Actions workflow.
+#
+# It enforces, on every branch push and merge request:
+#   1. spine purity — two greps that machine-check §0.1 (no LLM-provider SDK) and
+#      §2.5 (no @oahs/gateway import) inside packages/{core,db,contracts} + apps/spine-api;
+#   2. no unfinished-work markers in the platform docs (delivery/ + docs/oahs/);
+#   3. make check — typecheck + every @oahs/* test suite (incl. the pg-engine parity
+#      run: packages/db re-executes the core conformance suite against PGlite).
+#
+# pnpm-workspace.yaml is gitignored by design (see docs/oahs/); CI regenerates it.
+
+stages:
+  - test
+
+variables:
+  SPINE_TREES: "packages/core/src packages/db/src packages/contracts/src apps/spine-api/src"
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+# The two invariants and the doc-marker check run against the source tree only —
+# no install needed, so this job is fast and can gate before the heavier suite.
+spine-purity:
+  stage: test
+  image: node:22
+  before_script: []
+  script:
+    - |
+      echo "grep 1/3 — no LLM-provider SDK inside the spine (§0.1)"
+      if grep -rnE '@anthropic-ai/|openai|@google/generative|mistralai|cohere|ollama' $SPINE_TREES; then
+        echo "FAIL (§0.1): an LLM-provider SDK reference is inside the spine"; exit 1
+      fi
+    - |
+      echo "grep 2/3 — no @oahs/gateway import inside the spine (§2.5)"
+      if grep -rn '@oahs/gateway' $SPINE_TREES; then
+        echo "FAIL (§2.5): @oahs/gateway is imported inside the spine"; exit 1
+      fi
+    - |
+      echo "grep 3/3 — no unfinished-work markers in delivery/ or docs/oahs/"
+      if grep -rnE '\b(TODO|FIXME|TBD|LOREM IPSUM)\b' delivery/ docs/oahs/; then
+        echo "FAIL: an unfinished-work marker is in delivery/ or docs/oahs/"; exit 1
+      fi
+    - echo "spine purity OK"
+
+check:
+  stage: test
+  image: node:22
+  before_script:
+    - corepack enable
+    - corepack prepare pnpm@11.13.0 --activate
+    - |
+      printf 'packages:\n  - packages/*\n  - apps/*\nallowBuilds:\n  esbuild: true\n  sharp: true\n  unrs-resolver: true\n' > pnpm-workspace.yaml
+    - pnpm install --frozen-lockfile
+  script:
+    - make check

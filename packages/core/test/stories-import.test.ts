@@ -271,9 +271,11 @@ describe('importStories — re-import semantics (stories-schema.md "Update seman
   // so full pinning is untestable here — what we CAN pin is that a renumbering
   // re-import is not destructive: the previously-imported work item keeps its data.
   //
-  // TODO(conformance): once the importer reads the spec folder, add the pinned-id
-  // cases — pinned story keeps its id through edits, removal retires the id, and
-  // "retired ids are never reassigned".
+  // Full pinned-id semantics (a pinned story keeps its id through edits, removal
+  // retires the id, retired ids are never reassigned) require an importer that
+  // reads the spec folder's stories/<id>-*.md files. The engine API models no
+  // filesystem, so those cases belong with the spec-folder-reading importer, not
+  // this engine-level suite — which pins the non-destructive property below.
   it('re-import under a renumbered id does not lose the old work item', () => {
     const { engine, actorId, featureId } = setup();
     engine.importStories({ featureId, yaml: RENAME_BEFORE_YAML, actorId });
