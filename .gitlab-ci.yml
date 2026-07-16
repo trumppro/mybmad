@@ -1,6 +1,8 @@
-# oahs platform CI — net-new, SEPARATE from the upstream BMAD checks in
-# .github/workflows/ (roadmap §8 / decision D15). The repo's remote is GitLab, so
-# the platform pipeline lives here, not in a GitHub Actions workflow.
+# oahs platform CI — the GitLab MIRROR pipeline (roadmap §8 / decision D15).
+# The repo's primary origin is GitHub; the authoritative pipeline is the GitHub
+# Actions workflow .github/workflows/oahs-ci.yaml. This file runs the identical
+# checks on the GitLab mirror, so a pipeline exists wherever the code is looked at
+# (it does nothing if pipelines are disabled on the mirror). Keep the two in sync.
 #
 # It enforces, on every branch push and merge request:
 #   1. spine purity — two greps that machine-check §0.1 (no LLM-provider SDK) and

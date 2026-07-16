@@ -197,7 +197,7 @@ export OAHS_TOKEN=<TL_TOKEN>
 - Grep thứ ba: doclint marker set trên `delivery/ docs/oahs/` (phải sạch).
 
 **Files to touch:**
-- new `.gitlab-ci.yml` (remote là GitLab — GitHub Actions không chạy; không đụng workflow BMAD upstream)
+- new `.github/workflows/oahs-ci.yaml` (primary origin GitHub) + `.gitlab-ci.yml` mirror (không đụng workflow BMAD upstream)
 - `packages/core/test/stories-import.test.ts` (gỡ marker deferred ở ~line 274)
 - `product-roadmap.md`, `OAHS.md`, `delivery/phase-8-hardening/stories.yaml` (gỡ truth-notes)
 
