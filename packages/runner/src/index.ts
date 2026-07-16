@@ -106,6 +106,14 @@ export interface RunnerOptions {
   /** Git remote to push claim branches to. Default 'origin'. */
   remote?: string;
   /**
+   * §10.1: build a client bound to a job-scoped token — the runner mints one
+   * after claiming and routes ALL dispatch mutations through it (reads, poll,
+   * claim, heartbeat, and minting stay on the static client). Absent → mutations
+   * use the static client (BYO, unchanged). The CLI supplies
+   * `(token) => makeClient({ baseUrl, token })`.
+   */
+  scopedClientFactory?: (token: string) => OahsClient;
+  /**
    * §9.6: forge (GitHub) config for PR-on-dispatch. When set, the runner opens
    * (or finds) a PR from claim/<claimId> into `baseBranch` after the push and
    * submits `pr` evidence. Absent → BYO-without-forge keeps working unchanged.
@@ -698,11 +706,13 @@ interface FinishArgs {
   verifyEnv: NodeJS.ProcessEnv;
   /** §9.6: PR-on-dispatch config (forge client + base branch + title), when a project has a forge. */
   forge?: { client: GitHubForge; baseBranch: string; title: string };
+  /** §10.1: the job-scoped client for dispatch mutations (block/release/advance). */
+  dispatch: Dispatch;
   submit: (kind: Evidence['kind'], payload: Record<string, unknown>) => Promise<void>;
 }
 
 async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
-  const { client, workItem, claim } = args;
+  const { client, dispatch, workItem, claim } = args;
 
   // 6 — parse HALT: frontmatter status + verbatim Auto Run Result.
   const spec = readSpecReport(join(args.workDir, args.specRel));
@@ -786,27 +796,27 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
   const status = normalizeStatus(spec.status);
   const token = claim.fencingToken;
   if (status === 'blocked') {
-    await client.call('block_task', {
+    await dispatch.call('block_task', {
       workItemId: workItem.id,
       reason: mapBlockingCondition(spec.blockingCondition),
       fencingToken: token,
     });
-    await client.call('release_claim', { claimId: claim.id, reason: 'run blocked' });
+    await dispatch.call('release_claim', { claimId: claim.id, reason: 'run blocked' });
     return 'blocked';
   }
   const hasCommit = final !== args.baseline;
   if (status === 'done' || status === 'in_review' || (status === 'in_progress' && hasCommit)) {
-    await client.call('advance_state', {
+    await dispatch.call('advance_state', {
       workItemId: workItem.id,
       to: 'in_review',
       fencingToken: token,
     });
-    await client.call('release_claim', { claimId: claim.id, reason: 'run finished' });
+    await dispatch.call('release_claim', { claimId: claim.id, reason: 'run finished' });
     return 'in_review';
   }
   // Agent exited non-zero with no readable HALT status, or an unknown status.
-  await client.call('block_task', { workItemId: workItem.id, reason: 'other', fencingToken: token });
-  await client.call('release_claim', {
+  await dispatch.call('block_task', { workItemId: workItem.id, reason: 'other', fencingToken: token });
+  await dispatch.call('release_claim', {
     claimId: claim.id,
     reason: 'run failed without a readable HALT',
   });
@@ -857,6 +867,44 @@ function isIntentChanged(error: unknown): boolean {
   );
 }
 
+/**
+ * §10.1: a client for the claim's DISPATCH MUTATIONS, backed by a job-scoped
+ * token when a factory is provided (else the static client). `refresh()` mints
+ * a fresh scoped token (via the static client's mint_claim_token) so a lease
+ * renewed by heartbeats keeps a live credential — the runner calls it on each
+ * heartbeat. A mint failure keeps the current client (non-fatal).
+ */
+interface Dispatch {
+  call: OahsClient['call'];
+  refresh(): Promise<void>;
+}
+
+function makeDispatch(
+  staticClient: OahsClient,
+  claimId: string,
+  factory: ((token: string) => OahsClient) | undefined,
+): Dispatch {
+  let current: OahsClient = staticClient;
+  return {
+    call: ((command, input) => current.call(command, input)) as OahsClient['call'],
+    refresh: async () => {
+      if (factory === undefined) {
+        current = staticClient;
+        return;
+      }
+      try {
+        const { token } = await staticClient.call<{ token: string; expiresAt: number }>(
+          'mint_claim_token',
+          { claimId },
+        );
+        current = factory(token);
+      } catch {
+        /* keep the current client — a mint hiccup must not fail the dispatch */
+      }
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // runOnce — one full dispatch cycle
 // ---------------------------------------------------------------------------
@@ -899,15 +947,24 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   }
   log(`dispatch ${picked.externalKey} (claim ${claim.id})`);
 
+  // §10.1: mint a job-scoped token for the dispatch MUTATIONS. Reads, poll,
+  // claim, heartbeat and minting stay on the static client.
+  const dispatch = makeDispatch(client, claim.id, options.scopedClientFactory);
+  await dispatch.refresh();
+
   // D-G: keep the lease alive for the WHOLE dispatch (worktree plumbing,
   // agent run, evidence, push). A dead runner stops heartbeating and its
   // lease frees itself after TTL; heartbeat failures are logged, never fatal
-  // — the fencing token still guards every mutation.
+  // — the fencing token still guards every mutation. Each heartbeat also
+  // re-mints the scoped token so a renewed lease keeps a live credential (§10.1).
   const heartbeatTimer = setInterval(() => {
-    void client.call('heartbeat', { claimId: claim.id }).catch((error: unknown) => {
-      const err = error instanceof Error ? error : new Error(String(error));
-      log(`heartbeat failed for claim ${claim.id}: ${err.message}`);
-    });
+    void client
+      .call('heartbeat', { claimId: claim.id })
+      .then(() => dispatch.refresh())
+      .catch((error: unknown) => {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log(`heartbeat failed for claim ${claim.id}: ${err.message}`);
+      });
   }, options.heartbeatMs ?? 60_000);
 
   try {
@@ -932,7 +989,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   const submit = async (kind: Evidence['kind'], payload: Record<string, unknown>): Promise<void> => {
     const item: Evidence = { kind, payload };
     evidence.push(item);
-    await client.call('submit_evidence', {
+    await dispatch.call('submit_evidence', {
       workItemId: workItem.id,
       evidence: item,
       fencingToken: claim.fencingToken,
@@ -949,6 +1006,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
 
   const finishArgs = {
     client,
+    dispatch,
     workItem,
     claim,
     specRel,
@@ -989,7 +1047,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     // agent is NOT re-invoked — this is late evidence submission, not redo.
     git(['branch', branch, head], repoPath);
     // Entry-state alignment (no-op when the crashed run already advanced).
-    await client.call('advance_state', {
+    await dispatch.call('advance_state', {
       workItemId: workItem.id,
       to: 'in_progress',
       fencingToken: claim.fencingToken,
@@ -1015,12 +1073,12 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     // A wrecked worktree (no commit past baseline / non-terminal status) is
     // cleaned; the item blocks stale_worktree for a human look.
     for (const dir of scan.wrecked) removeWorktree(dir, repoPath);
-    await client.call('block_task', {
+    await dispatch.call('block_task', {
       workItemId: workItem.id,
       reason: 'stale_worktree',
       fencingToken: claim.fencingToken,
     });
-    await client.call('release_claim', { claimId: claim.id, reason: 'stale worktree cleaned' });
+    await dispatch.call('release_claim', { claimId: claim.id, reason: 'stale worktree cleaned' });
     log(`${workItem.externalKey} → blocked (stale worktree cleaned)`);
     return { ...base, outcome: 'blocked', details: 'stale worktree cleaned; task blocked' };
   }
@@ -1065,7 +1123,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   // `oahs intent rebaseline` + unblock re-opens dispatch. Same shape as the
   // stale_worktree recovery above (block + release, never a runner crash).
   try {
-    await client.call('advance_state', {
+    await dispatch.call('advance_state', {
       workItemId: workItem.id,
       to: 'in_progress',
       fencingToken: claim.fencingToken,
@@ -1073,12 +1131,12 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   } catch (error) {
     if (isIntentChanged(error)) {
       removeWorktree(worktreeDir, repoPath);
-      await client.call('block_task', {
+      await dispatch.call('block_task', {
         workItemId: workItem.id,
         reason: 'unclear_intent',
         fencingToken: claim.fencingToken,
       });
-      await client.call('release_claim', { claimId: claim.id, reason: 'intent contract drifted since approval' });
+      await dispatch.call('release_claim', { claimId: claim.id, reason: 'intent contract drifted since approval' });
       log(`${workItem.externalKey} → blocked (intent contract drifted since approval)`);
       return { ...base, outcome: 'blocked', details: 'intent contract drifted since approval' };
     }

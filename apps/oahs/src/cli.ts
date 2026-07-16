@@ -890,6 +890,9 @@ export function buildProgram(): Command {
             repoPath: resolve(repoPath),
             specFolder,
             agentCmd: opts.agentCmd,
+            // §10.1: dispatch mutations run under a job-scoped token minted per
+            // claim; the static client (above) only polls, claims, heartbeats, mints.
+            scopedClientFactory: (token: string) => makeClient({ baseUrl: opts.url, token }),
             ...envOpts,
             ...(forge !== undefined ? { forge } : {}),
             ...(project !== undefined ? { projectId: project } : {}),

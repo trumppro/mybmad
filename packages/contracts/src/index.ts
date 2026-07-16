@@ -213,6 +213,11 @@ export const COMMANDS = [
       reason: z.string().optional(),
     }),
   ),
+  def(
+    'mint_claim_token',
+    'Mint a JOB-BOUND token for a claim you hold (§10.1): scoped to this claim, a fixed dispatch-mutation allowlist, and the lease expiry. The container/runner uses it for all dispatch mutations — it can never escalate beyond the claim or mint another token.',
+    z.object({ claimId: z.string().min(1) }),
+  ),
 
   // -- lifecycle ---------------------------------------------------------------
   def(
@@ -705,6 +710,16 @@ export const HTTP_STATUS: Record<ErrorEnvelope['error']['name'], number> = {
 export interface ActorContext {
   actorId: string;
   isAdmin: boolean;
+  /**
+   * §10.1 job-bound scope, present only for a scoped (claim-bound) token. The
+   * bus enforces `command ∈ allowedCommands` and, for claim-bearing commands,
+   * `claimId` match — so a container's token can act only on its own claim.
+   */
+  scope?: {
+    claimId: string;
+    workItemId: string;
+    allowedCommands: readonly string[];
+  };
 }
 
 /**

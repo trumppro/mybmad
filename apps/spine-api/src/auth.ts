@@ -13,6 +13,14 @@ import { dirname } from 'node:path';
 export interface ResolvedToken {
   actorId: string;
   isAdmin: boolean;
+  /** §10.1 job-bound scope: the claim this token may act on (undefined = unscoped). */
+  claimId?: string;
+  /** §10.1: the work item this token may act on — confines the workItemId-addressed commands. */
+  workItemId?: string;
+  /** §10.1: the ONLY commands a scoped token may call (undefined = unrestricted). */
+  allowedCommands?: readonly string[];
+  /** §10.1: engine-clock ms when the token dies (= the lease expiry); past it, resolve() returns null. */
+  expiresAt?: number;
 }
 
 interface PersistShape {
@@ -49,7 +57,9 @@ export class TokenStore {
     if (this.persistPath !== undefined && existsSync(this.persistPath)) {
       const raw = JSON.parse(readFileSync(this.persistPath, 'utf8')) as PersistShape;
       for (const [hash, record] of Object.entries(raw.tokens)) {
-        this.byHash.set(hash, { actorId: record.actorId, isAdmin: record.isAdmin });
+        // §10.1: carry the scope fields too (claimId/allowedCommands/expiresAt)
+        // so a `--data` restart honours a still-live job-bound token.
+        this.byHash.set(hash, { ...record });
       }
       this.adminActorId = raw.adminActorId;
     }
@@ -83,6 +93,33 @@ export class TokenStore {
   }
 
   /**
+   * §10.1: issue a JOB-BOUND token — scoped to one claim, a fixed command
+   * allowlist, and the lease's expiry. The container/runner uses it for dispatch
+   * mutations; it can never mint another token or step outside the claim.
+   */
+  issueScoped(
+    actorId: string,
+    scope: {
+      claimId: string;
+      workItemId: string;
+      allowedCommands: readonly string[];
+      expiresAt: number;
+    },
+  ): string {
+    const token = randomBytes(32).toString('hex');
+    this.byHash.set(hashToken(token), {
+      actorId,
+      isAdmin: false,
+      claimId: scope.claimId,
+      workItemId: scope.workItemId,
+      allowedCommands: [...scope.allowedCommands],
+      expiresAt: scope.expiresAt,
+    });
+    this.save();
+    return token;
+  }
+
+  /**
    * Issued-token inventory: actor id + count, nothing else. The store holds
    * only sha256 hashes, so there is no secret HERE to leak — but the wire
    * gets counts, not hashes. Admin bootstrap entries are configuration and
@@ -108,9 +145,18 @@ export class TokenStore {
     return this.issue(actorId); // issue() saves
   }
 
-  resolve(token: string): ResolvedToken | null {
+  /**
+   * Resolve a bearer token. A scoped token past its `expiresAt` resolves to
+   * null (unauthenticated-equivalent → 401), so an expired lease invalidates the
+   * credential exactly when it invalidates the claim. `now` is injected (the
+   * served spine passes wall-clock; tests pass a controlled clock) because the
+   * expiry is an engine-clock value.
+   */
+  resolve(token: string, now: number = Date.now()): ResolvedToken | null {
     const record = this.byHash.get(hashToken(token));
-    return record ? { ...record } : null;
+    if (!record) return null;
+    if (record.expiresAt !== undefined && record.expiresAt <= now) return null;
+    return { ...record };
   }
 
   private save(): void {

@@ -127,6 +127,42 @@ function requireAdmin(ctx: ActorContext, command: string): void {
   }
 }
 
+/**
+ * §10.1: the ONLY commands a job-bound (claim-scoped) token may call — the
+ * dispatch mutations. `mint_claim_token` is deliberately NOT here: a scoped
+ * token can never mint another (no self-minting escalation chains).
+ */
+const DISPATCH_COMMANDS: readonly string[] = [
+  'heartbeat',
+  'submit_evidence',
+  'advance_state',
+  'block_task',
+  'release_claim',
+];
+
+/**
+ * §10.1: enforce a scoped token's boundary — it may call only its allowlist,
+ * and only for its own claim (for commands that name a claim in the body).
+ */
+function enforceScope(ctx: ActorContext, command: string, parsed: unknown): void {
+  if (ctx.scope === undefined) return;
+  if (!ctx.scope.allowedCommands.includes(command)) {
+    throw new PermissionDeniedError(`scope:${command}` as Permission, ctx.actorId);
+  }
+  // Confine on BOTH addressing shapes: heartbeat/release_claim name a claimId;
+  // submit_evidence/advance_state/block_task name a workItemId. Without the
+  // workItemId check a scoped token could write evidence to ANY item (a real
+  // cross-claim reach, since submit_evidence needs no fencing token).
+  const bodyClaimId = (parsed as { claimId?: unknown }).claimId;
+  if (typeof bodyClaimId === 'string' && bodyClaimId !== ctx.scope.claimId) {
+    throw new PermissionDeniedError('scope:claim' as Permission, ctx.actorId);
+  }
+  const bodyWorkItemId = (parsed as { workItemId?: unknown }).workItemId;
+  if (typeof bodyWorkItemId === 'string' && bodyWorkItemId !== ctx.scope.workItemId) {
+    throw new PermissionDeniedError('scope:work_item' as Permission, ctx.actorId);
+  }
+}
+
 export function createCommandBus(
   engine: SpineEngine,
   tokens: TokenStore,
@@ -141,6 +177,9 @@ export function createCommandBus(
       throw new GuardFailedError(`invalid input for ${command}: ${zodMessage(parsedResult.error)}`);
     }
     const parsed: unknown = parsedResult.data;
+
+    // §10.1: a job-bound token is confined to its allowlist + its own claim.
+    enforceScope(ctx, command, parsed);
 
     switch (command as CommandName) {
       // -- setup / admin -----------------------------------------------------
@@ -423,6 +462,34 @@ export function createCommandBus(
           ...(p.reason !== undefined ? { reason: p.reason } : {}),
         });
         return { released: true };
+      }
+      case 'mint_claim_token': {
+        // §10.1: only the LIVE claim holder may mint a job-bound token; its
+        // expiry IS the lease expiry, so the credential dies with the claim.
+        const p = parsed as { claimId: string };
+        const claim = engine.listClaims().find((c) => c.id === p.claimId);
+        if (claim === undefined) {
+          throw new GuardFailedError(`unknown or released claim: ${p.claimId}`);
+        }
+        if (claim.actorId !== ctx.actorId) {
+          throw new PermissionDeniedError('mint_claim_token' as Permission, ctx.actorId);
+        }
+        if (claim.expired === true) {
+          // Fail loudly rather than hand back a born-dead token (lease lapsed).
+          throw new GuardFailedError(`claim lease has expired: ${p.claimId}`);
+        }
+        const token = tokens.issueScoped(ctx.actorId, {
+          claimId: claim.id,
+          workItemId: claim.workItemId,
+          allowedCommands: DISPATCH_COMMANDS,
+          expiresAt: claim.leaseExpiresAt,
+        });
+        engine.noteTokenEvent({
+          actorId: ctx.actorId,
+          kind: 'issued',
+          tokenHashPrefix: tokenHashPrefix(token),
+        });
+        return { token, expiresAt: claim.leaseExpiresAt };
       }
 
       // -- lifecycle -------------------------------------------------------------

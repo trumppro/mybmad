@@ -93,8 +93,26 @@ export async function buildServer(options: BuildServerOptions): Promise<FastifyI
   const authenticate = (request: FastifyRequest): ActorContext | null => {
     const header = request.headers.authorization;
     if (typeof header !== 'string' || !header.startsWith('Bearer ')) return null;
+    // Wall-clock now: the served spine runs wall-clock leases (D-G), so a scoped
+    // token's engine-clock expiry is comparable to Date.now().
     const resolved = tokenStore.resolve(header.slice('Bearer '.length).trim());
-    return resolved === null ? null : { actorId: resolved.actorId, isAdmin: resolved.isAdmin };
+    if (resolved === null) return null;
+    return {
+      actorId: resolved.actorId,
+      isAdmin: resolved.isAdmin,
+      // §10.1: carry the scope so the bus can enforce the allowlist + claim/item match.
+      ...(resolved.claimId !== undefined &&
+      resolved.workItemId !== undefined &&
+      resolved.allowedCommands !== undefined
+        ? {
+            scope: {
+              claimId: resolved.claimId,
+              workItemId: resolved.workItemId,
+              allowedCommands: resolved.allowedCommands,
+            },
+          }
+        : {}),
+    };
   };
 
   app.get('/healthz', async () => ({ ok: true }));
