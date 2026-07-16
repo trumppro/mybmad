@@ -676,6 +676,19 @@ export class PgEngine {
     return provisioned;
   }
 
+  /** Audit a credential op (roadmap §8): port of the memory engine's noteTokenEvent. */
+  async noteTokenEvent(input: {
+    actorId: string;
+    kind: 'issued' | 'reissued';
+    tokenHashPrefix: string;
+  }): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await this.appendTx(tx, 'actor', input.actorId, `token.${input.kind}`, this.systemActorId, {
+        tokenHashPrefix: input.tokenHashPrefix,
+      });
+    });
+  }
+
   async grant(input: { actorId: string; permission: Permission; scope?: string }): Promise<void> {
     // Grant-time plan ceiling precedes any effect (Phase 2 pin): a refused
     // grant inserts nothing and appends nothing.

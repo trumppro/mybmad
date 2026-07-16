@@ -30,6 +30,15 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
 }
 
+/**
+ * A short, non-reversible fingerprint of a token for the audit log (roadmap §8):
+ * the first 8 hex of its sha256. Enough to correlate a credential op with the
+ * store's hashed record; never enough to reconstruct the token.
+ */
+export function tokenHashPrefix(token: string): string {
+  return hashToken(token).slice(0, 8);
+}
+
 export class TokenStore {
   private readonly byHash = new Map<string, ResolvedToken>();
   private readonly persistPath: string | undefined;

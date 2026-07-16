@@ -91,3 +91,53 @@ describe('spine-api authn', () => {
     expect(second.resolve('unknown')).toBeNull();
   });
 });
+
+describe('credential-plane audit (roadmap §8)', () => {
+  async function post(
+    app: FastifyInstance,
+    command: string,
+    payload: Record<string, unknown>,
+  ): Promise<{ ok: boolean; result: Record<string, any> }> {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/rpc/${command}`,
+      payload,
+      headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+    });
+    return res.json() as { ok: boolean; result: Record<string, any> };
+  }
+
+  it('create_actor appends token.issued: system-authored, hash prefix only, never the token', async () => {
+    const engine = createMemoryEngine();
+    const app = await buildServer({ engine, tokenStore: new TokenStore(), adminToken: ADMIN_TOKEN });
+    const systemId = (engine as unknown as { systemActorId: string }).systemActorId;
+
+    const created = await post(app, 'create_actor', { type: 'user', displayName: 'Auditee' });
+    const actorId = created.result.actor.id as string;
+    const token = created.result.token as string;
+
+    const issued = engine.events(actorId).filter((e) => e.type === 'token.issued');
+    expect(issued).toHaveLength(1);
+    expect(issued[0]!.actorId).toBe(systemId); // system-authored, not the caller
+    expect(issued[0]!.payload['tokenHashPrefix'] as string).toMatch(/^[0-9a-f]{8}$/);
+    // the raw token appears in NO event payload
+    expect(JSON.stringify(engine.events())).not.toContain(token);
+  });
+
+  it('reissue_token appends token.reissued; list_tokens (a read) appends nothing', async () => {
+    const engine = createMemoryEngine();
+    const app = await buildServer({ engine, tokenStore: new TokenStore(), adminToken: ADMIN_TOKEN });
+    const created = await post(app, 'create_actor', { type: 'agent', displayName: 'Rotatee' });
+    const actorId = created.result.actor.id as string;
+
+    const reissued = await post(app, 'reissue_token', { actorId });
+    const events = engine.events(actorId).filter((e) => e.type === 'token.reissued');
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload['tokenHashPrefix'] as string).toMatch(/^[0-9a-f]{8}$/);
+    expect(JSON.stringify(engine.events())).not.toContain(reissued.result.token);
+
+    const before = engine.events().length;
+    await post(app, 'list_tokens', {});
+    expect(engine.events().length).toBe(before);
+  });
+});

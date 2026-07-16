@@ -28,6 +28,7 @@ import {
 import { COMMAND_MAP, type ActorContext, type CommandBus, type CommandName } from '@oahs/contracts';
 
 import type { TokenStore } from './auth.js';
+import { tokenHashPrefix } from './auth.js';
 import { RunnerRegistry } from './runners.js';
 
 // Parsed-input shapes (mirror the zod schemas in @oahs/contracts; the zod
@@ -145,6 +146,7 @@ export function createCommandBus(
           ...(p.governanceRole !== undefined ? { governanceRole: p.governanceRole } : {}),
         });
         const token = tokens.issue(actor.id);
+        engine.noteTokenEvent({ actorId: actor.id, kind: 'issued', tokenHashPrefix: tokenHashPrefix(token) });
         return { actor, token };
       }
       case 'grant_permission': {
@@ -653,7 +655,9 @@ export function createCommandBus(
       case 'reissue_token': {
         requireAdmin(ctx, command);
         const p = parsed as { actorId: string };
-        return { actorId: p.actorId, token: tokens.reissue(p.actorId) };
+        const token = tokens.reissue(p.actorId);
+        engine.noteTokenEvent({ actorId: p.actorId, kind: 'reissued', tokenHashPrefix: tokenHashPrefix(token) });
+        return { actorId: p.actorId, token };
       }
     }
 

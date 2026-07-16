@@ -398,6 +398,19 @@ class EngineImpl implements SpineEngine {
     return { ...actor };
   }
 
+  /**
+   * Audit a credential operation (roadmap §8). Token issuance/reissue lives in the
+   * spine-api TokenStore, which is log-blind by design; the engine owns the audit
+   * log, so the bus reports the op here right after the token is minted. The event
+   * is system-authored, on the actor's own stream, and carries only an 8-hex hash
+   * PREFIX — never the token itself (the store keeps only sha256 hashes).
+   */
+  noteTokenEvent(input: { actorId: string; kind: 'issued' | 'reissued'; tokenHashPrefix: string }): void {
+    this.append('actor', input.actorId, `token.${input.kind}`, this.systemActorId, {
+      tokenHashPrefix: input.tokenHashPrefix,
+    });
+  }
+
   grant(input: { actorId: string; permission: Permission; scope?: string }): void {
     this.checkGrantCeiling(input.actorId, input.permission);
     const set = this.grants.get(input.actorId) ?? new Set<string>();

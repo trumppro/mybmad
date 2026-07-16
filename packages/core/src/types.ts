@@ -503,6 +503,8 @@ export interface GateDecisionInput {
 }
 
 export interface SpineEngine {
+  /** Audit a TokenStore credential op (issued|reissued) with a hash prefix only (§8). */
+  noteTokenEvent(input: { actorId: string; kind: 'issued' | 'reissued'; tokenHashPrefix: string }): void;
   // -- setup ---------------------------------------------------------------
   createActor(input: {
     type: Exclude<ActorType, 'system'>;

@@ -58,6 +58,7 @@ const METHODS: Array<keyof SpineEngine> = [
   'provisionPersonas',
   'grant',
   'revoke',
+  'noteTokenEvent',
   'createFeature',
   'createWorkItem',
   'importStories',
