@@ -41,6 +41,7 @@ type App = Awaited<ReturnType<typeof buildServer>>;
 interface ProjectRollup {
   project: Project;
   items: Record<string, number>;
+  features: Record<string, number>;
   blocked: number;
   liveClaims: number;
   awaitingGates: number;
@@ -71,7 +72,7 @@ beforeAll(async () => {
     type: 'agent',
     displayName: 'Dev',
   });
-  for (const permission of ['task.plan', 'task.advance', 'gate.spec.approve', 'feature.init']) {
+  for (const permission of ['task.plan', 'task.advance', 'gate.spec.approve', 'feature.init', 'feature.cancel']) {
     await admin.call('grant_permission', { actorId: createdPo.actor.id, permission });
   }
   await admin.call('grant_permission', { actorId: createdDev.actor.id, permission: 'task.claim' });
@@ -150,6 +151,24 @@ describe('project commands over the wire', () => {
     expect(b?.items).toMatchObject({ backlog: 1 });
     expect(b?.liveClaims).toBe(1);
     expect(b?.awaitingGates).toBe(0);
+  });
+
+  it('project_list rolls up FEATURE stages incl. handoff and cancelled (§9)', async () => {
+    // alpha's feature was epic-lifted to `executing` when 1-1 left backlog.
+    // Add a fresh feature and cancel it — a cancelled feature with no work
+    // items must still appear in the rollup (sourced from feature_list).
+    const doomed = await po.call<Feature>('create_feature', { projectId: 'alpha-app', name: 'Scrapped' });
+    await po.call('cancel_feature', { featureId: doomed.id });
+
+    const rollups = await po.call<ProjectRollup[]>('project_list');
+    const a = rollups.find((r) => r.project.id === alpha.id);
+    expect(a?.features).toMatchObject({ executing: 1, cancelled: 1 });
+
+    // feature_list is the board source and is project-scoped.
+    const alphaFeatures = await po.call<Feature[]>('feature_list', { projectId: 'alpha-app' });
+    expect(alphaFeatures.map((f) => f.state).sort()).toEqual(['cancelled', 'executing']);
+    const cancelledOne = alphaFeatures.find((f) => f.id === doomed.id);
+    expect(cancelledOne?.state).toBe('cancelled');
   });
 
   it('inbox rows say WHICH project a pending decision belongs to', async () => {

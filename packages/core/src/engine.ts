@@ -1913,6 +1913,14 @@ class EngineImpl implements SpineEngine {
     return this.copyFeature(feature);
   }
 
+  listFeatures(filter?: { projectId?: string }): Feature[] {
+    const projectId =
+      filter?.projectId !== undefined ? this.mustGetProject(filter.projectId).id : undefined;
+    return [...this.features.values()]
+      .filter((feature) => projectId === undefined || feature.projectId === projectId)
+      .map((feature) => this.copyFeature(feature));
+  }
+
   listWorkItems(filter?: {
     state?: WorkItemState;
     featureId?: string;

@@ -438,4 +438,22 @@ describe('feature FSM — states, gates, guards (roadmap §9)', () => {
     rig.engine.approveFeatureGate({ featureId: rig.feature.id, gate: 'handoff_approval', actorId: po2.id });
     expect(state(rig)).toBe('done');
   });
+
+  // -- listFeatures (the board source, §9.2) --------------------------------
+
+  it('listFeatures returns every feature (project-scoped), including a cancelled one with no children', () => {
+    const rig = makeRig();
+    rig.engine.featureAdvance({ featureId: rig.feature.id, to: 'spec', actorId: rig.po.id });
+    const doomed = rig.engine.createFeature({ actorId: rig.po.id }); // no work items
+    rig.engine.cancelFeature({ featureId: doomed.id, actorId: rig.po.id });
+
+    const all = rig.engine.listFeatures();
+    const byId = new Map(all.map((f) => [f.id, f.state]));
+    expect(byId.get(rig.feature.id)).toBe('spec');
+    expect(byId.get(doomed.id)).toBe('cancelled'); // feature-less, still listed
+
+    // Both belong to the default project — scoping returns them.
+    const scoped = rig.engine.listFeatures({ projectId: all[0]!.projectId });
+    expect(scoped.map((f) => f.id).sort()).toEqual([rig.feature.id, doomed.id].sort());
+  });
 });

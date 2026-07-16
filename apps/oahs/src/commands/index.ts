@@ -155,11 +155,12 @@ export async function statusCommand(client: OahsClient, opts: StatusOptions = {}
       (rank.get(a.state) ?? 0) - (rank.get(b.state) ?? 0) ||
       a.externalKey.localeCompare(b.externalKey),
   );
-  const featureIds = [...new Set(items.map((item) => item.featureId))];
-  const features: Feature[] = [];
-  for (const featureId of featureIds) {
-    features.push(await client.call<Feature>('get_feature', { featureId }));
-  }
+  // Features from the board source (§9): shows every feature stage incl.
+  // handoff and cancelled, even a cancelled feature with no work items.
+  const features = await client.call<Feature[]>(
+    'feature_list',
+    opts.project !== undefined ? { projectId: opts.project } : {},
+  );
   return [
     'work items:',
     renderTable(

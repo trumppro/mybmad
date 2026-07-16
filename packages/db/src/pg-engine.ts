@@ -2615,6 +2615,17 @@ export class PgEngine {
     return this.publicFeature(feature);
   }
 
+  async listFeatures(filter?: { projectId?: string }): Promise<Feature[]> {
+    const projectId =
+      filter?.projectId !== undefined ? (await this.mustGetProjectRow(filter.projectId)).id : undefined;
+    const rows = await this.db
+      .select()
+      .from(features)
+      .where(projectId !== undefined ? eq(features.projectId, projectId) : undefined)
+      .orderBy(asc(features.seq));
+    return rows.map((row) => this.publicFeature(row));
+  }
+
   async listWorkItems(filter?: {
     state?: WorkItemState;
     featureId?: string;

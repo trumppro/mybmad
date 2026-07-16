@@ -111,6 +111,7 @@ const METHODS: Array<keyof SpineEngine> = [
   'archiveProject',
   'getWorkItem',
   'getFeature',
+  'listFeatures',
   'getClaims',
   'listClaims',
   'listEvidence',

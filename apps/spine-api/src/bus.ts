@@ -223,7 +223,22 @@ export function createCommandBus(
             }
             claims += claimedItems.get(item.id) ?? 0;
           }
-          return { project, items: byState, blocked, liveClaims: claims, awaitingGates };
+          // Feature-stage rollup (§9): the board's buckets — handoff and
+          // cancelled included. Sourced from listFeatures so a feature with no
+          // work items (e.g. cancelled before any story) still counts.
+          const features = engine.listFeatures({ projectId: project.id });
+          const featuresByState: Record<string, number> = {};
+          for (const feature of features) {
+            featuresByState[feature.state] = (featuresByState[feature.state] ?? 0) + 1;
+          }
+          return {
+            project,
+            items: byState,
+            features: featuresByState,
+            blocked,
+            liveClaims: claims,
+            awaitingGates,
+          };
         });
       }
       case 'project_update': {
@@ -578,6 +593,10 @@ export function createCommandBus(
       case 'get_feature': {
         const p = parsed as FeatureIn;
         return engine.getFeature(p.featureId);
+      }
+      case 'feature_list': {
+        const p = parsed as { projectId?: string | undefined };
+        return engine.listFeatures(p.projectId !== undefined ? { projectId: p.projectId } : {});
       }
       case 'get_task_context': {
         const p = parsed as WorkItemIn;

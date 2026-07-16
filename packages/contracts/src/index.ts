@@ -517,6 +517,14 @@ export const COMMANDS = [
   def('get_work_item', 'Fetch one work item by id or externalKey.', z.object({ workItemId }), true),
   def('get_feature', 'Fetch one feature.', z.object({ featureId: z.string().min(1) }), true),
   def(
+    'feature_list',
+    'List features (the board source, §9), optionally scoped to a project (id or slug).',
+    z.object({
+      projectId: z.string().optional().describe('Project id or slug — omitted lists every feature'),
+    }),
+    true,
+  ),
+  def(
     'get_task_context',
     'Dispatch context for a runner: entry state routing per dev-auto. Refuses done items and held features.',
     z.object({ workItemId }),

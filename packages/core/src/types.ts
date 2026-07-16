@@ -705,6 +705,8 @@ export interface SpineEngine {
   // -- queries -------------------------------------------------------------
   getWorkItem(id: string): WorkItem;
   getFeature(id: string): Feature;
+  /** List features, optionally scoped to a project (id or slug) — the board's source (§9). */
+  listFeatures(filter?: { projectId?: string }): Feature[];
   getClaims(workItemId: string): Claim[];
   /** Workspace-wide claims view: live only by default (the "what is being worked on" query). */
   listClaims(input?: { includeReleased?: boolean }): Claim[];
