@@ -31,6 +31,11 @@ Implementation:
 - [ ] Add `expiresAt?` (plain TTL) and per-token `revoke(tokenHash)`; `PersistShape`
       versioned bump with a forward migration.
 - [ ] CLI: `oahs token issue --ttl`, `oahs token revoke <tokenHash>`.
+- [ ] OIDC user sign-in: an `/auth/oidc` login route (authorization-code flow, provider
+      configured by env — Google/OIDC) that resolves or creates the user actor and issues
+      a session token; provider linking is automatic on sign-in (the portal shape). Agents
+      and runners keep bearer tokens; full SSO/SCIM stays §7. A test drives the flow with a
+      stub OIDC provider (injectable, no live IdP in CI).
 
 ## 12.2 Compose profiles as three stacks
 
@@ -113,3 +118,40 @@ Implementation:
       change — it is a pure SSE consumer.
 - [ ] `docs/oahs/01-cai-dat-va-van-hanh.md`: webhook setup; note that Slack/Lark bridges
       are just a receiver of this webhook and stay out of scope.
+
+## 12.6 Chat channels, DMs, and saved messages
+
+Pin: `pnpm -C packages/core test && pnpm -C packages/db test`
+
+Tests first (extend `packages/core/test/collab.test.ts`):
+
+- [ ] A `channel` thread (`kind='channel'`, `feature_id` null) accepts messages from any
+      workspace participant; a `dm` thread (`kind='dm'`, `visibility='private'`) enforces
+      exactly two participants; `saved` bookmarks are per-actor and private to the actor.
+- [ ] The sacred boundary holds: posting in a channel or DM appends no lifecycle event and
+      the mention router behaves identically (default-deny, depth cap) — §5.2/§5.4 pins
+      stay green.
+
+Implementation:
+
+- [ ] Extend the `thread.kind` enum with `channel` and `dm` (idempotent) and add a
+      `saved_messages(actor_id, message_id)` table; `create_thread` accepts the new kinds;
+      a `save_message`/`unsave_message` command pair.
+- [ ] `apps/spine-api/ui-src/views/chat.ts`: Channels + DMs + Saved sections in the chat
+      sidebar (the portal's shape), all over the existing thread/message rails.
+
+## 12.7 Usage view over the Meter
+
+Pin: `pnpm -C apps/spine-api test`
+
+Tests first:
+
+- [ ] A read-only `get_usage({scope, since?})` aggregates the `Meter` JSONL ledger
+      (`packages/gateway/src/meter.ts`) into per-model / per-route token totals; it is
+      `readonly` in the registry and appends no event.
+
+Implementation:
+
+- [ ] `get_usage` contracts + bus reading the ledger; `apps/spine-api/ui-src/views/usage.ts`
+      renders totals under a Settings → Usage tab (the portal shape). No new metering — the
+      `Meter` sink is unchanged.

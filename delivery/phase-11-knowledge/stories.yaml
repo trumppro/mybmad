@@ -51,4 +51,24 @@
     oahs memory distill consolidates episodic notes into procedural lessons
     via the gateway, owner-scoped, inside the learning-never-authority
     pins; the procedural memory kind gets its first writer.
+
+- id: "7"
+  title: Agent self-review evidence
+  description: >-
+    A runner phase after the code is written and before in_review: the agent
+    critiques its own diff under the self_review model route and submits a
+    new self_review evidence kind. Context a reviewer reads, never a gate
+    (D12) — an LLM grading its own work must not become a guard. Same
+    discipline as impact_report.
+
+- id: "8"
+  title: Per-phase model policy and Model Policies UI
+  description: >-
+    Model routing becomes per-workflow-phase data (like gate policy), not
+    per-persona env config: keys pr_description, suggested_next_step,
+    self_review, implementation, conflict_resolution, each an ordered
+    fallback chain over a system default, scoped per workspace/project. A
+    set_model_policy command plus a Model Policies view in the cockpit. All
+    routes are LLM touchpoints outside the spine — the gateway reads the
+    policy, the spine never calls a model (section 0.1 unchanged).
   done_checkpoint: true

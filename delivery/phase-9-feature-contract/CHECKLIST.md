@@ -20,6 +20,13 @@ Vocabulary decisions (make them in `packages/core/src/types.ts`, record in CONFO
       Bundles: `tech_lead` += `gate.design.approve`; `product_owner` +=
       `gate.handoff.approve` (the §3 "feature acceptance") and `feature.cancel`
       (cancelling is a product decision).
+- [ ] **Board labels (portal parity)** are a presentation map over the states, not new
+      states: In Design (`spec`+`design`), **In TDD**, Ready for Impl (`breakdown`), In
+      Implementation (`executing`), In Handoff (`handoff`), Done, Cancelled. **In TDD** is a
+      real checkpoint between `design` and `breakdown`: the test-first pass whose evidence
+      is that the pinned verification commands (the tests authored there) exist — model it
+      as a `breakdown` entry-guard `tests_pinned`, not a new FSM state. Put the label map in
+      one module (`ui-src/core/feature-stages.ts`) so board and API cannot drift.
 
 Tests first (`packages/core/test/feature-fsm.test.ts`, new; ~20 cases):
 
@@ -194,9 +201,13 @@ Tests first (runner suite, with an injectable `fetch` like the gateway's
 
 Implementation:
 
-- [ ] `projects` gains nullable `forge_owner`, `forge_repo` (idempotent ALTER +
-      `oahs project create --forge owner/repo` and `project update`); the runner reads
-      them from the dispatch context.
+- [ ] **Repo registry (portal parity).** `projects` grows the portal's Add-repository
+      fields: `git_url` (SSH, e.g. `git@github.com:org/repo.git`), `base_branch` (default
+      `main`), plus `forge_owner`/`forge_repo` derived from or set alongside `git_url`
+      (idempotent ALTER + `oahs project create --git-url --base-branch --forge owner/repo`
+      and `project update`). `base_branch` is the PR base here and the §10 dispatcher clone
+      source. The local `repo_path` stays valid for BYO; the runner reads all of it from the
+      dispatch context.
 - [ ] `packages/runner/src/forge.ts` (new): minimal GitHub client (fetch-injectable):
       `openPr`, `findPrByHead`, `getPrMergeState`. Wire into `runOnce` after the push
       step (`packages/runner/src/index.ts` ~line 487) — skip silently-with-log when the
@@ -207,14 +218,14 @@ Implementation:
       `docs/oahs/04-so-tay-van-hanh.md` updated to the automated flow (drop the
       merge-by-hand caveat, keep it as the no-forge fallback).
 
-## 9.7 Feature board and workspace UI
+## 9.7 Feature board, workspace, and command palette UI
 
 Pin: `pnpm -C apps/spine-api test && pnpm -C apps/oahs test`
 
 Tests first (follow the existing ui harness used by the Phase 7 cockpit views):
 
-- [ ] Board route renders one column per feature state incl. `cancelled`, cards from
-      `project_list`/`get_feature` reads only.
+- [ ] Board route renders one column per feature stage label incl. `cancelled` (via the
+      `feature-stages.ts` map from 9.1), cards from `project_list`/`get_feature` reads only.
 - [ ] Workspace tabs: Tasks (work items of the feature), Handoff (gate panel wired to
       `approve_feature_gate`/`reject_feature_gate`), Activity (existing event stream
       filtered to the feature), Spec and Design (metadata + doclint evidence + spec
@@ -222,13 +233,24 @@ Tests first (follow the existing ui harness used by the Phase 7 cockpit views):
       tab states that dependency as a label, and flips automatically when the command
       is present in the contracts registry).
 - [ ] A blocked task shows the suggested next step for its `blockedReason`.
+- [ ] **Command palette (⌘K)**: opening it lists entries derived from the `COMMANDS`
+      registry — NAVIGATE (the `/ui` routes), ACTIONS (the non-readonly commands the actor
+      is permitted, e.g. `approve_gate`/`reject_gate`/`advance_state`/`unblock_task`), AGENT
+      (dispatch); selecting one runs it through `/rpc` (same rails); a command the actor
+      lacks the grant for is shown disabled or returns the normal 403 envelope, never a
+      client-side allow.
 
 Implementation:
 
 - [ ] `apps/spine-api/ui-src/views/features.ts` (board) + `feature.ts` (workspace) on
-      the hash router (`ui-src/core/router.ts`, route table in `ui-src/app.ts`).
+      the hash router (`ui-src/core/router.ts`, route table in `ui-src/app.ts`); the stage
+      labels come from `ui-src/core/feature-stages.ts` (9.1).
+- [ ] `apps/spine-api/ui-src/core/command-palette.ts`: build the entry list from the
+      imported `COMMANDS` registry (`@oahs/contracts`) — the palette is a view over the
+      registry, not a hand-maintained list, so a new command appears automatically. ⌘K
+      binding + fuzzy filter; run selection via the existing `rpc()` helper.
 - [ ] `ui-src/core/blocked-hints.ts`: the nine-reason → next-step map, transcribed from
       the runbook table in `docs/oahs/04-so-tay-van-hanh.md` (single source: the doc
       cites the module so they cannot drift silently).
-- [ ] Gate buttons call `/rpc/approve_feature_gate` etc. — mutations stay on the rails,
-      chat/board never bypasses (§5.2 discipline).
+- [ ] Gate buttons and palette actions call `/rpc/...` — mutations stay on the rails,
+      chat/board/palette never bypasses (§5.2 discipline).

@@ -10,6 +10,8 @@ Feature spec for roadmap §11: specs, decisions, task history, and code structur
 - Knowledge service (new package outside the spine + compose profile): indexer over spec folders, threads/messages (respecting `sourceVisibility` — nothing private indexed into an open context), and event narration; embeddings via the model gateway (provider grows an `/embeddings` call); read-only MCP tool `search_knowledge` with citations; per-project scoping.
 - Code graph as a measuring tool: deterministic runner-side indexer (tree-sitter / TS compiler API) emitting a new `impact_report` evidence kind — machine-collected facts for reviewers, never a gate condition.
 - `oahs memory distill`: gateway-powered episodic→procedural consolidation, owner-scoped, inside the learning-never-authority pins — `procedural` memory stops being a stub.
+- Agent `self_review` evidence (portal parity): a runner phase before `in_review` where the agent critiques its own diff under the `self_review` model route; submitted as a new `self_review` evidence kind — context for a reviewer, never a gate (D12), same discipline as `impact_report`.
+- Per-phase model policy + Model Policies UI (portal parity, §2.5): routing becomes per-workflow-phase data (keys `pr_description`, `suggested_next_step`, `self_review`, `implementation`, `conflict_resolution`), each an ordered fallback chain over a system default, scoped per workspace/project; a `set_model_policy` command and a cockpit view. All routes are LLM touchpoints outside the spine — the gateway reads the policy, the spine never calls a model (§0.1 unchanged).
 
 ## Out of scope (later phases)
 

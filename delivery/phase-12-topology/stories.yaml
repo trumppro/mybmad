@@ -2,12 +2,14 @@
 # Schema: src/core-skills/bmad-spec/assets/stories-schema.md
 
 - id: "1"
-  title: Extract oahs auth package
+  title: Extract oahs auth package with OIDC
   description: >-
     TokenStore and authenticate() move from apps/spine-api into a reusable
     @oahs/auth package consumed by spine-api unchanged; per-token TTL and
     per-token revocation (reissue currently kills all of an actor's
-    tokens); the model gateway keeps the @oahs/gateway name.
+    tokens); the model gateway keeps the @oahs/gateway name. Add an OIDC
+    sign-in path for users (Google/OIDC, provider linking automatic — the
+    portal-standard shape); agents and runners keep bearer tokens.
   spec_checkpoint: true
 
 - id: "2"
@@ -38,4 +40,19 @@
     A webhook sink consuming /events/stream (resumable) delivers
     notification events to a configured URL with retry and signature
     header; zero schema change; Slack/Lark bridges remain out of scope.
+
+- id: "6"
+  title: Chat channels, DMs, and saved messages
+  description: >-
+    Extend the thread schema (portal parity, section 5.5): channel is a
+    thread with kind channel and no feature_id; DM is kind dm, private, two
+    participants; saved is a per-actor bookmark over message. The sacred
+    boundary holds — a channel or DM never mutates lifecycle.
+
+- id: "7"
+  title: Usage view over the Meter
+  description: >-
+    A read-only cockpit Usage view over the existing Meter JSONL ledger
+    (token usage per model and route); no new metering, just the surface
+    the portal exposes under Settings.
   done_checkpoint: true

@@ -155,3 +155,50 @@ Implementation:
       `kind:'procedural'`; the LLM call is in the CLI/runtime, never the spine.
 - [ ] `oahs memory distill` command; `docs/oahs/02-huong-dan-su-dung.md` documents it in
       the learning-teammate section.
+
+## 11.7 Agent self-review evidence
+
+Pin: `pnpm -C packages/runner test`
+
+Tests first:
+
+- [ ] A runner phase after `git_diff` and before advancing to `in_review`: the agent is
+      invoked (fake agent-cmd in the test) under the `self_review` route and its critique
+      is submitted as `self_review` evidence `{summary, concerns:[...]}`.
+- [ ] Evidence only: `checkReviewEvidence` never reads `self_review` (assert the done gate
+      is unaffected by its presence/absence — D12); an LLM grading its own work is never a
+      guard.
+
+Implementation:
+
+- [ ] Evidence kind `self_review` in contracts; `packages/runner/src/index.ts` adds the
+      phase after the diff step, routing the model via the `self_review` policy (11.8);
+      skipped-with-log when no self-review model is configured.
+- [ ] The item page and the 9.7 Tasks tab render it alongside `impact_report`.
+
+## 11.8 Per-phase model policy and Model Policies UI
+
+Pin: `pnpm -C packages/gateway test && pnpm -C apps/spine-api test`
+
+Tests first:
+
+- [ ] `set_model_policy({scope, phase, models:[...]})` stores a versioned policy keyed by
+      phase (`pr_description`, `suggested_next_step`, `self_review`, `implementation`,
+      `conflict_resolution`), scoped per workspace/project; `get_model_policy` reads it;
+      an unknown phase is rejected by the zod enum.
+- [ ] The gateway resolves a phase to its ordered model list, falling back to the next
+      model on provider error and to the system default when the list is empty (extend the
+      gateway route test).
+- [ ] `§0.1` grep still green — the policy lives in `packages/gateway` + a contracts
+      command; the spine (`core|db|contracts|spine-api`) still never imports `@oahs/gateway`
+      and never calls a model (the runner/dispatcher reads the resolved model and calls it).
+
+Implementation:
+
+- [ ] `packages/gateway/src/gateway.ts`: replace the per-persona route map with a
+      per-phase policy resolver + fallback chain; `loadGatewayFromEnv` keeps the system
+      default, the per-phase policy comes from the store.
+- [ ] `set_model_policy`/`get_model_policy` contracts + bus; storage is a small
+      `model_policies` table (scope, phase, ordered model list) — data, like `gate_policies`.
+- [ ] `apps/spine-api/ui-src/views/model-policies.ts`: the cockpit Model Policies view
+      (one card per phase, an ordered model list with add/remove), mutating via the rails.

@@ -3,7 +3,7 @@
 # Schema: src/core-skills/bmad-spec/assets/stories-schema.md
 
 - id: "1"
-  title: Feature FSM with design and handoff gates
+  title: Feature FSM with design, in-TDD, and handoff gates
   description: >-
     Versioned feature transition table (backlog, spec, design, breakdown,
     executing, handoff, done) plus cancelled terminal via privileged
@@ -12,8 +12,10 @@
     back one step as system-fired transitions with causation (the rejectGate
     pattern); feature.advance checked; epic-lift mapped onto executing;
     degenerate three-state back-compat pinned in conformance tests before
-    engine changes.
-  spec_checkpoint: true
+    engine changes. Board labels map to the Actorium portal vocabulary (In
+    Design, In TDD, Ready for Impl, In Implementation, In Handoff, Done,
+    Cancelled); In TDD is the test-first breakdown checkpoint whose evidence
+    is the pinned verification commands (the tests written there, D7).
 
 - id: "2"
   title: Handoff then done
@@ -52,21 +54,27 @@
     double-posting replies; multi-replica teammate runtimes become safe.
 
 - id: "6"
-  title: GitHub PR integration
+  title: GitHub PR integration and repo registry
   description: >-
     The runner opens a real PR from claim/<claimId> when the item advances
     to in_review (pr.opened evidence) and the measuring side verifies
     pr.merged_into_default through the forge API — machine-collected facts,
     the core judges. Whether the done gate requires merged is gate-policy
     data, never hardcode; pinned commands stay the only command guards (D7).
-    Replaces the interim merge-by-hand runbook step in docs/oahs/04.
+    Projects grow a repo registry matching the portal Add-repository shape:
+    repoId, gitUrl (SSH), baseBranch (the PR/merge target and dispatcher
+    clone source); local repoPath stays valid for BYO. Replaces the interim
+    merge-by-hand runbook step in docs/oahs/04.
 
 - id: "7"
-  title: Feature board and workspace UI
+  title: Feature board, workspace, and command palette UI
   description: >-
     Cockpit features board grouped by feature stage (including cancelled);
-    per-feature workspace with tabs Spec, Design, Tasks, Handoff, Activity
-    (Activity is the existing event stream); blocked tasks show a suggested
-    next step derived from the blocked_reason taxonomy (the runbook table in
-    docs/oahs/04, surfaced in place).
+    per-feature workspace (Feature IDE) with tabs Spec, Design, Tasks,
+    Handoff, Activity (Activity is the existing event stream); a cmd-K
+    command palette that is a view over the COMMANDS registry — NAVIGATE
+    (routes) + ACTIONS (approve, reject, advance, unblock) + AGENT
+    (dispatch), every entry through the rails. Blocked tasks show a
+    suggested next step derived from the blocked_reason taxonomy (the
+    runbook table in docs/oahs/04, surfaced in place).
   done_checkpoint: true
