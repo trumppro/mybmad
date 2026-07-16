@@ -125,7 +125,7 @@ oahs stats reviews                            # review-loop iterations per kind 
 
 ### Model gateway (Phase 6 §2.5)
 
-A multi-provider gateway at the **runtime layer** — between agent runtimes and providers. `@oahs/gateway` speaks the OpenAI-compatible protocol (works with 9router, OpenRouter, or any compatible endpoint), routes friendly names to provider model ids, and meters token usage. **The deterministic spine is never a client of it** — a CI grep keeps `@oahs/gateway` out of `core`, `db`, `contracts`, and `spine-api` (§0.1). Config comes from env, never hardcoded:
+A multi-provider gateway at the **runtime layer** — between agent runtimes and providers. `@oahs/gateway` speaks the OpenAI-compatible protocol (works with 9router, OpenRouter, or any compatible endpoint), routes friendly names to provider model ids, and meters token usage. **The deterministic spine is never a client of it** — an invariant grep keeps `@oahs/gateway` out of `core`, `db`, `contracts`, and `spine-api` (§0.1; the grep holds today but runs by hand — CI enforcement is Phase 8, roadmap §8). Config comes from env, never hardcoded:
 
 ```bash
 cp .env.example .env    # OAHS_MODEL_BASE_URL, OAHS_MODEL_API_KEY, OAHS_MODEL_DEFAULT
@@ -140,9 +140,9 @@ OAHS_TOKEN=<agent-token> oahs work --jobs \
 
 **Verified end-to-end against a live router**: a teammate driven by a real model read a mention, drafted a genuine PRD rate-limiting analysis, asked the PO a clarifying question back — all through the rails — recorded an episodic memory, and (audited) touched **zero** lifecycle events, holding no gate it wasn't granted. *AI does the work; rules run the process; permissioned actors hold the gates — now with a real AI.*
 
-## Invariants (machine-checked)
+## Invariants
 
-- **No LLM SDK inside the spine** — grep-lint in CI; the spine never interprets, it checks.
+- **No LLM SDK inside the spine** — grep-lint; the spine never interprets, it checks. *(Truth note 2026-07: the grep is a manual habit — no CI runs it or the oahs test suites yet. Phase 8 (roadmap §8) makes these machine-checked for real.)*
 - **No writes outside the command bus** — HTTP, MCP, CLI, and runner all execute the same handlers.
 - **Evidence is measured, verdicts are computed**: pinned commands only (an LLM-authored command is never a guard), fencing tokens on every worker mutation, empty diff = fake-done deny, push required for the done gate.
 - **Reconciliation is detect-only** (D6). Chat, when it lands (Phase 3), never mutates lifecycle.
@@ -166,5 +166,7 @@ Evidence collected on a developer machine is as strong as the honest-operator as
 ## Status
 
 Phases 0–5 ✅, **Phase 6 model gateway ✅ (part 1)**, **Phase 7 "Cockpit" ✅ — all four waves**: parallel projects for one operator (1 spine, N projects). W1 correctness + ops recovery (feature-scoped runners, event timestamps, durable-by-default serve, unified port 4521, narration/backoff/transcripts, `whoami`/`claim ls`/`token reissue`); W2 the Project spine (Project entity above features, per-project externalKeys with `<slug>:<key>` handles, wall-clock leases + runner heartbeats — a kill -9'd runner's claim frees itself and the finished worktree is adopted without re-running the agent, per-project agent memory with a global craft tier); W3 the cockpit UI (`/ui` opens on a portfolio dashboard: project rollups, gates awaiting a human with project labels + pinned commands, live runner registry; project board, work-item detail with the full evidence trail, Playwright-verified); W4 ergonomics (profile store `~/.oahs/config.json` + `--as` named identities, `oahs init` one-command bootstrap, `oahs work --manifest` supervisor — blank machine → two projects running in parallel in **4 commands, 2 processes, zero token copying**). Enterprise items (SSO/SCIM, RLS multi-tenancy, licensing) stay deferred indefinitely.
+
+**Next — Phases 8–12** (roadmap §8–§12, added 2026-07 from the Actorium architecture review, `docs/ref/ai_workflow_and_architecture.pdf`): §8 hardening & the trust floor (net-new CI, gated ops surface, env hygiene), §9 the feature-layer contract (design gate, intent hash wired, atomic reviewer dispatch), §10 execution isolation (job-bound tokens, dispatcher as sole spawn-privilege holder — D13), §11 the knowledge layer (pgvector search, spec read surface, `impact_report` evidence — D12/D14), §12 service topology (three compose stacks, `@oahs/auth`). Backlogs: [delivery/phase-8](delivery/phase-8-hardening/stories.yaml) through [phase-12](delivery/phase-12-topology/stories.yaml). Day-to-day operations for the two live roles (PO, Tech Lead) are written up in the Vietnamese ops handbook [docs/oahs/04](docs/oahs/04-so-tay-van-hanh.md), adapted from the [operations manual](docs/ref/actorium-user-manual.pdf); `tools/team-seed.sh` seeds the role setup it describes.
 
 **Truth notes** (docs must match code): the schema today is single-workspace — there is **no `workspace_id` column** on any table (multi-project lands as a first-class `project` entity in Wave 2); the append-only event log is real, and since Wave 1 each event carries `occurred_at`. Grants store a `scope` column that is **not yet enforced**. The one remaining operational habit is dogfood discipline: keep running platform stories through the spine and enforce *no platform work outside the spine*.

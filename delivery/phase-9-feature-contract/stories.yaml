@@ -1,0 +1,72 @@
+# Phase 9 backlog — see ../../product-roadmap.md §9 and Build phases Phase 9.
+# Operational source: docs/ref/actorium-user-manual.pdf (team handbook docs/oahs/04).
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: "1"
+  title: Feature FSM with design and handoff gates
+  description: >-
+    Versioned feature transition table (backlog, spec, design, breakdown,
+    executing, handoff, done) plus cancelled terminal via privileged
+    feature.cancel (compensating event, state.downgrade mold);
+    design_approval and handoff_approval gate codes; gate rejections loop
+    back one step as system-fired transitions with causation (the rejectGate
+    pattern); feature.advance checked; epic-lift mapped onto executing;
+    degenerate three-state back-compat pinned in conformance tests before
+    engine changes.
+  spec_checkpoint: true
+
+- id: "2"
+  title: Handoff then done
+  description: >-
+    Projector permits executing to handoff when all children are done; a
+    permitted actor commands it; handoff_approval (the product_owner
+    feature-acceptance permission) fires handoff to done; handoff rejection
+    loops back to executing. Feature.state done stops being unreachable and
+    is only reachable through the handoff gate.
+
+- id: "3"
+  title: Intent hash wired
+  description: >-
+    Measuring side (runner/CLI, which can read the spec file) submits the
+    canonical intent hash as evidence at spec approval; the engine pins it
+    into WorkItem.intentHash; a guard re-verifies at ready_for_dev to
+    in_progress; an intent.edit-gated re-baseline command handles legitimate
+    renegotiation. The runner measures; the core judges.
+
+- id: "4"
+  title: Atomic reviewer dispatch
+  description: >-
+    Review claims (kind review with partial unique index per item and kind,
+    lease, fencing) or assign_reviewer with a per-round unique constraint;
+    the mention router and in_review entry materialize exactly one review
+    job per round. Two concurrent dispatches: one wins by constraint, the
+    loser gets ConflictError. Closes the double-reviewer race the Actorium
+    reference opens with.
+
+- id: "5"
+  title: Atomic agent-job claim
+  description: >-
+    claim_agent_job moves queued to in_progress under an agent-owned lease
+    with a partial unique live-claim index (the analog of
+    claims_one_live_per_item); two jobs loops on one agent token stop
+    double-posting replies; multi-replica teammate runtimes become safe.
+
+- id: "6"
+  title: GitHub PR integration
+  description: >-
+    The runner opens a real PR from claim/<claimId> when the item advances
+    to in_review (pr.opened evidence) and the measuring side verifies
+    pr.merged_into_default through the forge API — machine-collected facts,
+    the core judges. Whether the done gate requires merged is gate-policy
+    data, never hardcode; pinned commands stay the only command guards (D7).
+    Replaces the interim merge-by-hand runbook step in docs/oahs/04.
+
+- id: "7"
+  title: Feature board and workspace UI
+  description: >-
+    Cockpit features board grouped by feature stage (including cancelled);
+    per-feature workspace with tabs Spec, Design, Tasks, Handoff, Activity
+    (Activity is the existing event stream); blocked tasks show a suggested
+    next step derived from the blocked_reason taxonomy (the runbook table in
+    docs/oahs/04, surfaced in place).
+  done_checkpoint: true

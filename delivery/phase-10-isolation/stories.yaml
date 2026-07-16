@@ -1,0 +1,47 @@
+# Phase 10 backlog — see ../../product-roadmap.md §10 and Build phases Phase 10.
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: "1"
+  title: Job-bound scoped tokens
+  description: >-
+    mint_claim_token(claimId) issues a token scoped to the claim's actor,
+    an allowed-command whitelist (heartbeat, submit_evidence, advance_state,
+    block_task, release_claim), and expiry equal to the lease; ResolvedToken
+    grows scope and expiry; the bus enforces the whitelist; the runner uses
+    it for all dispatch mutations. Delivers the roadmap 2.3 promise.
+  spec_checkpoint: true
+
+- id: "2"
+  title: Dispatcher service with container-per-claim
+  description: >-
+    oahs dispatch — the only process holding the docker socket (D13). Polls
+    and claims like workLoop, spawns one container per claim running oahs
+    work --once, injects the job-bound token, tears the container down at
+    terminal state. Compose gains a dispatcher service; env_file .env moves
+    off the spine service so the spine container holds zero credentials.
+
+- id: "3"
+  title: Claim-scoped push credentials
+  description: >-
+    Agent containers receive a short-lived credential valid only for
+    refs/heads/claim/<claimId> (deploy key or GIT_ASKPASS), or the
+    dispatcher performs the push itself post-run so containers never see a
+    push credential. Either way the spine and the agent never hold an
+    unscoped git credential.
+
+- id: "4"
+  title: Dispatch-start branch push and cross-machine adoption
+  description: >-
+    Push the claim branch at baseline; on re-claim from another machine,
+    fetch claim/<claimId>, compare against the in-branch marker, and adopt
+    finished-but-unreported work instead of re-dispatching the agent.
+
+- id: "5"
+  title: Lease reaper and live transcripts
+  description: >-
+    Server-side reaper appends claim.expired (system actor, causation to
+    the claim) plus a notification on observed expiry; cockpit shows the
+    item as re-dispatchable. Runner streams agent stdout/stderr
+    incrementally to .oahs/logs/<claimId>.log instead of buffering in
+    memory, enabling live tail and surviving runner death.
+  done_checkpoint: true

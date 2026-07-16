@@ -1,0 +1,54 @@
+# Phase 11 backlog — see ../../product-roadmap.md §11 and Build phases Phase 11.
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: "1"
+  title: DATABASE_URL activation
+  description: >-
+    packages/db serves a real Postgres via DATABASE_URL behind the same
+    engine factory (PGlite stays the zero-infra default); the compose
+    postgres profile wakes up; conformance suite green on both drivers.
+  spec_checkpoint: true
+
+- id: "2"
+  title: SQL and vector memory search
+  description: >-
+    search_agent_memory pushes the predicate into SQL (ILIKE or tsvector)
+    instead of loading all rows and substring-filtering in JS; additive
+    pgvector embedding column on agent_memories; jobs-runtime recall
+    becomes relevance-ranked instead of newest-20. Contract, owner scoping,
+    and visibility pins unchanged. Embeddings are computed outside the
+    spine (indexer or runtime via the gateway) — the spine only stores and
+    compares vectors, never calls a model (section 0.1).
+
+- id: "3"
+  title: Spec read surface
+  description: >-
+    Read-only get_spec_content resolves projects.repoPath plus
+    work_items.spec_path so the cockpit item page renders the document the
+    gate-holder is approving instead of a path string.
+
+- id: "4"
+  title: Knowledge indexer and search_knowledge
+  description: >-
+    New package outside the spine plus compose profile: indexer over spec
+    folders, threads and messages (sourceVisibility respected — nothing
+    private indexed into an open context), and event narration; embeddings
+    via the gateway's new /embeddings provider call; read-only MCP tool
+    search_knowledge returning cited passages, scoped per project (D12,
+    D14).
+
+- id: "5"
+  title: Code-graph impact evidence
+  description: >-
+    Deterministic runner-side indexer (tree-sitter or TS compiler API)
+    emitting impact_report evidence — symbols and files touched, affected
+    callers — for reviewers and gate-holders to consider; never a gate
+    condition.
+
+- id: "6"
+  title: Memory distillation
+  description: >-
+    oahs memory distill consolidates episodic notes into procedural lessons
+    via the gateway, owner-scoped, inside the learning-never-authority
+    pins; the procedural memory kind gets its first writer.
+  done_checkpoint: true

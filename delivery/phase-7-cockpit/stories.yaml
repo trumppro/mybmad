@@ -1,0 +1,41 @@
+# Phase 7 backlog (RETROACTIVE — see SPEC.md) — roadmap §7 reposition "Cockpit".
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+# These stories record work already shipped (commits 7126f1e, f5fe63f, 55bbb40,
+# ca17b7c, c10e9cd); they exist so the delivery backlog is complete.
+
+- id: "1"
+  title: Ops console and self-host tooling
+  description: >-
+    Modular /ui ops console, docker compose single-service self-host,
+    Makefile targets (build, serve, docker, check), oahs-bootstrap.sh seed
+    script. Shipped as commit 7126f1e.
+
+- id: "2"
+  title: Wave 1 correctness and ops recovery
+  description: >-
+    Feature-scoped runners, event occurred_at timestamps, durable-by-default
+    serve, one port everywhere (4521), narration/backoff/transcripts, whoami,
+    claim ls with EXPIRED flag, token reissue. Shipped as commit f5fe63f.
+
+- id: "3"
+  title: Wave 2 the Project spine
+  description: >-
+    Project entity above features, per-project externalKeys with slug:key
+    handles, wall-clock leases plus runner heartbeats (kill-9 claim
+    self-frees, finished worktree adopted), per-project agent memory with a
+    global craft tier. Shipped as commit 55bbb40.
+
+- id: "4"
+  title: Wave 3 the cockpit UI
+  description: >-
+    Portfolio dashboard with project rollups, gates-awaiting table with
+    project labels and pinned commands, live runner registry, project board,
+    work-item detail with full evidence trail. Shipped as commit ca17b7c.
+
+- id: "5"
+  title: Wave 4 ergonomics
+  description: >-
+    Profile store with named identities and --as resolution, oahs init
+    one-command bootstrap, oahs work --manifest supervisor. Blank machine to
+    two parallel projects in 4 commands. Shipped as commit c10e9cd.
+  done_checkpoint: true

@@ -1,0 +1,52 @@
+# Phase 8 backlog — see ../../product-roadmap.md §8 and Build phases Phase 8.
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: "1"
+  title: Net-new CI workflow with invariant greps
+  description: >-
+    A GitHub workflow separate from upstream BMAD checks (D15): pnpm install,
+    typecheck, make check (all oahs suites), plus the two spine-purity greps
+    (no LLM-provider SDK, section 0.1; no @oahs/gateway import, section 2.5;
+    both over core/db/contracts/spine-api). Remove the truth notes in the
+    roadmap and OAHS.md once green on main.
+  spec_checkpoint: true
+
+- id: "2"
+  title: Gate force_release_claim
+  description: >-
+    Implement engine forceReleaseClaim gated on ops.force_release_claim
+    (already in the tech_lead bundle), appending an audit event with the
+    released claim and reason; the bus stops composing getClaims plus
+    releaseClaim. Negative test in memory, PGlite, and HTTP harnesses: a
+    zero-grant actor is denied.
+
+- id: "3"
+  title: Authenticate heartbeat, release_claim, and runner liveness
+  description: >-
+    heartbeat and release_claim verify the claim-holder actor or a presented
+    fencing token (today any party knowing a claimId can renew or release a
+    zombie lease). runner_announce and runner_heartbeat require a permission
+    so phantom writers cannot feed the cockpit fleet panel.
+
+- id: "4"
+  title: Audit the credential plane
+  description: >-
+    Token issuance on create_actor, list_tokens, and reissue_token append
+    system-actor events carrying actor id and hash prefix, never the token.
+    The audit answer to "who minted this credential" becomes a SELECT.
+
+- id: "5"
+  title: Visibility-filtered event egress
+  description: >-
+    query_events and the SSE stream mask or drop private-thread events
+    (message.posted metadata leaks existence and author) for actors who are
+    not participants of that thread.
+
+- id: "6"
+  title: Minimal agent child env and port drift
+  description: >-
+    runner/src/index.ts and runner/src/jobs.ts build a minimal child env
+    (PATH/HOME/LANG + explicit agentEnv + dispatch placeholders) instead of
+    spreading process.env; OAHS_TOKEN, OAHS_MODEL_*, SSH_AUTH_SOCK excluded
+    unless opted in. Fix Dockerfile 4517 vs compose/serve 4521.
+  done_checkpoint: true

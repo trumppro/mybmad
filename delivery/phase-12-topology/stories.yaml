@@ -1,0 +1,41 @@
+# Phase 12 backlog — see ../../product-roadmap.md §12 and Build phases Phase 12.
+# Schema: src/core-skills/bmad-spec/assets/stories-schema.md
+
+- id: "1"
+  title: Extract oahs auth package
+  description: >-
+    TokenStore and authenticate() move from apps/spine-api into a reusable
+    @oahs/auth package consumed by spine-api unchanged; per-token TTL and
+    per-token revocation (reissue currently kills all of an actor's
+    tokens); the model gateway keeps the @oahs/gateway name.
+  spec_checkpoint: true
+
+- id: "2"
+  title: Compose profiles as three stacks
+  description: >-
+    docker-compose profiles product (spine plus UI), runtime (dispatcher
+    plus runner images), knowledge (postgres, pgvector, indexer); each
+    profile starts alone; the spine remains the only writer to its
+    database; docs show the one-profile and all-profile paths.
+
+- id: "3"
+  title: Transactional outbox for the event stream
+  description: >-
+    Replace the 300 ms polling EventTail with a transactional outbox behind
+    the same interface; SSE semantics (Last-Event-ID resume, heartbeats)
+    unchanged; correct with two or more spine-api instances.
+
+- id: "4"
+  title: Durable runner registry
+  description: >-
+    runner_announce, heartbeat, and exit become events on a runner stream
+    replacing the in-memory Map; the cockpit fleet panel survives spine
+    restarts; runner session history is a query.
+
+- id: "5"
+  title: Webhook notification egress
+  description: >-
+    A webhook sink consuming /events/stream (resumable) delivers
+    notification events to a configured URL with retry and signature
+    header; zero schema change; Slack/Lark bridges remain out of scope.
+  done_checkpoint: true

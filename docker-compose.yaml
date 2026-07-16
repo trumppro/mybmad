@@ -5,7 +5,7 @@
 #
 # The app persists to a durable PGlite volume (/data) — NO database service is
 # required to run. The postgres service is kept behind a profile for the future
-# DATABASE_URL path (roadmap §7); the spine does not use it yet.
+# DATABASE_URL path (roadmap §11, Phase 11 story 1); the spine does not use it yet.
 #   docker compose --profile postgres up -d postgres
 services:
   oahs:
@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    profiles: ["postgres"] # opt-in: the app does not use this yet (roadmap §7)
+    profiles: ["postgres"] # opt-in: the app does not use this yet (roadmap §11)
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: oahs
