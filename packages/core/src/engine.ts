@@ -800,6 +800,35 @@ class EngineImpl implements SpineEngine {
     });
   }
 
+  /**
+   * Privileged ops recovery (roadmap §8): clear the live claim(s) on a stuck
+   * work item so it can be re-dispatched. Gated on `ops.force_release_claim` —
+   * the bootstrap admin's governance role does NOT bypass the grant. Unlike
+   * releaseClaim, the event is authored by the ACTING actor and names the evicted
+   * holder; the evicted holder's fencing token is thereby invalidated (a stale
+   * token loses its live claim → rejected on the next mutation, §1.3).
+   */
+  forceReleaseClaim(input: { workItemId: string; actorId: string }): { released: string[] } {
+    const item = this.mustGetItem(input.workItemId);
+    this.requirePermission(input.actorId, 'ops.force_release_claim');
+    const released: string[] = [];
+    for (const claimId of this.claimsByItem.get(item.id) ?? []) {
+      const claim = this.claims.get(claimId);
+      if (!claim || claim.released) continue;
+      claim.released = true;
+      this.append('work_item', item.id, 'claim.force_released', input.actorId, {
+        claimId: claim.id,
+        workItemId: item.id,
+        holderActorId: claim.actorId,
+      });
+      released.push(claim.id);
+    }
+    if (released.length === 0) {
+      throw new GuardFailedError(`no live claim on work item ${item.id}`);
+    }
+    return { released };
+  }
+
   advanceClock(ms: number): void {
     this.now += ms;
   }

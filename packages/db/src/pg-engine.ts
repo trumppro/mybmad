@@ -1201,6 +1201,38 @@ export class PgEngine {
     });
   }
 
+  /**
+   * Privileged ops recovery (roadmap §8) — port of the memory engine's
+   * forceReleaseClaim: gated on `ops.force_release_claim`, event authored by the
+   * acting actor and naming the evicted holder. Releasing the live claim frees a
+   * new fencing token, so the evicted holder's token is rejected on next mutation.
+   */
+  async forceReleaseClaim(input: { workItemId: string; actorId: string }): Promise<{ released: string[] }> {
+    const item = await this.mustGetItem(input.workItemId);
+    await this.requirePermission(input.actorId, 'ops.force_release_claim');
+    const released = await this.db.transaction(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(claims)
+        .where(and(eq(claims.workItemId, item.id), eq(claims.released, false)));
+      const ids: string[] = [];
+      for (const row of rows) {
+        await tx.update(claims).set({ released: true }).where(eq(claims.id, row.id));
+        await this.appendTx(tx, 'work_item', item.id, 'claim.force_released', input.actorId, {
+          claimId: row.id,
+          workItemId: item.id,
+          holderActorId: row.actorId,
+        });
+        ids.push(row.id);
+      }
+      return ids;
+    });
+    if (released.length === 0) {
+      throw new GuardFailedError(`no live claim on work item ${item.id}`);
+    }
+    return { released };
+  }
+
   advanceClock(ms: number): void {
     this.now += ms;
   }

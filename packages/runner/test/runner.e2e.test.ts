@@ -156,6 +156,7 @@ beforeAll(async () => {
     { actorId: createdPo.actor.id, permission: 'gate.spec.approve' },
     { actorId: createdPo.actor.id, permission: 'feature.init' },
     { actorId: createdPo.actor.id, permission: 'dispatch.release_hold' },
+    { actorId: createdPo.actor.id, permission: 'ops.force_release_claim' },
     { actorId: createdDev.actor.id, permission: 'task.claim' },
     { actorId: createdDev.actor.id, permission: 'task.advance' },
     { actorId: createdDev.actor.id, permission: 'task.block' },
@@ -332,7 +333,8 @@ describe('runner e2e — BYO worker loop against real git + in-process spine-api
     expect(existsSync(join(repoDir, '.oahs', 'worktrees', crashed.claimId!))).toBe(true);
 
     // Ops frees the dead runner's claim; the next cycle adopts the worktree.
-    await admin.call('force_release_claim', { workItemId: '3' });
+    // Force-release is gated on ops.force_release_claim (roadmap §8) — po holds it.
+    await po.call('force_release_claim', { workItemId: '3' });
     const adopted = await runOnce(
       runnerOptions({ agentEnv: { OAHS_TEST_COUNTER: counter, OAHS_AGENT_MODE: 'done' } }),
     );

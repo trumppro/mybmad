@@ -550,6 +550,8 @@ export interface SpineEngine {
   claimTask(input: { workItemId: string; actorId: string; ttlMs?: number }): Claim;
   heartbeat(input: { claimId: string }): void;
   releaseClaim(input: { claimId: string; reason?: string }): void;
+  /** Privileged ops recovery (roadmap §8): gated on `ops.force_release_claim`. */
+  forceReleaseClaim(input: { workItemId: string; actorId: string }): { released: string[] };
   /** test clock — lease expiry is time-based */
   advanceClock(ms: number): void;
 

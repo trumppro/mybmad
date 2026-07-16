@@ -107,6 +107,7 @@ describe('oahs CLI command functions against a live spine-api', () => {
     for (const [actorId, permission] of [
       [poId, 'task.plan'],
       [poId, 'gate.spec.approve'],
+      [poId, 'ops.force_release_claim'],
       [devId, 'task.claim'],
       [devId, 'task.advance'],
       [reviewerId, 'gate.review.approve'],
@@ -296,7 +297,8 @@ describe('oahs CLI command functions against a live spine-api', () => {
     // shape this view exists to surface.
     expect(live).toContain('s1');
 
-    const released = await claimReleaseCommand(admin, { workItemId: 's2' });
+    // Force-release is gated on ops.force_release_claim (roadmap §8) — po holds it.
+    const released = await claimReleaseCommand(po, { workItemId: 's2' });
     expect(released).toContain(claim.id);
     const after = await claimLsCommand(admin);
     expect(after).not.toContain(claim.id);

@@ -529,15 +529,11 @@ export function createCommandBus(
 
       // -- ops ---------------------------------------------------------------------
       case 'force_release_claim': {
+        // Gated in the engine on `ops.force_release_claim` (roadmap §8): the
+        // acting actor comes from the authenticated ctx, never the body, and the
+        // bootstrap admin's governance role does not bypass the grant.
         const p = parsed as WorkItemIn;
-        const unreleased = engine.getClaims(p.workItemId).filter((claim) => !claim.released);
-        if (unreleased.length === 0) {
-          throw new GuardFailedError(`no live claim on work item ${p.workItemId}`);
-        }
-        for (const claim of unreleased) {
-          engine.releaseClaim({ claimId: claim.id, reason: 'ops force release' });
-        }
-        return { released: unreleased.map((claim) => claim.id) };
+        return engine.forceReleaseClaim({ workItemId: p.workItemId, actorId: ctx.actorId });
       }
 
       // -- queries -------------------------------------------------------------------

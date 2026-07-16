@@ -230,14 +230,37 @@ describe('spine-api end-to-end flow (HTTP only)', () => {
     ).rejects.toMatchObject({ name: 'GuardFailedError', status: 422 });
   });
 
-  it('s2: force_release_claim invalidates the old token → 409 on reuse', async () => {
+  it('s2: force_release_claim is gated on ops.force_release_claim, then invalidates the old token → 409 on reuse', async () => {
     const staleToken = (await po.call<Claim[]>('get_claims', { workItemId: 's2' })).find(
       (c) => !c.released,
     )!.fencingToken;
-    const released = await admin.call<{ released: string[] }>('force_release_claim', {
-      workItemId: 's2',
+
+    // A zero-grant actor is denied — and so is the governance-admin bootstrap
+    // token: admin status does not bypass the `ops.force_release_claim` grant
+    // (roadmap §8). The live claim is untouched by the denied calls.
+    await expect(dev.call('force_release_claim', { workItemId: 's2' })).rejects.toMatchObject({
+      name: 'PermissionDeniedError',
+      status: 403,
     });
+    await expect(admin.call('force_release_claim', { workItemId: 's2' })).rejects.toMatchObject({
+      name: 'PermissionDeniedError',
+      status: 403,
+    });
+
+    // An actor holding ops.force_release_claim may do it.
+    const createdOps = await admin.call<{ actor: Actor; token: string }>('create_actor', {
+      type: 'user',
+      displayName: 'Ops',
+    });
+    await admin.call('grant_permission', {
+      actorId: createdOps.actor.id,
+      permission: 'ops.force_release_claim',
+    });
+    const ops = makeClient({ baseUrl, token: createdOps.token });
+
+    const released = await ops.call<{ released: string[] }>('force_release_claim', { workItemId: 's2' });
     expect(released.released).toHaveLength(1);
+
     // zombie worker presents the fenced-out token → 409 + audit event
     await expect(
       dev.call('submit_evidence', {
@@ -247,7 +270,7 @@ describe('spine-api end-to-end flow (HTTP only)', () => {
       }),
     ).rejects.toMatchObject({ name: 'ConflictError', status: 409 });
     // no live claim left → force release is now a failed guard
-    await expect(admin.call('force_release_claim', { workItemId: 's2' })).rejects.toMatchObject({
+    await expect(ops.call('force_release_claim', { workItemId: 's2' })).rejects.toMatchObject({
       name: 'GuardFailedError',
       status: 422,
     });

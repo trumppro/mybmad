@@ -64,6 +64,7 @@ const METHODS: Array<keyof SpineEngine> = [
   'claimTask',
   'heartbeat',
   'releaseClaim',
+  'forceReleaseClaim',
   'advanceClock',
   'advanceState',
   'blockTask',
