@@ -51,7 +51,7 @@ describe('wall-clock leases (opt-in)', () => {
     const claim = rig.engine.claimTask({ workItemId: rig.item.id, actorId: rig.dev.id, ttlMs: 400 });
 
     await sleep(200);
-    rig.engine.heartbeat({ claimId: claim.id });
+    rig.engine.heartbeat({ claimId: claim.id, actorId: claim.actorId });
 
     // 300ms after the heartbeat, past the ORIGINAL expiry — still held.
     await sleep(300);

@@ -548,8 +548,8 @@ export interface SpineEngine {
 
   // -- claims (roadmap §1.3) -------------------------------------------------
   claimTask(input: { workItemId: string; actorId: string; ttlMs?: number }): Claim;
-  heartbeat(input: { claimId: string }): void;
-  releaseClaim(input: { claimId: string; reason?: string }): void;
+  heartbeat(input: { claimId: string; actorId: string; fencingToken?: number }): void;
+  releaseClaim(input: { claimId: string; actorId: string; fencingToken?: number; reason?: string }): void;
   /** Privileged ops recovery (roadmap §8): gated on `ops.force_release_claim`. */
   forceReleaseClaim(input: { workItemId: string; actorId: string }): { released: string[] };
   /** test clock — lease expiry is time-based */

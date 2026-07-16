@@ -72,7 +72,7 @@ function toInProgressUnclaimed(
   externalKey: string,
 ): string {
   const { workItemId, claim } = toInProgressClaimed(engine, actorId, featureId, externalKey);
-  engine.releaseClaim({ claimId: claim.id, reason: 'run finished' });
+  engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId, reason: 'run finished' });
   return workItemId;
 }
 
@@ -103,7 +103,7 @@ function toInReviewUnclaimed(
     },
   });
   engine.advanceState({ workItemId, to: 'in_review', actorId, fencingToken: claim.fencingToken });
-  engine.releaseClaim({ claimId: claim.id, reason: 'run finished' });
+  engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId, reason: 'run finished' });
   return workItemId;
 }
 
@@ -164,7 +164,7 @@ describe('reconcile — live-claim exclusion (roadmap §1.6)', () => {
   it('compares the same file again once the claim is released', () => {
     const { engine, actorId, featureId } = setup();
     const { workItemId, claim } = toInProgressClaimed(engine, actorId, featureId, 'r4');
-    engine.releaseClaim({ claimId: claim.id, reason: 'run finished' });
+    engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId, reason: 'run finished' });
 
     const reports = engine.reconcile({
       files: [{ workItemId, frontmatterStatus: 'done' }],
@@ -191,7 +191,7 @@ describe('reconcile — blocked is an overlay, not a state (roadmap D8)', () => 
     // D8 sanity: the overlay froze transitions WITHOUT changing state.
     expect(blocked.state).toBe('in_progress');
     expect(blocked.blockedReason).toBe('awaiting_human_input');
-    engine.releaseClaim({ claimId: claim.id, reason: 'halted blocked' });
+    engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId, reason: 'halted blocked' });
 
     const reports = engine.reconcile({
       files: [{ workItemId, frontmatterStatus: 'blocked' }],

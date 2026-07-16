@@ -182,11 +182,19 @@ export const COMMANDS = [
       ttlMs: z.number().int().positive().optional(),
     }),
   ),
-  def('heartbeat', 'Renew the lease of a live claim.', z.object({ claimId: z.string().min(1) })),
+  def(
+    'heartbeat',
+    'Renew the lease of a live claim (the holder, or a caller presenting the live fencing token).',
+    z.object({ claimId: z.string().min(1), fencingToken: z.number().int().optional() }),
+  ),
   def(
     'release_claim',
-    'Release a claim (normal completion or voluntary handoff).',
-    z.object({ claimId: z.string().min(1), reason: z.string().optional() }),
+    'Release a claim (normal completion or voluntary handoff; the holder, or a valid fencing token).',
+    z.object({
+      claimId: z.string().min(1),
+      fencingToken: z.number().int().optional(),
+      reason: z.string().optional(),
+    }),
   ),
 
   // -- lifecycle ---------------------------------------------------------------

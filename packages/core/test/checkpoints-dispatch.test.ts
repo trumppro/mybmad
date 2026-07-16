@@ -350,7 +350,7 @@ describe('getTaskContext — dispatch routing (roadmap §1.2, §2.3)', () => {
       actorId,
       fencingToken: claim.fencingToken,
     });
-    engine.releaseClaim({ claimId: claim.id, reason: 'worker went away' });
+    engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId, reason: 'worker went away' });
 
     const ctx = engine.getTaskContext({ workItemId: wi.id });
 

@@ -58,8 +58,8 @@ interface CreateWorkItemIn {
   dependsOn?: string[] | undefined;
 }
 interface ClaimTaskIn { workItemId: string; ttlMs?: number | undefined }
-interface HeartbeatIn { claimId: string }
-interface ReleaseClaimIn { claimId: string; reason?: string | undefined }
+interface HeartbeatIn { claimId: string; fencingToken?: number | undefined }
+interface ReleaseClaimIn { claimId: string; fencingToken?: number | undefined; reason?: string | undefined }
 interface AdvanceIn { workItemId: string; to: WorkItemState; fencingToken?: number | undefined; idempotencyKey?: string | undefined }
 interface BlockIn { workItemId: string; reason: BlockedReason; fencingToken?: number | undefined }
 interface WorkItemIn { workItemId: string }
@@ -351,13 +351,19 @@ export function createCommandBus(
       }
       case 'heartbeat': {
         const p = parsed as HeartbeatIn;
-        engine.heartbeat({ claimId: p.claimId });
+        engine.heartbeat({
+          claimId: p.claimId,
+          actorId: ctx.actorId,
+          ...(p.fencingToken !== undefined ? { fencingToken: p.fencingToken } : {}),
+        });
         return { renewed: true };
       }
       case 'release_claim': {
         const p = parsed as ReleaseClaimIn;
         engine.releaseClaim({
           claimId: p.claimId,
+          actorId: ctx.actorId,
+          ...(p.fencingToken !== undefined ? { fencingToken: p.fencingToken } : {}),
           ...(p.reason !== undefined ? { reason: p.reason } : {}),
         });
         return { released: true };
@@ -599,7 +605,13 @@ export function createCommandBus(
       }
 
       // -- runner liveness (Wave 3): operational, zero lifecycle authority -------
+      // Writers are permission-checked (roadmap §8): only an actor who could run
+      // work (task.claim) may register/heartbeat a runner, so the cockpit fleet
+      // panel cannot be fed by phantom writers. list_runners stays an open read.
       case 'runner_announce': {
+        if (!engine.authzExplain({ actorId: ctx.actorId, permission: 'task.claim' }).allowed) {
+          throw new PermissionDeniedError('task.claim', ctx.actorId);
+        }
         const p = parsed as {
           mode: 'coding' | 'jobs';
           projectId?: string | undefined;
@@ -616,6 +628,9 @@ export function createCommandBus(
         });
       }
       case 'runner_heartbeat': {
+        if (!engine.authzExplain({ actorId: ctx.actorId, permission: 'task.claim' }).allowed) {
+          throw new PermissionDeniedError('task.claim', ctx.actorId);
+        }
         const p = parsed as { runnerId: string };
         if (!runners.heartbeat(p.runnerId)) {
           throw new GuardFailedError(

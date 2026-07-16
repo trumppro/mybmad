@@ -176,11 +176,11 @@ describe('§1.3 claim protocol', () => {
     it('release then re-claim succeeds and issues a strictly greater fencing token', () => {
       const { engine, actorId, workItemId } = setup();
       const first = engine.claimTask({ workItemId, actorId });
-      engine.releaseClaim({ claimId: first.id });
+      engine.releaseClaim({ claimId: first.id, actorId: first.actorId });
       const second = engine.claimTask({ workItemId, actorId });
       expect(second.released).toBe(false);
       expect(second.fencingToken).toBeGreaterThan(first.fencingToken);
-      engine.releaseClaim({ claimId: second.id });
+      engine.releaseClaim({ claimId: second.id, actorId: second.actorId });
       const third = engine.claimTask({ workItemId, actorId });
       expect(third.fencingToken).toBeGreaterThan(second.fencingToken);
     });
@@ -210,7 +210,7 @@ describe('§1.3 claim protocol', () => {
       const { engine, actorId, workItemId } = setup();
       const claim = engine.claimTask({ workItemId, actorId, ttlMs: 1_000 });
       engine.advanceClock(900); // near expiry
-      engine.heartbeat({ claimId: claim.id });
+      engine.heartbeat({ claimId: claim.id, actorId: claim.actorId });
       engine.advanceClock(900); // t=1800 — past the ORIGINAL expiry (1000), inside the renewed lease
       const rivalActorId = makeGrantedActor(engine, 'dev-b');
       expect(() => engine.claimTask({ workItemId, actorId: rivalActorId })).toThrow(
@@ -295,7 +295,7 @@ describe('§1.3 claim protocol', () => {
     it('an in_progress item with no live claim can be claimed again (resume, not restart)', () => {
       const fx = setup();
       const claim = driveTo(fx.engine, fx.actorId, fx.workItemId, 'in_progress');
-      fx.engine.releaseClaim({ claimId: claim.id });
+      fx.engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId });
       const resumerActorId = makeGrantedActor(fx.engine, 'dev-b');
       const resumed = fx.engine.claimTask({
         workItemId: fx.workItemId,
@@ -310,7 +310,7 @@ describe('§1.3 claim protocol', () => {
     it('an in_review item with no live claim can be claimed again', () => {
       const fx = setup();
       const claim = driveTo(fx.engine, fx.actorId, fx.workItemId, 'in_review');
-      fx.engine.releaseClaim({ claimId: claim.id });
+      fx.engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId });
       const resumerActorId = makeGrantedActor(fx.engine, 'dev-b');
       const resumed = fx.engine.claimTask({
         workItemId: fx.workItemId,
@@ -341,7 +341,7 @@ describe('§1.3 claim protocol', () => {
     it('ready_for_dev→in_progress without a claim → GuardFailedError', () => {
       const fx = setup();
       const claim = driveTo(fx.engine, fx.actorId, fx.workItemId, 'ready_for_dev');
-      fx.engine.releaseClaim({ claimId: claim.id });
+      fx.engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId });
       expect(() =>
         fx.engine.advanceState({ workItemId: fx.workItemId, to: 'in_progress', actorId: fx.actorId }),
       ).toThrow(GuardFailedError);
@@ -351,7 +351,7 @@ describe('§1.3 claim protocol', () => {
     it('in_progress→in_review without a claim → GuardFailedError', () => {
       const fx = setup();
       const claim = driveTo(fx.engine, fx.actorId, fx.workItemId, 'in_progress');
-      fx.engine.releaseClaim({ claimId: claim.id });
+      fx.engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId });
       expect(() =>
         fx.engine.advanceState({ workItemId: fx.workItemId, to: 'in_review', actorId: fx.actorId }),
       ).toThrow(GuardFailedError);
@@ -379,7 +379,7 @@ describe('§1.3 claim protocol', () => {
     it("a released claim's token → ConflictError", () => {
       const { engine, actorId, workItemId } = setup();
       const claim = engine.claimTask({ workItemId, actorId });
-      engine.releaseClaim({ claimId: claim.id });
+      engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId });
       expect(() =>
         engine.advanceState({ workItemId, to: 'draft', actorId, fencingToken: claim.fencingToken }),
       ).toThrow(ConflictError);
@@ -408,6 +408,51 @@ describe('§1.3 claim protocol', () => {
         }),
       ).toThrow(ConflictError);
       expect(fx.engine.getWorkItem(fx.workItemId).state).toBe('backlog');
+    });
+  });
+
+  describe('claim mutation authorization — holder or fencing token (roadmap §8)', () => {
+    it('the holder may heartbeat and release its own claim', () => {
+      const { engine, actorId, workItemId } = setup();
+      const claim = engine.claimTask({ workItemId, actorId });
+      expect(() => engine.heartbeat({ claimId: claim.id, actorId })).not.toThrow();
+      expect(() => engine.releaseClaim({ claimId: claim.id, actorId })).not.toThrow();
+      expect(engine.getClaims(workItemId).every((c) => c.released)).toBe(true);
+    });
+
+    it('a non-holder with no token cannot heartbeat or release → ConflictError + fencing.rejected', () => {
+      const { engine, actorId, workItemId } = setup();
+      const claim = engine.claimTask({ workItemId, actorId });
+      const stranger = makeGrantedActor(engine, 'stranger');
+      const before = engine.events(workItemId).length;
+      expect(() => engine.heartbeat({ claimId: claim.id, actorId: stranger })).toThrow(ConflictError);
+      expect(() => engine.releaseClaim({ claimId: claim.id, actorId: stranger })).toThrow(ConflictError);
+      const rejected = engine
+        .events(workItemId)
+        .slice(before)
+        .filter((e) => e.type === 'fencing.rejected');
+      expect(rejected.length).toBeGreaterThanOrEqual(2);
+      // the claim was never touched — still live
+      expect(engine.getClaims(workItemId).filter((c) => !c.released)).toHaveLength(1);
+    });
+
+    it('a non-holder presenting the live fencing token may heartbeat and release (the token is the capability)', () => {
+      const { engine, actorId, workItemId } = setup();
+      const claim = engine.claimTask({ workItemId, actorId });
+      const bearer = makeGrantedActor(engine, 'bearer');
+      expect(() =>
+        engine.heartbeat({ claimId: claim.id, actorId: bearer, fencingToken: claim.fencingToken }),
+      ).not.toThrow();
+      expect(() =>
+        engine.releaseClaim({ claimId: claim.id, actorId: bearer, fencingToken: claim.fencingToken }),
+      ).not.toThrow();
+    });
+
+    it('release by the holder is idempotent (already released → no-op, no throw)', () => {
+      const { engine, actorId, workItemId } = setup();
+      const claim = engine.claimTask({ workItemId, actorId });
+      engine.releaseClaim({ claimId: claim.id, actorId });
+      expect(() => engine.releaseClaim({ claimId: claim.id, actorId })).not.toThrow();
     });
   });
 });

@@ -110,6 +110,19 @@ describe('runner registry — who is polling, for which project (Wave 3)', () =>
       name: 'GuardFailedError',
     });
   });
+
+  it('a caller without task.claim cannot register or heartbeat a runner (roadmap §8)', async () => {
+    // The governance-admin bootstrap token holds no delivery grants — admin
+    // status does not confer task.claim, so it cannot feed the fleet panel.
+    await expect(admin.call('runner_announce', { mode: 'coding' })).rejects.toMatchObject({
+      name: 'PermissionDeniedError',
+      status: 403,
+    });
+    await expect(admin.call('runner_heartbeat', { runnerId: 'rn_whatever' })).rejects.toMatchObject({
+      name: 'PermissionDeniedError',
+      status: 403,
+    });
+  });
 });
 
 describe('token inventory + reissue — admin-only recovery rails', () => {

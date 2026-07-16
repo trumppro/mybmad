@@ -75,7 +75,7 @@ function toDraft(rig: Rig, item: WorkItem): WorkItem {
     actorId: rig.planner.id,
     fencingToken: claim.fencingToken,
   });
-  rig.engine.releaseClaim({ claimId: claim.id });
+  rig.engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId });
   return wi;
 }
 
@@ -189,7 +189,7 @@ describe('golden path (SPRINT status flow, ROADMAP §1.1/§1.2/§1.4)', () => {
       fencingToken: planClaim.fencingToken,
     });
     expect(drafted.state).toBe('draft');
-    rig.engine.releaseClaim({ claimId: planClaim.id });
+    rig.engine.releaseClaim({ claimId: planClaim.id, actorId: planClaim.actorId });
 
     // draft -> ready_for_dev: spec_approval gate by a gate.spec.approve holder,
     // pinning verification commands as Rules-layer data (ROADMAP D7;

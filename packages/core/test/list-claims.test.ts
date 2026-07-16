@@ -51,7 +51,7 @@ describe('listClaims — the workspace-wide claims view', () => {
     expect(live.every((c) => !c.released)).toBe(true);
     expect(live.map((c) => c.workItemId).sort()).toEqual([rig.a.id, rig.b.id].sort());
 
-    rig.engine.releaseClaim({ claimId: claimA.id });
+    rig.engine.releaseClaim({ claimId: claimA.id, actorId: claimA.actorId });
     const after = rig.engine.listClaims();
     expect(after.map((c) => c.id)).toEqual([claimB.id]);
   });
@@ -59,7 +59,7 @@ describe('listClaims — the workspace-wide claims view', () => {
   it('includeReleased: true is the history view (released claims come back)', () => {
     const rig = makeRig();
     const claimA = rig.engine.claimTask({ workItemId: rig.a.id, actorId: rig.dev.id });
-    rig.engine.releaseClaim({ claimId: claimA.id });
+    rig.engine.releaseClaim({ claimId: claimA.id, actorId: claimA.actorId });
 
     expect(rig.engine.listClaims()).toEqual([]);
     const all = rig.engine.listClaims({ includeReleased: true });

@@ -782,17 +782,37 @@ class EngineImpl implements SpineEngine {
     return this.copyClaim(claim);
   }
 
-  heartbeat(input: { claimId: string }): void {
+  /**
+   * A claim mutation (heartbeat, voluntary release) is authorized for the claim
+   * HOLDER (the authenticated actor owns the claim) OR anyone presenting the live
+   * fencing token (the capability itself, e.g. a job-bound token). A stranger with
+   * neither is rejected exactly as a stale token is — ConflictError plus a
+   * `fencing.rejected` audit event (§1.3). This is what stops any authenticated
+   * actor from renewing or releasing a claim they do not hold (roadmap §8).
+   */
+  private authorizeClaimMutation(claim: ClaimRow, actorId: string, fencingToken: number | undefined): void {
+    if (actorId === claim.actorId) return;
+    if (fencingToken !== undefined && fencingToken === claim.fencingToken) return;
+    this.append('work_item', claim.workItemId, 'fencing.rejected', actorId, {
+      presentedToken: fencingToken ?? null,
+      liveToken: claim.fencingToken,
+    });
+    throw new ConflictError(`not the holder and no valid fencing token for claim ${claim.id}`);
+  }
+
+  heartbeat(input: { claimId: string; actorId: string; fencingToken?: number }): void {
     const claim = this.claims.get(input.claimId);
     if (!claim || claim.released || claim.leaseExpiresAt <= this.currentTime()) {
       throw new ConflictError(`claim ${input.claimId} is not live`);
     }
+    this.authorizeClaimMutation(claim, input.actorId, input.fencingToken);
     claim.leaseExpiresAt = this.currentTime() + claim.ttlMs;
   }
 
-  releaseClaim(input: { claimId: string; reason?: string }): void {
+  releaseClaim(input: { claimId: string; actorId: string; fencingToken?: number; reason?: string }): void {
     const claim = this.claims.get(input.claimId);
     if (!claim || claim.released) return;
+    this.authorizeClaimMutation(claim, input.actorId, input.fencingToken);
     claim.released = true;
     this.append('work_item', claim.workItemId, 'claim.released', claim.actorId, {
       claimId: claim.id,

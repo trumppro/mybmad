@@ -72,7 +72,7 @@ function toDraft(rig: Rig, item: WorkItem): WorkItem {
     actorId: rig.planner.id,
     fencingToken: claim.fencingToken,
   });
-  rig.engine.releaseClaim({ claimId: claim.id });
+  rig.engine.releaseClaim({ claimId: claim.id, actorId: claim.actorId });
   return wi;
 }
 

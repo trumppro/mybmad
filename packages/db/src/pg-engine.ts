@@ -1177,11 +1177,33 @@ export class PgEngine {
     }
   }
 
-  async heartbeat(input: { claimId: string }): Promise<void> {
+  /**
+   * Port of the memory engine's authorizeClaimMutation (roadmap §8): a claim
+   * mutation is allowed for the HOLDER or a valid fencing-token bearer; anyone
+   * else is rejected with a `fencing.rejected` audit event (its own tx) + 409.
+   */
+  private async authorizeClaimMutation(
+    claim: { id: string; workItemId: string; actorId: string; fencingToken: number },
+    actorId: string,
+    fencingToken: number | undefined,
+  ): Promise<void> {
+    if (actorId === claim.actorId) return;
+    if (fencingToken !== undefined && fencingToken === claim.fencingToken) return;
+    await this.db.transaction(async (tx) => {
+      await this.appendTx(tx, 'work_item', claim.workItemId, 'fencing.rejected', actorId, {
+        presentedToken: fencingToken ?? null,
+        liveToken: claim.fencingToken,
+      });
+    });
+    throw new ConflictError(`not the holder and no valid fencing token for claim ${claim.id}`);
+  }
+
+  async heartbeat(input: { claimId: string; actorId: string; fencingToken?: number }): Promise<void> {
     const row = (await this.db.select().from(claims).where(eq(claims.id, input.claimId)).limit(1))[0];
     if (!row || row.released || row.leaseExpiresAt <= this.currentTime()) {
       throw new ConflictError(`claim ${input.claimId} is not live`);
     }
+    await this.authorizeClaimMutation(row, input.actorId, input.fencingToken);
     // Heartbeat renews the FULL original TTL from the heartbeat moment.
     await this.db
       .update(claims)
@@ -1189,9 +1211,10 @@ export class PgEngine {
       .where(eq(claims.id, row.id));
   }
 
-  async releaseClaim(input: { claimId: string; reason?: string }): Promise<void> {
+  async releaseClaim(input: { claimId: string; actorId: string; fencingToken?: number; reason?: string }): Promise<void> {
     const row = (await this.db.select().from(claims).where(eq(claims.id, input.claimId)).limit(1))[0];
     if (!row || row.released) return;
+    await this.authorizeClaimMutation(row, input.actorId, input.fencingToken);
     await this.db.transaction(async (tx) => {
       await tx.update(claims).set({ released: true }).where(eq(claims.id, row.id));
       await this.appendTx(tx, 'work_item', row.workItemId, 'claim.released', row.actorId, {
