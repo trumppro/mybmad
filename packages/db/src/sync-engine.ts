@@ -77,6 +77,7 @@ const METHODS: Array<keyof SpineEngine> = [
   'approveFeatureGate',
   'rejectFeatureGate',
   'cancelFeature',
+  'rebaselineIntent',
   'getTaskContext',
   'releaseDispatchHold',
   'reconcile',

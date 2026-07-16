@@ -50,6 +50,7 @@ import {
 import { join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { OahsClient } from '@oahs/contracts';
+import { INTENT_HASH_ALGO, computeIntentHash, extractIntentRegion } from '@oahs/core';
 import type { BlockedReason, Claim, Evidence, WorkItem, WorkItemState } from '@oahs/core';
 
 export interface RunnerOptions {
@@ -631,6 +632,17 @@ function scanOldWorktrees(root: string, workItemId: string, specRel: string): Wo
   return scan;
 }
 
+/** True when a remote error is the §9.3 intent-drift guard (not another guard). */
+function isIntentChanged(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { errorName?: unknown }).errorName === 'GuardFailedError' &&
+    typeof (error as { message?: unknown }).message === 'string' &&
+    (error as { message: string }).message.includes('intent_changed')
+  );
+}
+
 // ---------------------------------------------------------------------------
 // runOnce — one full dispatch cycle
 // ---------------------------------------------------------------------------
@@ -803,12 +815,45 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     setFrontmatterStatus(specAbs, ENTRY_STATUS[context.entryState] ?? context.entryState);
   }
 
+  // 3.5 — §9.3: submit the frozen-region intent hash the measuring side sees
+  // NOW, so the engine's intent_unchanged guard on the next advance can compare
+  // it against the hash pinned at spec approval. No <intent-contract> region →
+  // nothing submitted (the guard treats absence as no-drift). Frontmatter
+  // stamping above never touches the tagged region, so read order is safe.
+  if (existsSync(specAbs)) {
+    const region = extractIntentRegion(readFileSync(specAbs, 'utf8'));
+    if (region !== null) {
+      // Through `submit` so it lands in RunOnceResult.evidence like every other
+      // kind (and carries the claim's fencing token).
+      await submit('intent_hash', { algo: INTENT_HASH_ALGO, hash: computeIntentHash(region) });
+    }
+  }
+
   // 4 — advance into execution BEFORE the agent runs (DB is the entry state).
-  await client.call('advance_state', {
-    workItemId: workItem.id,
-    to: 'in_progress',
-    fencingToken: claim.fencingToken,
-  });
+  // §9.3: if the frozen intent drifted since approval the engine refuses here.
+  // Clean up and block `unclear_intent` for a human to renegotiate — then
+  // `oahs intent rebaseline` + unblock re-opens dispatch. Same shape as the
+  // stale_worktree recovery above (block + release, never a runner crash).
+  try {
+    await client.call('advance_state', {
+      workItemId: workItem.id,
+      to: 'in_progress',
+      fencingToken: claim.fencingToken,
+    });
+  } catch (error) {
+    if (isIntentChanged(error)) {
+      removeWorktree(worktreeDir, repoPath);
+      await client.call('block_task', {
+        workItemId: workItem.id,
+        reason: 'unclear_intent',
+        fencingToken: claim.fencingToken,
+      });
+      await client.call('release_claim', { claimId: claim.id, reason: 'intent contract drifted since approval' });
+      log(`${workItem.externalKey} → blocked (intent contract drifted since approval)`);
+      return { ...base, outcome: 'blocked', details: 'intent contract drifted since approval' };
+    }
+    throw error;
+  }
 
   // 5 — invoke the coding agent.
   const command = options.agentCmd

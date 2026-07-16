@@ -19,6 +19,7 @@ import {
   adviseNextTaskCommand,
   adviseReconcileCommand,
   approveCommand,
+  intentRebaselineCommand,
   authzCommand,
   claimLsCommand,
   claimReleaseCommand,
@@ -155,11 +156,19 @@ export function buildProgram(): Command {
     .action(async (opts: ClientFlags) => emit(() => inboxCommand(clientFrom(opts))));
 
   withClientFlags(program.command('approve <workItemId>'))
-    .description('approve a gate (spec_approval pins verification commands)')
+    .description('approve a gate (spec_approval pins verification commands + freezes the intent contract)')
     .requiredOption('--gate <gate>', 'spec_approval | review_approval')
     .option('--pin <cmd>', 'pin a verification command (repeatable, spec_approval only)', collect, [])
-    .action(async (workItemId: string, opts: ClientFlags & { gate: string; pin: string[] }) =>
-      emit(() => approveCommand(clientFrom(opts), { workItemId, gate: opts.gate, pin: opts.pin })),
+    .option('--spec-file <path>', 'freeze the spec’s intent contract (spec_approval, §9.3): submits its hash before approving')
+    .action(async (workItemId: string, opts: ClientFlags & { gate: string; pin: string[]; specFile?: string }) =>
+      emit(() =>
+        approveCommand(clientFrom(opts), {
+          workItemId,
+          gate: opts.gate,
+          pin: opts.pin,
+          ...(opts.specFile !== undefined ? { specFile: opts.specFile } : {}),
+        }),
+      ),
     );
 
   withClientFlags(program.command('advance <workItemId>'))
@@ -413,6 +422,14 @@ export function buildProgram(): Command {
     .description('import a stories.yaml file into a feature (idempotent)')
     .action(async (featureId: string, storiesYamlPath: string, opts: ClientFlags) =>
       emit(() => importStoriesCommand(clientFrom(opts), { featureId, path: storiesYamlPath })),
+    );
+
+  const intent = program.command('intent').description('intent contract (frozen-region hash, §9.3)');
+  withClientFlags(intent.command('rebaseline <workItemId>'))
+    .description('re-pin a work item’s intent hash after a legitimate spec renegotiation (gated on intent.edit)')
+    .requiredOption('--spec-file <path>', 'the renegotiated spec file whose intent contract is the new baseline')
+    .action(async (workItemId: string, opts: ClientFlags & { specFile: string }) =>
+      emit(() => intentRebaselineCommand(clientFrom(opts), { workItemId, specFile: opts.specFile })),
     );
 
   // -- collaboration (Phase 3, roadmap §5) ---------------------------------------

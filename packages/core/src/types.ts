@@ -246,7 +246,8 @@ export type EvidenceKind =
   | 'commit' // {sha, branch, reachableOnRemote}
   | 'halt_report' // verbatim Auto Run Result
   | 'review_report' // LLM-authored; NEVER a guard, context only
-  | 'doc_lint'; // {schemaValid} for non-code work
+  | 'doc_lint' // {schemaValid} for non-code work
+  | 'intent_hash'; // {algo, hash} — the measuring side's canonical frozen-region hash (§9.3)
 
 export interface Evidence {
   kind: EvidenceKind;
@@ -614,6 +615,9 @@ export interface SpineEngine {
   rejectFeatureGate(input: FeatureGateDecisionInput): Feature;
   /** Privileged cancel (gated on feature.cancel): terminal `cancelled` from any non-terminal state; a compensating event. */
   cancelFeature(input: { featureId: string; actorId: string; reason?: string }): Feature;
+
+  /** Re-pin a work item's intent hash after a legitimate spec renegotiation (gated on intent.edit, §9.3). */
+  rebaselineIntent(input: { workItemId: string; hash: string; actorId: string }): WorkItem;
 
   // -- dispatch (roadmap §2.3) -------------------------------------------------
   /** Refuses state=done items; returns entry-state context for the runner. */

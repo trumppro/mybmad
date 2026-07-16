@@ -132,7 +132,7 @@ interface TransitionRule {
   to: WorkItemState;
   permission: Permission;
   claimRequired: boolean;
-  guards: Array<'deps_done' | 'spec_gate_if_checkpoint' | 'nonempty_diff'>;
+  guards: Array<'deps_done' | 'spec_gate_if_checkpoint' | 'nonempty_diff' | 'intent_unchanged'>;
 }
 
 const TRANSITIONS: TransitionRule[] = [
@@ -149,7 +149,7 @@ const TRANSITIONS: TransitionRule[] = [
     to: 'in_progress',
     permission: 'task.advance',
     claimRequired: true,
-    guards: ['deps_done'],
+    guards: ['deps_done', 'intent_unchanged'],
   },
   {
     from: 'in_progress',
@@ -1437,7 +1437,29 @@ export class PgEngine {
         }
         return;
       }
+      case 'intent_unchanged': {
+        // §9.3: mirror of engine.ts. A pinned hash + a DIFFERENT presented one
+        // = the frozen region drifted after approval. Absence is not drift.
+        if (item.intentHash === null) return;
+        const presented = await this.latestIntentHash(item.id);
+        if (presented !== undefined && presented !== item.intentHash) {
+          throw new GuardFailedError('intent_changed');
+        }
+        return;
+      }
     }
+  }
+
+  /** The latest submitted intent_hash evidence for an item (undefined if none). */
+  private async latestIntentHash(workItemId: string): Promise<string | undefined> {
+    const rows = await this.db
+      .select()
+      .from(evidenceTable)
+      .where(and(eq(evidenceTable.workItemId, workItemId), eq(evidenceTable.kind, 'intent_hash')))
+      .orderBy(asc(evidenceTable.seq));
+    const latest = rows[rows.length - 1];
+    const hash = latest?.payload['hash'];
+    return typeof hash === 'string' ? hash : undefined;
   }
 
   private async privilegedDowngrade(item: WorkItemRow, input: AdvanceInput): Promise<WorkItem> {
@@ -1639,13 +1661,21 @@ export class PgEngine {
         throw new GuardFailedError(`spec_approval applies to draft items, not ${item.state}`);
       }
       const quorumMet = await this.quorumWouldBeMet(item, 'spec_approval', input.actorId);
+      // §9.3: read the submitted frozen-region hash BEFORE the tx opens
+      // (single-connection PGlite). Pinned only when the gate actually fires.
+      const submittedHash = quorumMet ? await this.latestIntentHash(item.id) : undefined;
       return this.db.transaction(async (tx) => {
         let pinned = item.pinnedVerification;
         if (input.pinnedVerification !== undefined) {
           pinned = [...input.pinnedVerification];
           await tx.update(workItems).set({ pinnedVerification: pinned }).where(eq(workItems.id, item.id));
         }
-        const pinnedItem = { ...item, pinnedVerification: pinned };
+        let intentHash = item.intentHash;
+        if (submittedHash !== undefined) {
+          intentHash = submittedHash;
+          await tx.update(workItems).set({ intentHash }).where(eq(workItems.id, item.id));
+        }
+        const pinnedItem = { ...item, pinnedVerification: pinned, intentHash };
         await this.recordApprovalTx(tx, pinnedItem, 'spec_approval', input.actorId);
         if (!quorumMet) {
           // Decision recorded; quorum pending (gate policy is data, roadmap §3).
@@ -2040,6 +2070,22 @@ export class PgEngine {
         ...(input.reason !== undefined ? { reason: input.reason } : {}),
       });
       return this.publicFeature({ ...feature, state: 'cancelled' });
+    });
+  }
+
+  // -- intent hash (Phase 9.3, roadmap §1.1/§9) ---------------------------------
+
+  async rebaselineIntent(input: { workItemId: string; hash: string; actorId: string }): Promise<WorkItem> {
+    const item = await this.mustGetItem(input.workItemId);
+    await this.requirePermission(input.actorId, 'intent.edit');
+    const from = item.intentHash;
+    return this.db.transaction(async (tx) => {
+      await tx.update(workItems).set({ intentHash: input.hash }).where(eq(workItems.id, item.id));
+      await this.appendTx(tx, 'work_item', item.id, 'intent.rebaselined', input.actorId, {
+        from: from ?? null,
+        to: input.hash,
+      });
+      return this.publicItem({ ...item, intentHash: input.hash });
     });
   }
 

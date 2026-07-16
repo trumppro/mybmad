@@ -10,8 +10,11 @@ import { resolve } from 'node:path';
 import type { OahsClient } from '@oahs/contracts';
 import { lintDoc } from '@oahs/runner';
 import {
+  INTENT_HASH_ALGO,
   WORK_ITEM_KINDS,
   WORK_ITEM_STATES,
+  computeIntentHash,
+  extractIntentRegion,
   type Actor,
   type AuthzExplanation,
   type Claim,
@@ -72,15 +75,34 @@ export async function inboxCommand(client: OahsClient): Promise<string> {
 // approve / reject
 // ---------------------------------------------------------------------------
 
+/** Read a spec file, extract the frozen region, return its canonical hash. Throws if no region. */
+function intentHashFromSpec(specFile: string): string {
+  const region = extractIntentRegion(readFileSync(resolve(specFile), 'utf8'));
+  if (region === null) {
+    throw new Error(`no <intent-contract> / <frozen-after-approval> region found in ${specFile}`);
+  }
+  return computeIntentHash(region);
+}
+
 export interface ApproveOptions {
   workItemId: string;
   gate: string;
   /** spec_approval only: verification commands to pin (roadmap D7). */
   pin?: string[];
+  /** spec_approval only: freeze the spec's intent contract (§9.3) — submits its hash before approving. */
+  specFile?: string;
 }
 
 export async function approveCommand(client: OahsClient, opts: ApproveOptions): Promise<string> {
   assertGate(opts.gate);
+  // §9.3: freeze the intent contract — submit the canonical hash so the engine
+  // pins it at approval and re-verifies it at dispatch.
+  if (opts.specFile !== undefined) {
+    await client.call('submit_evidence', {
+      workItemId: opts.workItemId,
+      evidence: { kind: 'intent_hash', payload: { algo: INTENT_HASH_ALGO, hash: intentHashFromSpec(opts.specFile) } },
+    });
+  }
   const item = await client.call<WorkItem>('approve_gate', {
     workItemId: opts.workItemId,
     gate: opts.gate,
@@ -133,6 +155,23 @@ export async function rejectCommand(client: OahsClient, opts: RejectOptions): Pr
     `blockedReason: ${item.blockedReason ?? '-'}`,
     `reviewLoopIteration: ${item.reviewLoopIteration}`,
   ].join('\n');
+}
+
+export interface IntentRebaselineOptions {
+  workItemId: string;
+  specFile: string;
+}
+
+/** Re-pin a work item's intent hash after a legitimate spec renegotiation (§9.3, gated on intent.edit). */
+export async function intentRebaselineCommand(
+  client: OahsClient,
+  opts: IntentRebaselineOptions,
+): Promise<string> {
+  const item = await client.call<WorkItem>('rebaseline_intent', {
+    workItemId: opts.workItemId,
+    hash: intentHashFromSpec(opts.specFile),
+  });
+  return `re-baselined intent for ${item.externalKey} (${item.id})\nintentHash: ${item.intentHash ?? '-'}`;
 }
 
 // ---------------------------------------------------------------------------

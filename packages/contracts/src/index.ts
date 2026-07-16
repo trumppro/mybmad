@@ -33,7 +33,7 @@ const fencingToken = z
 
 const evidenceSchema = z
   .object({
-    kind: z.enum(['test_run', 'git_diff', 'commit', 'halt_report', 'review_report', 'doc_lint']),
+    kind: z.enum(['test_run', 'git_diff', 'commit', 'halt_report', 'review_report', 'doc_lint', 'intent_hash']),
     payload: z.record(z.string(), z.unknown()),
   })
   .describe('Raw machine-collected evidence; the core computes verdicts, the runner never does');
@@ -278,6 +278,14 @@ export const COMMANDS = [
     z.object({
       featureId: z.string().min(1),
       reason: z.string().optional(),
+    }),
+  ),
+  def(
+    'rebaseline_intent',
+    'Re-pin a work item’s intent hash after a legitimate spec renegotiation (gated on intent.edit, §9.3). The measuring side computes the canonical hash of the frozen region; the core stores it and appends intent.rebaselined.',
+    z.object({
+      workItemId,
+      hash: z.string().min(1).describe('Canonical intent hash, e.g. v1:<sha256>'),
     }),
   ),
 

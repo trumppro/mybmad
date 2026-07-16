@@ -465,6 +465,10 @@ export function createCommandBus(
           ...(p.reason !== undefined ? { reason: p.reason } : {}),
         });
       }
+      case 'rebaseline_intent': {
+        const p = parsed as { workItemId: string; hash: string };
+        return engine.rebaselineIntent({ workItemId: p.workItemId, hash: p.hash, actorId: ctx.actorId });
+      }
 
       // -- collaboration (Phase 3, roadmap §5) ----------------------------------
       // Actor identity ALWAYS from ctx: the poster, reader, notification owner

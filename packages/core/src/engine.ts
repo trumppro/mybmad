@@ -80,7 +80,7 @@ interface TransitionRule {
   to: WorkItemState;
   permission: Permission;
   claimRequired: boolean;
-  guards: Array<'deps_done' | 'spec_gate_if_checkpoint' | 'nonempty_diff'>;
+  guards: Array<'deps_done' | 'spec_gate_if_checkpoint' | 'nonempty_diff' | 'intent_unchanged'>;
 }
 
 const TRANSITIONS: TransitionRule[] = [
@@ -97,7 +97,7 @@ const TRANSITIONS: TransitionRule[] = [
     to: 'in_progress',
     permission: 'task.advance',
     claimRequired: true,
-    guards: ['deps_done'],
+    guards: ['deps_done', 'intent_unchanged'],
   },
   {
     from: 'in_progress',
@@ -1027,7 +1027,30 @@ class EngineImpl implements SpineEngine {
         }
         return;
       }
+      case 'intent_unchanged': {
+        // §9.3: the intent contract is frozen at spec approval. If a hash was
+        // pinned AND the measuring side presents a DIFFERENT one at dispatch,
+        // the frozen region drifted after approval — refuse. Absence of a
+        // presented hash is not drift (items without an intent contract, and
+        // the pre-§9.3 flow, keep working); a null pin means nothing to guard.
+        if (item.intentHash === null) return;
+        const presented = this.latestIntentHash(item);
+        if (presented !== undefined && presented !== item.intentHash) {
+          throw new GuardFailedError('intent_changed');
+        }
+        return;
+      }
     }
+  }
+
+  /** The latest submitted intent_hash evidence for an item (undefined if none). */
+  private latestIntentHash(item: WorkItemRow): string | undefined {
+    const rows = this.evidenceRows.filter(
+      (row) => row.workItemId === item.id && row.evidence.kind === 'intent_hash',
+    );
+    const latest = rows[rows.length - 1];
+    const hash = latest?.evidence.payload['hash'];
+    return typeof hash === 'string' ? hash : undefined;
   }
 
   private privilegedDowngrade(item: WorkItemRow, input: AdvanceInput): WorkItem {
@@ -1178,6 +1201,10 @@ class EngineImpl implements SpineEngine {
         this.recordApproval(item, 'spec_approval', input.actorId);
         return this.copyItem(item); // decision recorded; quorum pending (gate policy is data, roadmap §3)
       }
+      // §9.3: freeze the intent contract — pin the hash the measuring side
+      // submitted as intent_hash evidence (if any) at the moment of approval.
+      const submittedHash = this.latestIntentHash(item);
+      if (submittedHash !== undefined) item.intentHash = submittedHash;
       this.recordApproval(item, 'spec_approval', input.actorId);
       // The approval fires the gated forward transition (conformance pin).
       return this.executeTransition(item, 'ready_for_dev', input.actorId);
@@ -1507,6 +1534,22 @@ class EngineImpl implements SpineEngine {
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
     });
     return this.copyFeature(feature);
+  }
+
+  // -- intent hash (Phase 9.3, roadmap §1.1/§9) ---------------------------------
+
+  rebaselineIntent(input: { workItemId: string; hash: string; actorId: string }): WorkItem {
+    const item = this.mustGetItem(input.workItemId);
+    // A legitimate spec renegotiation — gated on intent.edit (the permission
+    // has existed since Phase 1 and is finally checked here).
+    this.requirePermission(input.actorId, 'intent.edit');
+    const from = item.intentHash;
+    item.intentHash = input.hash;
+    this.append('work_item', item.id, 'intent.rebaselined', input.actorId, {
+      from: from ?? null,
+      to: input.hash,
+    });
+    return this.copyItem(item);
   }
 
   // -- collaboration (Phase 3, roadmap §5) ---------------------------------------
