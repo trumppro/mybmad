@@ -204,6 +204,16 @@ Cùng ranh giới đó áp cho **lệnh kiểm chứng ghim** (`pinnedVerificati
 `pytest`, …): chúng chạy **code do agent viết** trong worktree, nên nhận đúng env tối
 thiểu như agent, không phải env đầy đủ của runner. `--inherit-env` nới cho cả hai.
 
+**Git của runner chạy không hook.** `git()` vẫn giữ env đầy đủ — nó gọi binary git tin
+cậy và cần `SSH_AUTH_SOCK` để push nhánh claim — nhưng git lại *thực thi hook phía client*
+lấy từ chính repo mà agent có quyền ghi, và hook chạy với env của tiến trình gọi git. Một
+agent cắm `.git/hooks/pre-push` (hoặc trỏ `core.hooksPath` / `core.fsmonitor` sang script
+của nó) sẽ đọc được đúng những bí mật mà allowlist ở trên giữ lại, ngay lần runner push
+kế tiếp. Vì vậy mọi lệnh git của runner đều kèm `-c core.hooksPath=/dev/null
+-c core.fsmonitor=false`. **Hệ quả vận hành:** hook trong repo của bạn (`pre-push`,
+`post-checkout`, …) KHÔNG chạy cho các thao tác git *của runner*; hook vẫn chạy bình
+thường với git do agent tự gọi.
+
 Cấp key cho agent qua kênh tường minh, không qua env thừa kế:
 
 ```bash

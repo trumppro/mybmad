@@ -26,6 +26,10 @@
  * run with cwd = the claim worktree, and receives two extra env vars:
  *   OAHS_SPEC_FILE — absolute path of the story spec file inside the worktree
  *   OAHS_STORY_ID  — the work item externalKey (stories.yaml id)
+ *
+ * Also part of this interface: the runner's OWN git commands run with
+ * client-side hooks disabled (HOOK_ISOLATION), so a repo hook never observes
+ * the runner's credentials. Hooks still run for git the AGENT invokes itself.
  */
 // Phase 4 (roadmap §1.4): the deterministic document lint for non-code work.
 export { lintDoc, type DocLintResult, type LintDocOptions } from './doclint.js';
@@ -149,9 +153,36 @@ const ENTRY_STATUS: Readonly<Partial<Record<WorkItemState, string>>> = {
 // git plumbing (child_process only — no external deps)
 // ---------------------------------------------------------------------------
 
+/**
+ * Hook isolation (roadmap §8) — prepended to EVERY runner-invoked git command.
+ *
+ * git is a trusted binary, so `git()` keeps the runner's full env: pushing the
+ * claim branch needs SSH_AUTH_SOCK. But git also executes CLIENT-SIDE HOOKS out
+ * of the repository the agent has write access to, and a hook runs with the env
+ * of whoever invoked git. So an agent that plants `.git/hooks/pre-push` (or
+ * points `core.hooksPath` at its own script) reads OAHS_TOKEN / OAHS_MODEL_* /
+ * SSH_AUTH_SOCK out of the runner's environment the next time the runner
+ * pushes — recovering exactly the secrets buildAgentEnv withholds from the
+ * agent's own process.
+ *
+ * Pointing hooksPath at a path with no hooks in it suppresses every client-side
+ * hook, and a command-line `-c` outranks repo config — so this also defeats an
+ * agent-set `core.hooksPath`. `core.fsmonitor` is a second hook (it names a
+ * command git runs to enumerate changes) reached through repo config rather
+ * than the hooks dir, so it needs its own override: the runner's own
+ * `git diff --shortstat` runs inside the agent's worktree and would fire it.
+ * The runner relies on no repo hook of its own.
+ *
+ * NOT closed by this: repo-local config also holds non-hook command knobs
+ * (filter.<n>.smudge, core.sshCommand, credential.helper, diff.external) that a
+ * worktree-writing agent can still point at a script. Narrowing git()'s own env
+ * is the follow-up that covers those.
+ */
+const HOOK_ISOLATION = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
+
 /** Run a git command; throws on non-zero exit; returns trimmed stdout. */
 export function git(args: string[], cwd: string): string {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const result = spawnSync('git', [...HOOK_ISOLATION, ...args], { cwd, encoding: 'utf8' });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(
