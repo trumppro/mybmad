@@ -328,10 +328,16 @@ export const agentJobs = pgTable(
     messageId: text('message_id'),
     workItemId: text('work_item_id'),
     featureId: text('feature_id'),
-    status: text('status').notNull(), // 'queued' | 'done' | 'blocked'
+    status: text('status').notNull(), // 'queued' | 'in_progress' | 'done' | 'blocked'
     depth: integer('depth').notNull().default(0),
     /** §9.4: non-null marks a review job; one per (workItemId, reviewRound). */
     reviewRound: integer('review_round'),
+    /** §9.5: the agent holding the live claim (null when unclaimed). */
+    claimedBy: text('claimed_by'),
+    /** §9.5: engine-clock ms when the claim lapses; past it the job frees to queued. */
+    claimExpiresAt: bigint('claim_expires_at', { mode: 'number' }),
+    /** §9.5: optimistic-concurrency counter for the claim CAS. */
+    stateVersion: integer('state_version').notNull().default(0),
     note: text('note'),
   },
   (t) => [

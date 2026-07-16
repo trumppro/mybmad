@@ -96,6 +96,20 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
   const job = queued.find((j) => j.threadId !== null && j.reviewRound === null);
   if (job === undefined || job.threadId === null) return { handled: false };
   const threadId: string = job.threadId; // narrowed: mention jobs always have a thread
+
+  // §9.5: CLAIM before serving. The queued→in_progress CAS makes two jobs loops
+  // on ONE queue post exactly one reply — the loser (someone else claimed) just
+  // moves on, no double-post. The lease is sized to OUTLAST this whole run
+  // (agent timeout + margin): the agent is SIGKILLed at agentTimeoutMs, so the
+  // lease can never lapse mid-run and re-open the job to a second loop.
+  const agentTimeoutMs = options.agentTimeoutMs ?? 10 * 60 * 1000;
+  const claimTtlMs = agentTimeoutMs + 5 * 60 * 1000;
+  try {
+    await client.call('claim_agent_job', { jobId: job.id, ttlMs: claimTtlMs });
+  } catch (error) {
+    if (isRemoteError(error, 'ConflictError')) return { handled: false };
+    throw error;
+  }
   log(`job ${job.id} picked up (thread ${threadId})`);
 
   // 2 — read the thread THROUGH the rails. 403 = the agent may not see this

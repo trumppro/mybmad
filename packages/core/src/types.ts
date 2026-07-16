@@ -460,12 +460,22 @@ export interface AgentJob {
   messageId: string | null; // the triggering mention (null for a review job)
   workItemId: string | null; // context when the thread is task-bound (always set for a review job)
   featureId: string | null;
-  status: 'queued' | 'done' | 'blocked';
+  /** §9.5: `in_progress` = claimed under a lease; an EXPIRED lease reads back as `queued`. */
+  status: 'queued' | 'in_progress' | 'done' | 'blocked';
   depth: number; // 0 = human-triggered; +1 per agent-mention-agent hop
   /** review round (§9.4): non-null marks a REVIEW job; one per (workItemId, reviewRound) by constraint. */
   reviewRound: number | null;
+  /** §9.5: the agent that holds the live claim on this job (null when unclaimed). */
+  claimedBy: string | null;
+  /** §9.5: engine-clock ms when the job claim lapses; past it the job frees to `queued` (lazy on read). */
+  claimExpiresAt: number | null;
+  /** §9.5: optimistic-concurrency counter for the claim CAS. */
+  stateVersion: number;
   note: string | null;
 }
+
+/** §9.5: an agent-job claim lease — the reaper generalizes in Phase 10.4. */
+export const AGENT_JOB_CLAIM_TTL_MS = 10 * 60 * 1000;
 
 /** Depth cap for agent-mention-agent chains (§5.4: "depth counter"). */
 export const AGENT_JOB_MAX_DEPTH = 2;
@@ -690,7 +700,14 @@ export interface SpineEngine {
   listNotifications(input: { actorId: string; unreadOnly?: boolean }): Notification[];
   markNotificationRead(input: { notificationId: string; actorId: string }): void;
   listAgentJobs(filter?: { agentActorId?: string; status?: AgentJob['status'] }): AgentJob[];
-  /** Only the job's agent may complete it; completion notifies the mentioner. */
+  /**
+   * §9.5: claim a queued (or lease-expired) job — CAS to in_progress under the
+   * agent's lease. Races lose (ConflictError). The caller SHOULD size ttlMs to
+   * outlast its whole run (the runner passes agentTimeout + margin) so the lease
+   * never lapses mid-run and re-opens the job to a second loop.
+   */
+  claimAgentJob(input: { jobId: string; actorId: string; ttlMs?: number }): AgentJob;
+  /** Only the job's agent (and, once claimed, the claimer) may complete it; completion notifies the mentioner. */
   completeAgentJob(input: { jobId: string; actorId: string; status: 'done' | 'blocked'; note?: string }): AgentJob;
 
   // -- agent memory (Phase 5, roadmap §6) ----------------------------------------

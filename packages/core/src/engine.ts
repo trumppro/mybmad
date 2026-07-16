@@ -9,6 +9,7 @@
  */
 import {
   AGENT_GATE_APPROVE_PERMISSIONS,
+  AGENT_JOB_CLAIM_TTL_MS,
   AGENT_JOB_MAX_DEPTH,
   BLOCKED_REASONS,
   ConflictError,
@@ -1759,6 +1760,9 @@ class EngineImpl implements SpineEngine {
       status: 'queued',
       depth,
       reviewRound: null,
+      claimedBy: null,
+      claimExpiresAt: null,
+      stateVersion: 0,
       note: null,
     };
     this.agentJobs.set(job.id, job);
@@ -1801,6 +1805,9 @@ class EngineImpl implements SpineEngine {
       status: 'queued',
       depth: 0,
       reviewRound: round,
+      claimedBy: null,
+      claimExpiresAt: null,
+      stateVersion: 0,
       note: null,
     };
     this.agentJobs.set(job.id, job);
@@ -1859,14 +1866,48 @@ class EngineImpl implements SpineEngine {
     notification.read = true;
   }
 
+  /** §9.5: an in_progress job past its lease reads back as `queued` (lazy free). */
+  private effectiveJobStatus(job: AgentJob): AgentJob['status'] {
+    if (
+      job.status === 'in_progress' &&
+      job.claimExpiresAt !== null &&
+      job.claimExpiresAt <= this.currentTime()
+    ) {
+      return 'queued';
+    }
+    return job.status;
+  }
+
   listAgentJobs(filter?: { agentActorId?: string; status?: AgentJob['status'] }): AgentJob[] {
     return [...this.agentJobs.values()]
+      .map((j) => ({ ...j, status: this.effectiveJobStatus(j) }))
       .filter(
         (j) =>
           (filter?.agentActorId === undefined || j.agentActorId === filter.agentActorId) &&
           (filter?.status === undefined || j.status === filter.status),
-      )
-      .map((j) => ({ ...j }));
+      );
+  }
+
+  claimAgentJob(input: { jobId: string; actorId: string; ttlMs?: number }): AgentJob {
+    const job = this.agentJobs.get(input.jobId);
+    if (!job) throw new GuardFailedError(`unknown agent job: ${input.jobId}`);
+    // A job is materialized FOR one agent; only that agent may serve it.
+    if (job.agentActorId !== input.actorId) {
+      throw new PermissionDeniedError('agent_job.complete', input.actorId);
+    }
+    // Claimable = queued, or an in_progress job whose lease lapsed (lazy free).
+    // The status guard IS the CAS: two loops race, one wins, the loser 409s.
+    if (this.effectiveJobStatus(job) !== 'queued') {
+      throw new ConflictError(`agent job ${job.id} is already claimed (${job.status})`);
+    }
+    job.status = 'in_progress';
+    job.claimedBy = input.actorId;
+    job.claimExpiresAt = this.currentTime() + (input.ttlMs ?? AGENT_JOB_CLAIM_TTL_MS);
+    job.stateVersion += 1;
+    this.append('agent_job', job.id, 'agent_job.claimed', input.actorId, {
+      claimExpiresAt: job.claimExpiresAt,
+    });
+    return { ...job };
   }
 
   completeAgentJob(input: { jobId: string; actorId: string; status: 'done' | 'blocked'; note?: string }): AgentJob {
@@ -1875,9 +1916,17 @@ class EngineImpl implements SpineEngine {
     if (job.agentActorId !== input.actorId) {
       throw new PermissionDeniedError('agent_job.complete', input.actorId);
     }
-    if (job.status !== 'queued') throw new GuardFailedError(`agent job ${job.id} is already ${job.status}`);
+    if (job.status === 'done' || job.status === 'blocked') {
+      throw new GuardFailedError(`agent job ${job.id} is already ${job.status}`);
+    }
+    // §9.5: once claimed, only the CLAIMER may complete (holds here since the
+    // claimer is always the job's own agent).
+    if (job.claimedBy !== null && job.claimedBy !== input.actorId) {
+      throw new PermissionDeniedError('agent_job.complete', input.actorId);
+    }
     job.status = input.status;
     job.note = input.note ?? null;
+    job.stateVersion += 1;
     this.append('agent_job', job.id, 'agent_job.completed', input.actorId, {
       status: input.status,
       note: job.note,

@@ -260,6 +260,9 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
   status TEXT NOT NULL,
   depth INTEGER NOT NULL DEFAULT 0,
   review_round INTEGER,
+  claimed_by TEXT,
+  claim_expires_at BIGINT,
+  state_version INTEGER NOT NULL DEFAULT 0,
   note TEXT
 );
 
@@ -272,4 +275,10 @@ ALTER TABLE agent_jobs ALTER COLUMN message_id DROP NOT NULL;
 ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS review_round INTEGER;
 CREATE UNIQUE INDEX IF NOT EXISTS agent_jobs_one_review_per_round
   ON agent_jobs (work_item_id, review_round) WHERE review_round IS NOT NULL;
+
+-- Phase 9.5: an agent job is claimed under a lease (queued -> in_progress by CAS
+-- on status). An expired lease reads back as queued (lazy free).
+ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS claimed_by TEXT;
+ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS claim_expires_at BIGINT;
+ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS state_version INTEGER NOT NULL DEFAULT 0;
 `;

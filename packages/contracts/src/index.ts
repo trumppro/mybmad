@@ -451,16 +451,21 @@ export const COMMANDS = [
   ),
   def(
     'list_agent_jobs',
-    'List router-materialized agent jobs (reply-only context — a job never carries a claim or lifecycle authority, §5.4).',
+    'List router-materialized agent jobs (reply-only context — a job never carries lifecycle authority, §5.4). An expired job claim reads back as queued (§9.5).',
     z.object({
       agentActorId: z.string().min(1).optional(),
-      status: z.enum(['queued', 'done', 'blocked']).optional(),
+      status: z.enum(['queued', 'in_progress', 'done', 'blocked']).optional(),
     }),
     true,
   ),
   def(
+    'claim_agent_job',
+    'Claim a queued (or lease-expired) agent job — CAS to in_progress under the agent’s lease (§9.5). Two jobs loops racing: one wins, the loser gets a 409. Only the job’s own agent may claim. ttlMs should outlast the whole run so the lease never lapses mid-run.',
+    z.object({ jobId: z.string().min(1), ttlMs: z.number().int().positive().optional() }),
+  ),
+  def(
     'complete_agent_job',
-    'Complete an agent job (only the job’s agent may). Completion notifies the mentioner — nothing else moves.',
+    'Complete an agent job (only the job’s agent — and, once claimed, the claimer — may). Completion notifies the mentioner — nothing else moves.',
     z.object({
       jobId: z.string().min(1),
       status: z.enum(['done', 'blocked']),

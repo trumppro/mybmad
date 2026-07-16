@@ -4,7 +4,7 @@ This suite is the **specification** of the spine engine. It was written *before*
 
 Run: `pnpm test` (in `packages/core`). History: the suite was born **113 red / 2 green** against `NotImplementedError` stubs; the in-memory reference engine (story "1"–"10" domain, `src/engine.ts`) turned it **115/115 green**. Two inter-cluster contradictions surfaced during implementation and were arbitrated below (marked ⚖); each required editing exactly one pin, recorded here.
 
-Files: `fsm-transitions` (14) · `blocked-overlay` (9) · `epic-lift` (4) · `feature-fsm` (19) · `review-dispatch` (8) · `claims` (17) · `concurrency` (7) · `gates-evidence` (12) · `review-loop` (6) · `stories-import` (13) · `intent-hash` (12) · `intent-wired` (5) · `checkpoints-dispatch` (12) · `reconcile` (9).
+Files: `fsm-transitions` (14) · `blocked-overlay` (9) · `epic-lift` (4) · `feature-fsm` (19) · `review-dispatch` (8) · `agent-job-claim` (7) · `claims` (17) · `concurrency` (7) · `gates-evidence` (12) · `review-loop` (6) · `stories-import` (13) · `intent-hash` (12) · `intent-wired` (5) · `checkpoints-dispatch` (12) · `reconcile` (9).
 
 ## Interpretation pins
 
@@ -24,6 +24,11 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 - **Claims carry a `kind`** (`'work' | 'review'`). The live-claim constraint is per `(work_item_id, kind)`, so a work claim and a review claim COEXIST on one item, each with its own fencing token. Two concurrent `claim_review` calls: one wins, the loser gets `ConflictError` (constraint, not app logic). A presented token is valid iff it matches SOME live claim on the item (work or review) — the token is the capability, not the kind.
 - **`claim_review`** requires `gate.review.approve` OR `gate.review.reject` and applies only to `in_review` items.
 - **Auto-dispatch**: when the `review_approval` gate policy names `autoDispatchReviewer`, entering `in_review` materializes EXACTLY ONE review `agent_job` for that actor, `reviewRound = reviewLoopIteration`, `threadId`/`messageId` null. A review job is an `agent_job` with `reviewRound` non-null; the partial unique index `(work_item_id, review_round)` makes a second entry into `in_review` in the same round a no-op. The mention jobs loop ignores review jobs.
+
+### Atomic agent-job claim (roadmap §9.5, `agent-job-claim`)
+- An agent job is CLAIMED under a lease before it is served: `queued → in_progress` is a compare-and-set (memory: status guard; PGlite: `UPDATE … WHERE status='queued' OR lapsed` row-count). Two jobs loops on one queue: one wins, the loser gets `ConflictError`. Only the job's own agent (`agentActorId`) may claim; once claimed, only the claimer completes.
+- An `in_progress` job whose lease lapsed (`claimExpiresAt <= now`) reads back as `queued` (lazy free — the reaper generalizes in 10.4). `completeAgentJob` allows a queued OR in_progress job (not already done/blocked); it stays back-compatible with the pre-9.5 complete-without-claim flow.
+- The lease is **sized to the run**: the runner claims with `ttlMs = agentTimeout + margin`, and the agent is SIGKILLed at `agentTimeout`, so the lease can never lapse mid-run and re-open the job to a second loop (the double-post window).
 - **Worker push**: dev-auto says "do not push"; roadmap §1.4 makes `final_revision_reachable_on_remote` a done-gate guard. Roadmap wins.
 - **Review-loop counter after the blocking 6th rejection**: stays at 5 (counts *performed* loopbacks; dev-auto's file-side "write 6 then halt" is not adopted — DB is the only counter, roadmap §1.1). The item stays `in_review` + blocked overlay `review_non_convergence`; `rejectGate` records the decision and returns the blocked item rather than throwing.
 

@@ -555,6 +555,14 @@ export function createCommandBus(
           ...(p.status !== undefined ? { status: p.status } : {}),
         });
       }
+      case 'claim_agent_job': {
+        const p = parsed as { jobId: string; ttlMs?: number };
+        return engine.claimAgentJob({
+          jobId: p.jobId,
+          actorId: ctx.actorId,
+          ...(p.ttlMs !== undefined ? { ttlMs: p.ttlMs } : {}),
+        });
+      }
       case 'complete_agent_job': {
         const p = parsed as CompleteAgentJobIn;
         return engine.completeAgentJob({

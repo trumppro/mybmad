@@ -25,7 +25,7 @@ import { renderTable } from '../format.js';
 
 const THREAD_KINDS = ['spec', 'design', 'task', 'general', 'private'] as const;
 const VISIBILITIES = ['open', 'private'] as const;
-const JOB_STATUSES = ['queued', 'done', 'blocked'] as const;
+const JOB_STATUSES = ['queued', 'in_progress', 'done', 'blocked'] as const;
 
 function assertThreadKind(kind: string): asserts kind is ThreadKind {
   if (!(THREAD_KINDS as readonly string[]).includes(kind)) {
@@ -175,8 +175,18 @@ export async function jobsCommand(client: OahsClient, opts: JobsOptions = {}): P
     ...(opts.status !== undefined ? { status: opts.status } : {}),
   });
   return renderTable(
-    ['id', 'agentActorId', 'status', 'threadId', 'workItemId', 'depth', 'note'],
-    jobs.map((j) => [j.id, j.agentActorId, j.status, j.threadId, j.workItemId, j.depth, j.note]),
+    ['id', 'agentActorId', 'status', 'claimedBy', 'reviewRound', 'threadId', 'workItemId', 'depth', 'note'],
+    jobs.map((j) => [
+      j.id,
+      j.agentActorId,
+      j.status,
+      j.claimedBy,
+      j.reviewRound,
+      j.threadId,
+      j.workItemId,
+      j.depth,
+      j.note,
+    ]),
   );
 }
 

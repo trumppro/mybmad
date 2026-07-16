@@ -190,7 +190,9 @@ describe('teammate jobs runtime e2e (Phase 5, roadmap §6)', () => {
 
     // GUARDRAIL AUDIT (§6 exit criterion): the agent actor's whole event trail
     // contains ZERO gate decisions and ZERO state transitions — a jobs-mode
-    // teammate replies and learns, it never moves lifecycle.
+    // teammate replies and learns, it never moves lifecycle. NOTE: `agent_job.claimed`
+    // (§9.5, the runtime claiming its OWN job) is NOT lifecycle authority — the
+    // guard is specifically against WORK-ITEM claims/gates/transitions.
     const events = await admin.call<SpineEvent[]>('query_events');
     const agentEvents = events.filter((e) => e.actorId === agentActor.id);
     expect(agentEvents.length).toBeGreaterThan(0); // it DID act (messages, job, memory)
@@ -200,7 +202,7 @@ describe('teammate jobs runtime e2e (Phase 5, roadmap §6)', () => {
           e.type === 'gate.approved' ||
           e.type === 'gate.rejected' ||
           e.type.includes('state_changed') ||
-          e.type.includes('claim'),
+          e.type === 'work_item.claimed',
       ),
     ).toEqual([]);
     // ...and its memory events carry NO content (private learning never leaks).
@@ -263,5 +265,40 @@ describe('teammate jobs runtime e2e (Phase 5, roadmap §6)', () => {
       status: 'queued',
     });
     expect(queued).toEqual([]);
+  });
+
+  it('test 3 — two jobs loops race ONE queued job: exactly one claims and replies (§9.5)', async () => {
+    const trigger = await po.call<Message>('post_message', {
+      threadId: taskThread.id,
+      body: 'race this one',
+      mentions: [agentActor.id],
+    });
+    const queued = await agent.call<AgentJob[]>('list_agent_jobs', {
+      agentActorId: agentActor.id,
+      status: 'queued',
+    });
+    const job = queued.find((j) => j.messageId === trigger.id);
+    expect(job).toBeDefined();
+
+    const opts = {
+      client: agent,
+      agentActorId: agentActor.id,
+      agentCmd: AGENT_CMD(),
+      agentTimeoutMs: 30_000,
+    };
+    // Two loops on one token, one queue — the claim CAS decides the winner.
+    const [a, b] = await Promise.all([runJobsOnce(opts), runJobsOnce(opts)]);
+
+    const handled = [a, b].filter((r) => r.handled && r.outcome === 'done' && r.jobId === job!.id);
+    const idle = [a, b].filter((r) => !r.handled);
+    expect(handled).toHaveLength(1); // exactly one loop served it
+    expect(idle).toHaveLength(1); // the other found nothing to do (lost the claim)
+
+    // The job completed exactly once — no double-post.
+    const done = await agent.call<AgentJob[]>('list_agent_jobs', {
+      agentActorId: agentActor.id,
+      status: 'done',
+    });
+    expect(done.filter((j) => j.id === job!.id)).toHaveLength(1);
   });
 });

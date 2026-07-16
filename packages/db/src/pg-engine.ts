@@ -20,11 +20,12 @@
  *    timestamps, no Date, no undefined array holes) so they cross the
  *    synckit worker boundary intact.
  */
-import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, lte, or, sql } from 'drizzle-orm';
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
 
 import {
   AGENT_GATE_APPROVE_PERMISSIONS,
+  AGENT_JOB_CLAIM_TTL_MS,
   AGENT_JOB_MAX_DEPTH,
   BLOCKED_REASONS,
   ConflictError,
@@ -2222,6 +2223,14 @@ export class PgEngine {
   }
 
   private publicJob(row: Omit<AgentJobRow, 'seq'>): AgentJob {
+    // §9.5: an in_progress job past its lease reads back as `queued` (lazy free).
+    const rawStatus = row.status as AgentJob['status'];
+    const status: AgentJob['status'] =
+      rawStatus === 'in_progress' &&
+      row.claimExpiresAt !== null &&
+      row.claimExpiresAt <= this.currentTime()
+        ? 'queued'
+        : rawStatus;
     return {
       id: row.id,
       agentActorId: row.agentActorId,
@@ -2229,9 +2238,12 @@ export class PgEngine {
       messageId: row.messageId,
       workItemId: row.workItemId,
       featureId: row.featureId,
-      status: row.status as AgentJob['status'],
+      status,
       depth: row.depth,
       reviewRound: row.reviewRound ?? null,
+      claimedBy: row.claimedBy ?? null,
+      claimExpiresAt: row.claimExpiresAt ?? null,
+      stateVersion: row.stateVersion ?? 0,
       note: row.note,
     };
   }
@@ -2520,12 +2532,55 @@ export class PgEngine {
   async listAgentJobs(filter?: { agentActorId?: string; status?: AgentJob['status'] }): Promise<AgentJob[]> {
     const rows = await this.db.select().from(agentJobs).orderBy(asc(agentJobs.seq));
     return rows
+      .map((j) => this.publicJob(j)) // effective status (lazy free) applied here
       .filter(
         (j) =>
           (filter?.agentActorId === undefined || j.agentActorId === filter.agentActorId) &&
           (filter?.status === undefined || j.status === filter.status),
-      )
-      .map((j) => this.publicJob(j));
+      );
+  }
+
+  async claimAgentJob(input: { jobId: string; actorId: string; ttlMs?: number }): Promise<AgentJob> {
+    const rows = await this.db.select().from(agentJobs).where(eq(agentJobs.id, input.jobId)).limit(1);
+    const job = rows[0];
+    if (!job) throw new GuardFailedError(`unknown agent job: ${input.jobId}`);
+    if (job.agentActorId !== input.actorId) {
+      throw new PermissionDeniedError('agent_job.complete', input.actorId);
+    }
+    const claimExpiresAt = this.currentTime() + (input.ttlMs ?? AGENT_JOB_CLAIM_TTL_MS);
+    return this.db.transaction(async (tx) => {
+      // CAS: claim only if queued OR in_progress-with-lapsed-lease. The row-count
+      // IS the race guard — two loops claim, one updates 1 row, the loser 0.
+      const updated = await tx
+        .update(agentJobs)
+        .set({
+          status: 'in_progress',
+          claimedBy: input.actorId,
+          claimExpiresAt,
+          stateVersion: job.stateVersion + 1,
+        })
+        .where(
+          and(
+            eq(agentJobs.id, job.id),
+            or(
+              eq(agentJobs.status, 'queued'),
+              and(eq(agentJobs.status, 'in_progress'), lte(agentJobs.claimExpiresAt, this.currentTime())),
+            ),
+          ),
+        )
+        .returning({ id: agentJobs.id });
+      if (updated.length === 0) {
+        throw new ConflictError(`agent job ${job.id} is already claimed (${job.status})`);
+      }
+      await this.appendTx(tx, 'agent_job', job.id, 'agent_job.claimed', input.actorId, { claimExpiresAt });
+      return this.publicJob({
+        ...job,
+        status: 'in_progress',
+        claimedBy: input.actorId,
+        claimExpiresAt,
+        stateVersion: job.stateVersion + 1,
+      });
+    });
   }
 
   async completeAgentJob(input: {
@@ -2540,10 +2595,19 @@ export class PgEngine {
     if (job.agentActorId !== input.actorId) {
       throw new PermissionDeniedError('agent_job.complete', input.actorId);
     }
-    if (job.status !== 'queued') throw new GuardFailedError(`agent job ${job.id} is already ${job.status}`);
+    if (job.status === 'done' || job.status === 'blocked') {
+      throw new GuardFailedError(`agent job ${job.id} is already ${job.status}`);
+    }
+    // §9.5: once claimed, only the CLAIMER may complete.
+    if (job.claimedBy !== null && job.claimedBy !== input.actorId) {
+      throw new PermissionDeniedError('agent_job.complete', input.actorId);
+    }
     const note = input.note ?? null;
     return this.db.transaction(async (tx) => {
-      await tx.update(agentJobs).set({ status: input.status, note }).where(eq(agentJobs.id, job.id));
+      await tx
+        .update(agentJobs)
+        .set({ status: input.status, note, stateVersion: job.stateVersion + 1 })
+        .where(eq(agentJobs.id, job.id));
       await this.appendTx(tx, 'agent_job', job.id, 'agent_job.completed', input.actorId, {
         status: input.status,
         note,
@@ -2561,7 +2625,7 @@ export class PgEngine {
             )[0]
           : undefined;
       if (trigger) await this.pushNotificationTx(tx, trigger.authorId, 'job_completed', job.id);
-      return this.publicJob({ ...job, status: input.status, note });
+      return this.publicJob({ ...job, status: input.status, note, stateVersion: job.stateVersion + 1 });
     });
   }
 

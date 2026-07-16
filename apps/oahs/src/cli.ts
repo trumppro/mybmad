@@ -508,7 +508,7 @@ export function buildProgram(): Command {
   withClientFlags(program.command('jobs'))
     .description('list agent jobs')
     .option('--agent <actorId>', 'filter by agent actor')
-    .option('--status <status>', 'queued | done | blocked')
+    .option('--status <status>', 'queued | in_progress | done | blocked')
     .action(async (opts: ClientFlags & { agent?: string; status?: string }) =>
       emit(() =>
         jobsCommand(clientFrom(opts), {
