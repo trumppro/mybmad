@@ -37,7 +37,7 @@ import { join } from 'node:path';
 import type { OahsClient } from '@oahs/contracts';
 import type { AgentJob, AgentMemory, Message } from '@oahs/core';
 
-import { announceRunner, defaultRunnerLog } from './index.js';
+import { announceRunner, buildAgentEnv, defaultRunnerLog } from './index.js';
 
 export interface JobsRunnerOptions {
   client: OahsClient;
@@ -52,6 +52,8 @@ export interface JobsRunnerOptions {
   agentTimeoutMs?: number;
   /** Extra environment variables passed to the agent invocation. */
   agentEnv?: Record<string, string>;
+  /** Pass the runner's full process env to the agent child (roadmap §8). Off by default. */
+  inheritEnv?: boolean;
   /**
    * Progress sink — handled jobs, outcomes, cycle failures. Default:
    * timestamped lines on stderr (same seam as the coding loop).
@@ -163,12 +165,11 @@ export async function runJobsOnce(options: JobsRunnerOptions): Promise<JobsOnceR
       encoding: 'utf8',
       timeout: options.agentTimeoutMs ?? 10 * 60 * 1000,
       killSignal: 'SIGKILL',
-      env: {
-        ...process.env,
-        ...options.agentEnv,
-        OAHS_CONTEXT_FILE: contextFile,
-        OAHS_REPLY_FILE: replyFile,
-      },
+      env: buildAgentEnv({
+        agentEnv: options.agentEnv,
+        inheritEnv: options.inheritEnv,
+        extra: { OAHS_CONTEXT_FILE: contextFile, OAHS_REPLY_FILE: replyFile },
+      }),
     });
 
     const reply = existsSync(replyFile) ? readFileSync(replyFile, 'utf8').trim() : '';

@@ -168,4 +168,27 @@ describe('oahs work --manifest — one process, N runner loops', () => {
       runSupervisor({ manifestPath: badPath, url: baseUrl, once: true, env: { OAHS_HOME: home } }),
     ).rejects.toThrow(/nobody/);
   });
+
+  it('a blank agentEnv value (YAML null) is a CLEAR error, not a corrupt "null" secret', async () => {
+    const badPath = join(tmpRoot, 'bad-env.yaml');
+    // `MODEL_KEY:` with no value parses to null — would coerce to KEY=null in
+    // the child env; the supervisor must reject it up front (§8).
+    writeFileSync(
+      badPath,
+      [
+        'runners:',
+        '  - name: badenv',
+        '    identity: dev',
+        '    project: sup-alpha',
+        '    agentCmd: echo x',
+        '    agentEnv:',
+        '      MODEL_KEY:',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await expect(
+      runSupervisor({ manifestPath: badPath, url: baseUrl, once: true, env: { OAHS_HOME: home } }),
+    ).rejects.toThrow(/MODEL_KEY/);
+  });
 });

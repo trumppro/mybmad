@@ -42,6 +42,10 @@ interface ManifestEntry {
   poll?: number;
   claimTtl?: number;
   heartbeat?: number;
+  /** Extra env vars for the agent child (e.g. model keys); §8. */
+  agentEnv?: Record<string, string>;
+  /** Pass the full process env to the agent child (off by default; §8). */
+  inheritEnv?: boolean;
   url?: string;
 }
 
@@ -99,6 +103,21 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
     if (typeof entry.agentCmd !== 'string' || entry.agentCmd.length === 0) {
       throw new Error(`runner "${entry.name}": agentCmd is required`);
     }
+    // agentEnv comes from untyped YAML — a blank (`KEY:` → null) or nested
+    // value would coerce to "null"/"[object Object]" in the child env. Reject
+    // it loudly so an operator's typo is a clear error, not a corrupt secret.
+    if (entry.agentEnv !== undefined) {
+      if (typeof entry.agentEnv !== 'object' || entry.agentEnv === null || Array.isArray(entry.agentEnv)) {
+        throw new Error(`runner "${entry.name}": agentEnv must be a map of KEY: value`);
+      }
+      for (const [key, value] of Object.entries(entry.agentEnv)) {
+        if (typeof value !== 'string') {
+          throw new Error(
+            `runner "${entry.name}": agentEnv.${key} must be a string (got ${value === null ? 'null' : typeof value})`,
+          );
+        }
+      }
+    }
     const token = entryToken(entry, env);
     const url = entry.url ?? options.url ?? defaultUrl(env);
     const client = makeClient({ baseUrl: url, token });
@@ -109,6 +128,10 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
 
   const runEntry = async ({ entry, client }: { entry: ManifestEntry; client: OahsClient }) => {
     const prefixed = (line: string): void => log(`[${entry.name}] ${line}`);
+    const entryEnv = {
+      ...(entry.agentEnv !== undefined ? { agentEnv: entry.agentEnv } : {}),
+      ...(entry.inheritEnv === true ? { inheritEnv: true } : {}),
+    };
     for (;;) {
       try {
         if (entry.mode === 'jobs') {
@@ -118,6 +141,7 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
             agentActorId: me.actorId,
             agentCmd: entry.agentCmd,
             log: prefixed,
+            ...entryEnv,
             ...(entry.poll !== undefined ? { pollMs: entry.poll } : {}),
             ...(options.once === true ? { once: true } : {}),
           });
@@ -145,6 +169,7 @@ export async function runSupervisor(options: SupervisorOptions): Promise<void> {
           specFolder,
           agentCmd: entry.agentCmd,
           log: prefixed,
+          ...entryEnv,
           ...(entry.project !== undefined ? { projectId: entry.project } : {}),
           ...(entry.feature !== undefined ? { featureId: entry.feature } : {}),
           ...(entry.poll !== undefined ? { pollMs: entry.poll } : {}),

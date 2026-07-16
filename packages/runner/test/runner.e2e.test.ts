@@ -98,6 +98,7 @@ let repoDir: string;
 let originDir: string;
 let agentScript: string;
 let countersDir: string;
+let priorOahsToken: string | undefined; // saved so the §8 canary doesn't leak between suites
 
 const specPaths = new Map<string, string>(); // externalKey -> repo-relative spec path
 
@@ -125,6 +126,11 @@ function evidenceOfKind(result: { evidence?: Evidence[] }, kind: Evidence['kind'
 }
 
 beforeAll(async () => {
+  // A runner in production holds its rails token in the env; simulate that so
+  // the pinned-verification canary can prove it never leaks to agent code (§8).
+  priorOahsToken = process.env.OAHS_TOKEN;
+  process.env.OAHS_TOKEN = 'runner-rails-secret-should-not-leak';
+
   // -- in-process spine-api (memory engine) ---------------------------------
   app = await buildServer({
     engine: createMemoryEngine(),
@@ -180,7 +186,14 @@ beforeAll(async () => {
 
   git(['init', '-b', 'main'], repoDir);
   writeFileSync(join(repoDir, 'README.md'), '# fixture project\n', 'utf8');
-  writeFileSync(join(repoDir, '.oahs-verify.mjs'), 'process.exit(0);\n', 'utf8');
+  // §8 canary: pinned verification runs AGENT-AUTHORED code, so the runner's
+  // secret (OAHS_TOKEN, set on this process below) must NOT reach it. This
+  // script exits 42 if the secret leaked — every test_run exit-0 proves it did not.
+  writeFileSync(
+    join(repoDir, '.oahs-verify.mjs'),
+    'process.exit(process.env.OAHS_TOKEN ? 42 : 0);\n',
+    'utf8',
+  );
   mkdirSync(join(repoDir, SPEC_FOLDER, 'stories'), { recursive: true });
   writeFileSync(join(repoDir, SPEC_FOLDER, 'stories.yaml'), STORIES_YAML, 'utf8');
   commitAll('baseline: README + verify script + stories.yaml');
@@ -210,6 +223,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await app.close();
   rmSync(tmpRoot, { recursive: true, force: true });
+  if (priorOahsToken === undefined) delete process.env.OAHS_TOKEN;
+  else process.env.OAHS_TOKEN = priorOahsToken;
 });
 
 describe('runner e2e — BYO worker loop against real git + in-process spine-api', () => {
@@ -242,6 +257,8 @@ describe('runner e2e — BYO worker loop against real git + in-process spine-api
     expect(String(halt?.payload['autoRunResult'])).toContain('## Auto Run Result');
     expect(String(halt?.payload['autoRunResult'])).toContain('Status: done');
 
+    // exitCode 0 (not 42) also proves the §8 boundary: the verification child
+    // ran agent-authored code WITHOUT the runner's OAHS_TOKEN in its env.
     const [testRun] = evidenceOfKind(result, 'test_run');
     expect(testRun?.payload).toMatchObject({ command: 'node .oahs-verify.mjs', exitCode: 0 });
 

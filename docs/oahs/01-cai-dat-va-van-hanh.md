@@ -190,6 +190,34 @@ dogfood và dùng nội bộ đội. Gate "done" mức enterprise sẽ bổ sung
 phía server, và về sau là sandbox phía server (roadmap §4.3, Phase 6). Nêu ở đây để không
 ai nhầm *sàn* với *trần*. Chi tiết trong [OAHS.md](../../OAHS.md).
 
+### Môi trường của agent child (§8)
+
+Runner giữ bí mật của cả đội: `OAHS_TOKEN` (danh tính runner trên rails),
+`OAHS_MODEL_*` (khoá router), và có thể cả `SSH_AUTH_SOCK`. Tiến trình agent do runner
+spawn (`agentCmd` tuỳ ý) **không** thừa kế các biến này — mặc định child chỉ nhận một
+*allowlist* tối thiểu (`PATH`, `HOME`, `SHELL`, `USER`, `LANG`, `TZ`, `TERM`, `TMPDIR`, …)
+cộng các biến dispatch (`OAHS_SPEC_FILE`/`OAHS_STORY_ID` ở coding mode,
+`OAHS_CONTEXT_FILE`/`OAHS_REPLY_FILE` ở jobs mode). Một agent bị lộ hoặc tò mò không nhặt
+được credential miễn phí từ môi trường.
+
+Cùng ranh giới đó áp cho **lệnh kiểm chứng ghim** (`pinnedVerification` — `npm test`,
+`pytest`, …): chúng chạy **code do agent viết** trong worktree, nên nhận đúng env tối
+thiểu như agent, không phải env đầy đủ của runner. `--inherit-env` nới cho cả hai.
+
+Cấp key cho agent qua kênh tường minh, không qua env thừa kế:
+
+```bash
+# Truyền đúng thứ agent cần (lặp lại được); ví dụ khoá model của riêng agent:
+oahs work --agent-cmd '…' --agent-env ANTHROPIC_API_KEY=sk-… --agent-env MY_FLAG=1
+
+# Cửa thoát cho setup BYO phụ thuộc toàn bộ process env (opt-in, không mặc định):
+oahs work --agent-cmd '…' --inherit-env
+```
+
+Trong manifest supervisor, mỗi entry mang `agentEnv` (map KEY→VALUE) và `inheritEnv`
+(bool) tương ứng. `--inherit-env` chỉ nên dùng khi bạn hiểu rằng nó trả lại **toàn bộ**
+env của runner cho child, kể cả các bí mật ở trên.
+
 ---
 
 Tiếp theo: [Hướng dẫn sử dụng →](02-huong-dan-su-dung.md) ·

@@ -101,6 +101,13 @@ export interface RunnerOptions {
   agentTimeoutMs?: number;
   /** Extra environment variables passed to the agent invocation. */
   agentEnv?: Record<string, string>;
+  /**
+   * Pass the runner's FULL process env to the agent child (roadmap §8). Off by
+   * default: the child gets a minimal allowlist plus `agentEnv`, never the
+   * runner's OAHS_TOKEN / OAHS_MODEL_* / SSH_AUTH_SOCK. Opt in for BYO setups
+   * that rely on inherited configuration.
+   */
+  inheritEnv?: boolean;
 }
 
 export interface RunOnceResult {
@@ -391,6 +398,35 @@ export function announceRunner(
  * lease heartbeats can fire DURING the run (D-G). SIGKILL on timeout keeps
  * the old contract (status null → -1 at the call site).
  */
+/**
+ * The environment an agent child inherits (roadmap §8). By default it is a small
+ * ALLOWLIST — enough for a shell and a coding CLI to run — plus the caller's
+ * explicit `agentEnv` and the dispatch variables. Secrets the runner holds
+ * (OAHS_TOKEN, OAHS_MODEL_*, SSH_AUTH_SOCK, …) are NOT passed down: a compromised
+ * or curious agent gets no free credential. `inheritEnv` restores the full
+ * process env for BYO setups that rely on it — opt-in, never the default.
+ */
+const AGENT_ENV_ALLOWLIST = [
+  'PATH', 'HOME', 'SHELL', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TERM', 'TMPDIR', 'TEMP',
+] as const;
+
+export function buildAgentEnv(input: {
+  agentEnv?: Record<string, string> | undefined;
+  extra: Record<string, string>;
+  inheritEnv?: boolean | undefined;
+}): NodeJS.ProcessEnv {
+  const base: NodeJS.ProcessEnv = {};
+  if (input.inheritEnv === true) {
+    Object.assign(base, process.env);
+  } else {
+    for (const key of AGENT_ENV_ALLOWLIST) {
+      const value = process.env[key];
+      if (value !== undefined) base[key] = value;
+    }
+  }
+  return { ...base, ...input.agentEnv, ...input.extra };
+}
+
 function runAgentCommand(
   command: string,
   opts: { cwd: string; timeoutMs: number; env: NodeJS.ProcessEnv },
@@ -438,6 +474,13 @@ interface FinishArgs {
   agentExitCode: number | null;
   /** Teed agent transcript path — absent on the adopt path (no fresh run). */
   agentLogPath?: string;
+  /**
+   * The env for the pinned-verification children (§8). Verification commands
+   * (`npm test`, `pytest`, …) execute AGENT-AUTHORED code in the worktree, so
+   * they get the SAME minimal, secret-free env as the agent itself — never the
+   * runner's full process.env.
+   */
+  verifyEnv: NodeJS.ProcessEnv;
   submit: (kind: Evidence['kind'], payload: Record<string, unknown>) => Promise<void>;
 }
 
@@ -465,6 +508,7 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
       cwd: args.workDir,
       encoding: 'utf8',
       timeout: 10 * 60 * 1000,
+      env: args.verifyEnv,
     });
     await args.submit('test_run', { command, exitCode: run.status ?? -1 });
   }
@@ -655,6 +699,12 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     repoPath,
     remote,
     allowlist,
+    // Verification runs agent-authored code — same secret-free env as the agent.
+    verifyEnv: buildAgentEnv({
+      agentEnv: options.agentEnv,
+      inheritEnv: options.inheritEnv,
+      extra: {},
+    }),
     submit,
   };
 
@@ -744,12 +794,11 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   const invoked = await runAgentCommand(command, {
     cwd: worktreeDir,
     timeoutMs: options.agentTimeoutMs ?? 30 * 60 * 1000,
-    env: {
-      ...process.env,
-      ...options.agentEnv,
-      OAHS_SPEC_FILE: specAbs,
-      OAHS_STORY_ID: workItem.externalKey,
-    },
+    env: buildAgentEnv({
+      agentEnv: options.agentEnv,
+      inheritEnv: options.inheritEnv,
+      extra: { OAHS_SPEC_FILE: specAbs, OAHS_STORY_ID: workItem.externalKey },
+    }),
   });
   const agentExitCode = invoked.status ?? -1;
 

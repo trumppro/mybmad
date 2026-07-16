@@ -715,6 +715,16 @@ export function buildProgram(): Command {
     .option('--poll <ms>', 'poll interval in milliseconds')
     .option('--claim-ttl <ms>', 'claim lease TTL (coding mode; default: engine 15 min)')
     .option('--heartbeat <ms>', 'lease heartbeat interval during the agent run (coding mode; default 60s)')
+    .option(
+      '--agent-env <KEY=VAL>',
+      'extra env var passed to the agent child (repeatable); use this for model keys instead of the inherited env',
+      collect,
+      [],
+    )
+    .option(
+      '--inherit-env',
+      'pass the runner’s FULL process env to the agent child (default: a minimal allowlist, no OAHS_TOKEN / OAHS_MODEL_* / SSH_AUTH_SOCK; roadmap §8)',
+    )
     .action(
       async (
         opts: ClientFlags & {
@@ -729,6 +739,8 @@ export function buildProgram(): Command {
           poll?: string;
           claimTtl?: string;
           heartbeat?: string;
+          agentEnv?: string[];
+          inheritEnv?: boolean;
         },
       ) => {
         try {
@@ -745,6 +757,18 @@ export function buildProgram(): Command {
             throw new Error('--agent-cmd is required (or pass --manifest)');
           }
           const client = clientFrom(opts);
+          // --agent-env KEY=VAL pairs → the extra env the agent child receives
+          // (§8): model keys and the like belong here, not in the inherited env.
+          const agentEnv: Record<string, string> = {};
+          for (const pair of opts.agentEnv ?? []) {
+            const eq = pair.indexOf('=');
+            if (eq <= 0) throw new Error(`--agent-env expects KEY=VALUE, got: ${pair}`);
+            agentEnv[pair.slice(0, eq)] = pair.slice(eq + 1);
+          }
+          const envOpts = {
+            ...(Object.keys(agentEnv).length > 0 ? { agentEnv } : {}),
+            ...(opts.inheritEnv === true ? { inheritEnv: true } : {}),
+          };
           // LAZY import: the runner is a fixed interface that may still be a
           // stub — the rest of the CLI must never pay for (or break on) it.
           const runner = await import('@oahs/runner');
@@ -756,6 +780,7 @@ export function buildProgram(): Command {
               client,
               agentActorId: me.actorId,
               agentCmd: opts.agentCmd,
+              ...envOpts,
               ...(opts.poll !== undefined ? { pollMs: Number(opts.poll) } : {}),
               ...(opts.once === true ? { once: true } : {}),
             });
@@ -786,6 +811,7 @@ export function buildProgram(): Command {
             repoPath: resolve(repoPath),
             specFolder,
             agentCmd: opts.agentCmd,
+            ...envOpts,
             ...(project !== undefined ? { projectId: project } : {}),
             ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),
             ...(opts.poll !== undefined ? { pollMs: Number(opts.poll) } : {}),

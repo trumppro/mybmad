@@ -47,7 +47,7 @@ RUN pnpm --filter @oahs/cli deploy --prod /app
 # ---------------------------------------------------------------------------
 FROM node:22-slim AS runtime
 ENV NODE_ENV=production
-ENV OAHS_PORT=4517
+ENV OAHS_PORT=4521
 WORKDIR /app
 
 # Run unprivileged; /data is the durable PGlite root (a mounted volume).
@@ -56,12 +56,12 @@ RUN useradd --system --uid 10001 --create-home oahs \
 COPY --from=builder --chown=oahs:oahs /app ./
 USER oahs
 
-EXPOSE 4517
+EXPOSE 4521
 VOLUME ["/data"]
 
 # Liveness: the same /healthz every client can hit (honours $OAHS_PORT).
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=5 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.OAHS_PORT||4517)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.OAHS_PORT||4521)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # The bundle entrypoint IS the executable. Port/flags come from compose (CMD).
 # serve binds 0.0.0.0 by default (serve.ts); compose passes --port.
