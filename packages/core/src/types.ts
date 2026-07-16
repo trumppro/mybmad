@@ -218,6 +218,12 @@ export interface GatePolicy {
    * exactly one review agent_job per review round for this reviewer actor.
    */
   autoDispatchReviewer?: string;
+  /**
+   * §9.6: when true on review_approval, the done gate additionally requires the
+   * latest `pr` evidence to be a merge into the default branch (gate-policy data,
+   * never hardcode). Off → behavior is exactly the pre-9.6 evidence check.
+   */
+  requireMergedPr?: boolean;
 }
 
 export interface RoleAssignment {
@@ -252,7 +258,8 @@ export type EvidenceKind =
   | 'halt_report' // verbatim Auto Run Result
   | 'review_report' // LLM-authored; NEVER a guard, context only
   | 'doc_lint' // {schemaValid} for non-code work
-  | 'intent_hash'; // {algo, hash} — the measuring side's canonical frozen-region hash (§9.3)
+  | 'intent_hash' // {algo, hash} — the measuring side's canonical frozen-region hash (§9.3)
+  | 'pr'; // §9.6: {action:'opened'|'merged_into_default', number, url?, mergedSha?} — forge facts the runner/CLI measure
 
 export interface Evidence {
   kind: EvidenceKind;
@@ -328,6 +335,14 @@ export interface Project {
   repoPath: string | null;
   /** Spec folder relative to repoPath, e.g. delivery/my-feature. */
   defaultSpecFolder: string | null;
+  /** §9.6 repo registry (portal parity): remote git URL (SSH), e.g. git@github.com:org/repo.git. */
+  gitUrl: string | null;
+  /** §9.6: the PR/merge target and the §10 dispatcher clone source (default 'main'). */
+  baseBranch: string | null;
+  /** §9.6: forge owner (GitHub org/user) — the runner opens PRs against forgeOwner/forgeRepo. */
+  forgeOwner: string | null;
+  /** §9.6: forge repo name. */
+  forgeRepo: string | null;
   state: 'active' | 'archived';
 }
 
@@ -588,6 +603,10 @@ export interface SpineEngine {
     kind?: ProjectKind;
     repoPath?: string;
     defaultSpecFolder?: string;
+    gitUrl?: string;
+    baseBranch?: string;
+    forgeOwner?: string;
+    forgeRepo?: string;
   }): Project;
   /** Resolves by id OR slug. */
   getProject(input: { projectId: string }): Project;
@@ -599,6 +618,10 @@ export interface SpineEngine {
     kind?: ProjectKind;
     repoPath?: string;
     defaultSpecFolder?: string;
+    gitUrl?: string;
+    baseBranch?: string;
+    forgeOwner?: string;
+    forgeRepo?: string;
   }): Project;
   archiveProject(input: { actorId: string; projectId: string }): Project;
 

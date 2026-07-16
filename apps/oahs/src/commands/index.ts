@@ -18,7 +18,9 @@ import {
   type Actor,
   type AuthzExplanation,
   type Claim,
+  type Evidence,
   type Feature,
+  type Project,
   type GateCode,
   type GovernanceRole,
   type PlanCode,
@@ -103,6 +105,49 @@ export interface ApproveOptions {
   pin?: string[];
   /** spec_approval only: freeze the spec's intent contract (§9.3) — submits its hash before approving. */
   specFile?: string;
+  /** review_approval only (§9.6): measure the PR's merge state via the forge and submit it before approving. */
+  checkMerge?: boolean;
+}
+
+/**
+ * §9.6: measure the item's open PR merge state via the forge and, if merged into
+ * the project's base branch, submit `pr` merged_into_default evidence. Needs the
+ * project's forge fields + OAHS_GITHUB_TOKEN — the SPINE never touches GitHub.
+ */
+async function checkMergeAndSubmit(client: OahsClient, workItemId: string): Promise<void> {
+  const item = await client.call<WorkItem>('get_work_item', { workItemId });
+  const feature = await client.call<Feature>('get_feature', { featureId: item.featureId });
+  const project = await client.call<Project>('project_get', { projectId: feature.projectId });
+  if (project.forgeOwner === null || project.forgeRepo === null) {
+    throw new Error('--check-merge needs the project’s forge (project create/update --forge owner/repo)');
+  }
+  const token = process.env['OAHS_GITHUB_TOKEN'];
+  if (token === undefined || token === '') {
+    throw new Error('--check-merge needs OAHS_GITHUB_TOKEN in the environment');
+  }
+  const evidence = await client.call<Evidence[]>('list_evidence', { workItemId });
+  const prEvidence = evidence.filter((e) => e.kind === 'pr');
+  const latest = prEvidence[prEvidence.length - 1];
+  if (latest === undefined) {
+    throw new Error('no pr evidence yet — has the runner opened a PR for this item?');
+  }
+  const number = Number(latest.payload['number']);
+  const { GitHubForge } = await import('@oahs/runner');
+  const forge = new GitHubForge({ owner: project.forgeOwner, repo: project.forgeRepo, token });
+  const pr = await forge.getPrMergeState({ number });
+  const baseBranch = project.baseBranch ?? 'main';
+  if (!pr.merged || pr.base !== baseBranch) {
+    throw new Error(
+      `PR #${String(number)} is not merged into ${baseBranch} (merged=${String(pr.merged)}, base=${pr.base})`,
+    );
+  }
+  await client.call('submit_evidence', {
+    workItemId,
+    evidence: {
+      kind: 'pr',
+      payload: { action: 'merged_into_default', number: pr.number, mergedSha: pr.mergedSha },
+    },
+  });
 }
 
 export async function approveCommand(client: OahsClient, opts: ApproveOptions): Promise<string> {
@@ -114,6 +159,10 @@ export async function approveCommand(client: OahsClient, opts: ApproveOptions): 
       workItemId: opts.workItemId,
       evidence: { kind: 'intent_hash', payload: { algo: INTENT_HASH_ALGO, hash: intentHashFromSpec(opts.specFile) } },
     });
+  }
+  // §9.6: measure the PR merge state and record it before the review gate judges.
+  if (opts.checkMerge === true) {
+    await checkMergeAndSubmit(client, opts.workItemId);
   }
   const item = await client.call<WorkItem>('approve_gate', {
     workItemId: opts.workItemId,
@@ -498,20 +547,37 @@ export interface ProjectCreateOptions {
   kind?: string;
   repoPath?: string;
   specFolder?: string;
+  gitUrl?: string;
+  baseBranch?: string;
+  /** "owner/repo" — split into forgeOwner/forgeRepo (§9.6). */
+  forge?: string;
   /** stories.yaml — creates a first feature ("Sprint 1") and imports into it. */
   importPath?: string;
+}
+
+/** Parse "owner/repo" into its two halves; throws on a malformed handle. */
+function parseForge(forge: string): { forgeOwner: string; forgeRepo: string } {
+  const slash = forge.indexOf('/');
+  if (slash <= 0 || slash === forge.length - 1 || forge.indexOf('/', slash + 1) !== -1) {
+    throw new Error(`--forge expects owner/repo, got: ${forge}`);
+  }
+  return { forgeOwner: forge.slice(0, slash), forgeRepo: forge.slice(slash + 1) };
 }
 
 export async function projectCreateCommand(
   client: OahsClient,
   opts: ProjectCreateOptions,
 ): Promise<string> {
+  const forge = opts.forge !== undefined ? parseForge(opts.forge) : undefined;
   const project = await client.call<ProjectRollup['project']>('project_create', {
     name: opts.name,
     ...(opts.slug !== undefined ? { slug: opts.slug } : {}),
     ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
     ...(opts.repoPath !== undefined ? { repoPath: opts.repoPath } : {}),
     ...(opts.specFolder !== undefined ? { defaultSpecFolder: opts.specFolder } : {}),
+    ...(opts.gitUrl !== undefined ? { gitUrl: opts.gitUrl } : {}),
+    ...(opts.baseBranch !== undefined ? { baseBranch: opts.baseBranch } : {}),
+    ...(forge !== undefined ? { forgeOwner: forge.forgeOwner, forgeRepo: forge.forgeRepo } : {}),
   });
   const lines = [
     `projectId: ${project.id}`,

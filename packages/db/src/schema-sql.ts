@@ -53,8 +53,19 @@ CREATE TABLE IF NOT EXISTS projects (
   kind TEXT NOT NULL DEFAULT 'mixed',
   repo_path TEXT,
   default_spec_folder TEXT,
+  git_url TEXT,
+  base_branch TEXT,
+  forge_owner TEXT,
+  forge_repo TEXT,
   state TEXT NOT NULL DEFAULT 'active'
 );
+
+-- Phase 9.6 repo registry (portal parity): remote git URL + PR base branch +
+-- forge owner/repo. Idempotent upgrade for durable dirs.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS git_url TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS base_branch TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS forge_owner TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS forge_repo TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS projects_slug ON projects (slug);
 

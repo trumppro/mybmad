@@ -4,7 +4,7 @@ This suite is the **specification** of the spine engine. It was written *before*
 
 Run: `pnpm test` (in `packages/core`). History: the suite was born **113 red / 2 green** against `NotImplementedError` stubs; the in-memory reference engine (story "1"–"10" domain, `src/engine.ts`) turned it **115/115 green**. Two inter-cluster contradictions surfaced during implementation and were arbitrated below (marked ⚖); each required editing exactly one pin, recorded here.
 
-Files: `fsm-transitions` (14) · `blocked-overlay` (9) · `epic-lift` (4) · `feature-fsm` (19) · `review-dispatch` (8) · `agent-job-claim` (7) · `claims` (17) · `concurrency` (7) · `gates-evidence` (12) · `review-loop` (6) · `stories-import` (13) · `intent-hash` (12) · `intent-wired` (5) · `checkpoints-dispatch` (12) · `reconcile` (9).
+Files: `fsm-transitions` (14) · `blocked-overlay` (9) · `epic-lift` (4) · `feature-fsm` (19) · `review-dispatch` (8) · `agent-job-claim` (7) · `claims` (17) · `concurrency` (7) · `gates-evidence` (12) · `review-loop` (6) · `stories-import` (13) · `intent-hash` (12) · `intent-wired` (5) · `pr-gate` (2) · `checkpoints-dispatch` (12) · `reconcile` (9).
 
 ## Interpretation pins
 

@@ -49,6 +49,7 @@ interface SetGatePolicyIn {
     minApprovals?: number | undefined;
     requiredActorTypes?: ActorType[] | undefined;
     autoDispatchReviewer?: string | undefined;
+    requireMergedPr?: boolean | undefined;
   };
 }
 interface AuthzExplainIn { actorId: string; permission: string }
@@ -185,6 +186,10 @@ export function createCommandBus(
           kind?: 'code' | 'doc' | 'mixed' | undefined;
           repoPath?: string | undefined;
           defaultSpecFolder?: string | undefined;
+          gitUrl?: string | undefined;
+          baseBranch?: string | undefined;
+          forgeOwner?: string | undefined;
+          forgeRepo?: string | undefined;
         };
         return engine.createProject({
           actorId: ctx.actorId,
@@ -195,6 +200,10 @@ export function createCommandBus(
           ...(p.defaultSpecFolder !== undefined
             ? { defaultSpecFolder: p.defaultSpecFolder }
             : {}),
+          ...(p.gitUrl !== undefined ? { gitUrl: p.gitUrl } : {}),
+          ...(p.baseBranch !== undefined ? { baseBranch: p.baseBranch } : {}),
+          ...(p.forgeOwner !== undefined ? { forgeOwner: p.forgeOwner } : {}),
+          ...(p.forgeRepo !== undefined ? { forgeRepo: p.forgeRepo } : {}),
         });
       }
       case 'project_get': {
@@ -252,6 +261,10 @@ export function createCommandBus(
           kind?: 'code' | 'doc' | 'mixed' | undefined;
           repoPath?: string | undefined;
           defaultSpecFolder?: string | undefined;
+          gitUrl?: string | undefined;
+          baseBranch?: string | undefined;
+          forgeOwner?: string | undefined;
+          forgeRepo?: string | undefined;
         };
         return engine.updateProject({
           actorId: ctx.actorId,
@@ -262,6 +275,10 @@ export function createCommandBus(
           ...(p.defaultSpecFolder !== undefined
             ? { defaultSpecFolder: p.defaultSpecFolder }
             : {}),
+          ...(p.gitUrl !== undefined ? { gitUrl: p.gitUrl } : {}),
+          ...(p.baseBranch !== undefined ? { baseBranch: p.baseBranch } : {}),
+          ...(p.forgeOwner !== undefined ? { forgeOwner: p.forgeOwner } : {}),
+          ...(p.forgeRepo !== undefined ? { forgeRepo: p.forgeRepo } : {}),
         });
       }
       case 'project_archive': {
@@ -353,6 +370,9 @@ export function createCommandBus(
               : {}),
             ...(p.policy.autoDispatchReviewer !== undefined
               ? { autoDispatchReviewer: p.policy.autoDispatchReviewer }
+              : {}),
+            ...(p.policy.requireMergedPr !== undefined
+              ? { requireMergedPr: p.policy.requireMergedPr }
               : {}),
           },
           byActorId: ctx.actorId,

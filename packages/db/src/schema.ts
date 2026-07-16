@@ -98,6 +98,11 @@ export const projects = pgTable(
     kind: text('kind').notNull().default('mixed'), // 'code' | 'doc' | 'mixed'
     repoPath: text('repo_path'),
     defaultSpecFolder: text('default_spec_folder'),
+    /** §9.6 repo registry: remote git URL (SSH), PR base branch, forge owner/repo. */
+    gitUrl: text('git_url'),
+    baseBranch: text('base_branch'),
+    forgeOwner: text('forge_owner'),
+    forgeRepo: text('forge_repo'),
     state: text('state').notNull().default('active'), // 'active' | 'archived'
   },
   (t) => [uniqueIndex('projects_slug').on(t.slug)],

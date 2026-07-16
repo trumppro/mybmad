@@ -33,7 +33,7 @@ const fencingToken = z
 
 const evidenceSchema = z
   .object({
-    kind: z.enum(['test_run', 'git_diff', 'commit', 'halt_report', 'review_report', 'doc_lint', 'intent_hash']),
+    kind: z.enum(['test_run', 'git_diff', 'commit', 'halt_report', 'review_report', 'doc_lint', 'intent_hash', 'pr']),
     payload: z.record(z.string(), z.unknown()),
   })
   .describe('Raw machine-collected evidence; the core computes verdicts, the runner never does');
@@ -95,13 +95,17 @@ export const COMMANDS = [
   // -- projects (Phase 7 Wave 2, D-E): the unit of parallel work ----------------
   def(
     'project_create',
-    'Create a project — name + unique slug + kind, optionally bound to a repo (repoPath + defaultSpecFolder for the runner).',
+    'Create a project — name + unique slug + kind, optionally bound to a repo (repoPath + defaultSpecFolder for the runner) and a §9.6 repo registry (gitUrl SSH + baseBranch + forge owner/repo for PR integration).',
     z.object({
       name: z.string().min(1),
       slug: z.string().min(1).optional().describe('Addressable handle; derived from name when omitted'),
       kind: z.enum(['code', 'doc', 'mixed']).optional().describe("Default 'mixed'"),
       repoPath: z.string().optional(),
       defaultSpecFolder: z.string().optional(),
+      gitUrl: z.string().optional().describe('Remote git URL (SSH), e.g. git@github.com:org/repo.git'),
+      baseBranch: z.string().optional().describe('PR/merge target + dispatcher clone source (default main)'),
+      forgeOwner: z.string().optional().describe('Forge owner (GitHub org/user)'),
+      forgeRepo: z.string().optional().describe('Forge repo name'),
     }),
   ),
   def(
@@ -118,13 +122,17 @@ export const COMMANDS = [
   ),
   def(
     'project_update',
-    'Update project name/kind/repo binding. The slug never moves.',
+    'Update project name/kind/repo binding + the §9.6 repo registry (gitUrl/baseBranch/forge). The slug never moves.',
     z.object({
       projectId: z.string().min(1),
       name: z.string().min(1).optional(),
       kind: z.enum(['code', 'doc', 'mixed']).optional(),
       repoPath: z.string().optional(),
       defaultSpecFolder: z.string().optional(),
+      gitUrl: z.string().optional(),
+      baseBranch: z.string().optional(),
+      forgeOwner: z.string().optional(),
+      forgeRepo: z.string().optional(),
     }),
   ),
   def(
@@ -368,6 +376,10 @@ export const COMMANDS = [
           .string()
           .optional()
           .describe('§9.4: reviewer actor id — entering in_review materializes one review job per round for this actor'),
+        requireMergedPr: z
+          .boolean()
+          .optional()
+          .describe('§9.6: on review_approval, the done gate also requires the latest pr evidence to be a merge into the default branch'),
       }),
     }),
   ),

@@ -39,6 +39,7 @@ export { lintDoc, type DocLintResult, type LintDocOptions } from './doclint.js';
 // Phase 5 (roadmap §6): the teammate JOBS runtime — reply-only agent jobs
 // served through the rails with memory recall/learning, zero lifecycle calls.
 export { jobsLoop, runJobsOnce, type JobsOnceResult, type JobsRunnerOptions } from './jobs.js';
+export { GitHubForge, ForgeError, type PullRequest, type FetchImpl } from './forge.js';
 
 import { spawn, spawnSync } from 'node:child_process';
 import {
@@ -55,6 +56,7 @@ import { parse as parseYaml } from 'yaml';
 import type { OahsClient } from '@oahs/contracts';
 import { INTENT_HASH_ALGO, computeIntentHash, extractIntentRegion } from '@oahs/core';
 import type { BlockedReason, Claim, Evidence, WorkItem, WorkItemState } from '@oahs/core';
+import { GitHubForge, type FetchImpl } from './forge.js';
 
 export interface RunnerOptions {
   client: OahsClient;
@@ -103,6 +105,19 @@ export interface RunnerOptions {
   verificationAllowlist?: string[];
   /** Git remote to push claim branches to. Default 'origin'. */
   remote?: string;
+  /**
+   * §9.6: forge (GitHub) config for PR-on-dispatch. When set, the runner opens
+   * (or finds) a PR from claim/<claimId> into `baseBranch` after the push and
+   * submits `pr` evidence. Absent → BYO-without-forge keeps working unchanged.
+   */
+  forge?: {
+    owner: string;
+    repo: string;
+    baseBranch: string;
+    token: string;
+    baseUrl?: string;
+    fetchImpl?: FetchImpl;
+  };
   /** TEST ONLY: die at a specific point to exercise crash recovery. */
   failpoint?: 'before_report';
   /** Max wall time for one agent invocation (ms). Default 30 minutes. */
@@ -681,6 +696,8 @@ interface FinishArgs {
    * runner's full process.env.
    */
   verifyEnv: NodeJS.ProcessEnv;
+  /** §9.6: PR-on-dispatch config (forge client + base branch + title), when a project has a forge. */
+  forge?: { client: GitHubForge; baseBranch: string; title: string };
   submit: (kind: Evidence['kind'], payload: Record<string, unknown>) => Promise<void>;
 }
 
@@ -735,6 +752,35 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
     branch: args.branch,
     reachableOnRemote: lsRemote.includes(final),
   });
+
+  // 8.5 — §9.6: open (or find) the PR from the pushed claim branch and record it
+  // as `pr` evidence. Skip-with-log on any forge error — a forge hiccup must not
+  // fail an otherwise-good run, and a BYO project with no forge never gets here.
+  if (args.forge !== undefined && final !== args.baseline) {
+    try {
+      // Dedup on the SPINE's evidence (item-keyed), not the branch: after a
+      // crash + adoption the claim branch is fresh, so findPrByHead alone can't
+      // see a PR a prior run already opened. If `pr opened` evidence exists, the
+      // PR is already there — don't open a second one.
+      const priorOpened = (
+        await args.client.call<Evidence[]>('list_evidence', { workItemId: workItem.id })
+      ).some((e) => e.kind === 'pr' && e.payload['action'] === 'opened');
+      if (!priorOpened) {
+        const existing = await args.forge.client.findPrByHead({ head: args.branch });
+        const pr =
+          existing ??
+          (await args.forge.client.openPr({
+            head: args.branch,
+            base: args.forge.baseBranch,
+            title: args.forge.title,
+          }));
+        await args.submit('pr', { action: 'opened', number: pr.number, url: pr.url });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      defaultRunnerLog(`pr open skipped for ${workItem.externalKey}: ${message}`);
+    }
+  }
 
   // 9 — routing: the file says what the agent claims; the core decides.
   const status = normalizeStatus(spec.status);
@@ -916,6 +962,22 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
       inheritEnv: options.inheritEnv,
       extra: {},
     }),
+    // §9.6: a forge client for PR-on-dispatch, when the project has one.
+    ...(options.forge !== undefined
+      ? {
+          forge: {
+            client: new GitHubForge({
+              owner: options.forge.owner,
+              repo: options.forge.repo,
+              token: options.forge.token,
+              ...(options.forge.baseUrl !== undefined ? { baseUrl: options.forge.baseUrl } : {}),
+              ...(options.forge.fetchImpl !== undefined ? { fetchImpl: options.forge.fetchImpl } : {}),
+            }),
+            baseBranch: options.forge.baseBranch,
+            title: `${workItem.externalKey}: ${workItem.title}`,
+          },
+        }
+      : {}),
     submit,
   };
 

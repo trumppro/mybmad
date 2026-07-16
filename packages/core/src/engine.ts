@@ -657,6 +657,10 @@ class EngineImpl implements SpineEngine {
     kind?: ProjectKind;
     repoPath?: string;
     defaultSpecFolder?: string;
+    gitUrl?: string;
+    baseBranch?: string;
+    forgeOwner?: string;
+    forgeRepo?: string;
   }): Project {
     const slug = input.slug ?? EngineImpl.slugify(input.name);
     if (slug === '') throw new GuardFailedError('project slug must not be empty');
@@ -670,6 +674,10 @@ class EngineImpl implements SpineEngine {
       kind: input.kind ?? 'mixed',
       repoPath: input.repoPath ?? null,
       defaultSpecFolder: input.defaultSpecFolder ?? null,
+      gitUrl: input.gitUrl ?? null,
+      baseBranch: input.baseBranch ?? null,
+      forgeOwner: input.forgeOwner ?? null,
+      forgeRepo: input.forgeRepo ?? null,
       state: 'active',
     };
     this.projects.set(project.id, project);
@@ -699,6 +707,10 @@ class EngineImpl implements SpineEngine {
     kind?: ProjectKind;
     repoPath?: string;
     defaultSpecFolder?: string;
+    gitUrl?: string;
+    baseBranch?: string;
+    forgeOwner?: string;
+    forgeRepo?: string;
   }): Project {
     const project = this.mustGetProject(input.projectId);
     // The slug never silently moves on rename — it is the addressable handle.
@@ -706,6 +718,10 @@ class EngineImpl implements SpineEngine {
     if (input.kind !== undefined) project.kind = input.kind;
     if (input.repoPath !== undefined) project.repoPath = input.repoPath;
     if (input.defaultSpecFolder !== undefined) project.defaultSpecFolder = input.defaultSpecFolder;
+    if (input.gitUrl !== undefined) project.gitUrl = input.gitUrl;
+    if (input.baseBranch !== undefined) project.baseBranch = input.baseBranch;
+    if (input.forgeOwner !== undefined) project.forgeOwner = input.forgeOwner;
+    if (input.forgeRepo !== undefined) project.forgeRepo = input.forgeRepo;
     this.append('project', project.id, 'project.updated', input.actorId, {
       ...(input.name !== undefined ? { name: input.name } : {}),
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
@@ -713,6 +729,10 @@ class EngineImpl implements SpineEngine {
       ...(input.defaultSpecFolder !== undefined
         ? { defaultSpecFolder: input.defaultSpecFolder }
         : {}),
+      ...(input.gitUrl !== undefined ? { gitUrl: input.gitUrl } : {}),
+      ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
+      ...(input.forgeOwner !== undefined ? { forgeOwner: input.forgeOwner } : {}),
+      ...(input.forgeRepo !== undefined ? { forgeRepo: input.forgeRepo } : {}),
     });
     return { ...project };
   }
@@ -1359,6 +1379,16 @@ class EngineImpl implements SpineEngine {
       );
       if (!commitOk) {
         throw new GuardFailedError('final revision must be reachable on the remote (push is part of the HALT contract)');
+      }
+    }
+    // §9.6: gate-policy data can additionally require a MERGED PR — the latest
+    // `pr` evidence must be a merge into the default branch. Off by default:
+    // the machine-collected merge fact is measured by the runner/CLI, judged here.
+    if (this.gatePolicies.get('review_approval')?.requireMergedPr === true) {
+      const prEvidence = rows.filter((row) => row.evidence.kind === 'pr');
+      const latestPr = prEvidence[prEvidence.length - 1];
+      if (!latestPr || latestPr.evidence.payload['action'] !== 'merged_into_default') {
+        throw new GuardFailedError('review_approval requires a PR merged into the default branch (gate policy requireMergedPr)');
       }
     }
   }

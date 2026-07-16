@@ -161,13 +161,15 @@ export function buildProgram(): Command {
     .requiredOption('--gate <gate>', 'spec_approval | review_approval')
     .option('--pin <cmd>', 'pin a verification command (repeatable, spec_approval only)', collect, [])
     .option('--spec-file <path>', 'freeze the spec’s intent contract (spec_approval, §9.3): submits its hash before approving')
-    .action(async (workItemId: string, opts: ClientFlags & { gate: string; pin: string[]; specFile?: string }) =>
+    .option('--check-merge', 'measure the PR merge state via the forge and record it before approving (review_approval, §9.6; needs OAHS_GITHUB_TOKEN)')
+    .action(async (workItemId: string, opts: ClientFlags & { gate: string; pin: string[]; specFile?: string; checkMerge?: boolean }) =>
       emit(() =>
         approveCommand(clientFrom(opts), {
           workItemId,
           gate: opts.gate,
           pin: opts.pin,
           ...(opts.specFile !== undefined ? { specFile: opts.specFile } : {}),
+          ...(opts.checkMerge === true ? { checkMerge: true } : {}),
         }),
       ),
     );
@@ -587,8 +589,11 @@ export function buildProgram(): Command {
     .option('--kind <kind>', 'code | doc | mixed (default mixed)')
     .option('--repo <path>', 'local checkout the runner binds to')
     .option('--spec-folder <rel>', 'spec folder relative to the repo root')
+    .option('--git-url <url>', 'remote git URL (SSH), e.g. git@github.com:org/repo.git (§9.6)')
+    .option('--base-branch <branch>', 'PR/merge target + dispatcher clone source (default main, §9.6)')
+    .option('--forge <owner/repo>', 'forge owner/repo for PR integration, e.g. acme/widgets (§9.6)')
     .option('--import <storiesYaml>', 'create a first feature (Sprint 1) and import this backlog')
-    .action(async (name: string, opts: ClientFlags & { slug?: string; kind?: string; repo?: string; specFolder?: string; import?: string }) =>
+    .action(async (name: string, opts: ClientFlags & { slug?: string; kind?: string; repo?: string; specFolder?: string; gitUrl?: string; baseBranch?: string; forge?: string; import?: string }) =>
       emit(() =>
         projectCreateCommand(clientFrom(opts), {
           name,
@@ -596,6 +601,9 @@ export function buildProgram(): Command {
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
           ...(opts.repo !== undefined ? { repoPath: resolve(opts.repo) } : {}),
           ...(opts.specFolder !== undefined ? { specFolder: opts.specFolder } : {}),
+          ...(opts.gitUrl !== undefined ? { gitUrl: opts.gitUrl } : {}),
+          ...(opts.baseBranch !== undefined ? { baseBranch: opts.baseBranch } : {}),
+          ...(opts.forge !== undefined ? { forge: opts.forge } : {}),
           ...(opts.import !== undefined ? { importPath: opts.import } : {}),
         }),
       ),
@@ -848,14 +856,29 @@ export function buildProgram(): Command {
           const project = opts.project ?? loadProfile().directory?.project;
           let repoPath = opts.repo;
           let specFolder = opts.specFolder;
+          // §9.6: forge config for PR-on-dispatch — the project's forge fields +
+          // OAHS_GITHUB_TOKEN (the spine never sees the token). Absent → no PRs.
+          let forge: { owner: string; repo: string; baseBranch: string; token: string } | undefined;
           if (project !== undefined) {
             const record = await client.call<{
               slug: string;
               repoPath: string | null;
               defaultSpecFolder: string | null;
+              baseBranch: string | null;
+              forgeOwner: string | null;
+              forgeRepo: string | null;
             }>('project_get', { projectId: project });
             repoPath = repoPath ?? record.repoPath ?? undefined;
             specFolder = specFolder ?? record.defaultSpecFolder ?? undefined;
+            const token = process.env['OAHS_GITHUB_TOKEN'];
+            if (record.forgeOwner !== null && record.forgeRepo !== null && token !== undefined && token !== '') {
+              forge = {
+                owner: record.forgeOwner,
+                repo: record.forgeRepo,
+                baseBranch: record.baseBranch ?? 'main',
+                token,
+              };
+            }
           }
           if (repoPath === undefined || specFolder === undefined) {
             throw new Error(
@@ -868,6 +891,7 @@ export function buildProgram(): Command {
             specFolder,
             agentCmd: opts.agentCmd,
             ...envOpts,
+            ...(forge !== undefined ? { forge } : {}),
             ...(project !== undefined ? { projectId: project } : {}),
             ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),
             ...(opts.poll !== undefined ? { pollMs: Number(opts.poll) } : {}),

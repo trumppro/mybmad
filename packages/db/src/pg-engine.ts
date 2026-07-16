@@ -600,6 +600,10 @@ export class PgEngine {
       kind: row.kind as ProjectKind,
       repoPath: row.repoPath,
       defaultSpecFolder: row.defaultSpecFolder,
+      gitUrl: row.gitUrl ?? null,
+      baseBranch: row.baseBranch ?? null,
+      forgeOwner: row.forgeOwner ?? null,
+      forgeRepo: row.forgeRepo ?? null,
       state: row.state as Project['state'],
     };
   }
@@ -954,6 +958,10 @@ export class PgEngine {
     kind?: ProjectKind;
     repoPath?: string;
     defaultSpecFolder?: string;
+    gitUrl?: string;
+    baseBranch?: string;
+    forgeOwner?: string;
+    forgeRepo?: string;
   }): Promise<Project> {
     const slug = input.slug ?? PgEngine.slugify(input.name);
     if (slug === '') throw new GuardFailedError('project slug must not be empty');
@@ -968,6 +976,10 @@ export class PgEngine {
         kind: input.kind ?? 'mixed',
         repoPath: input.repoPath ?? null,
         defaultSpecFolder: input.defaultSpecFolder ?? null,
+        gitUrl: input.gitUrl ?? null,
+        baseBranch: input.baseBranch ?? null,
+        forgeOwner: input.forgeOwner ?? null,
+        forgeRepo: input.forgeRepo ?? null,
         state: 'active',
       };
       await tx.insert(projects).values(row);
@@ -998,6 +1010,10 @@ export class PgEngine {
     kind?: ProjectKind;
     repoPath?: string;
     defaultSpecFolder?: string;
+    gitUrl?: string;
+    baseBranch?: string;
+    forgeOwner?: string;
+    forgeRepo?: string;
   }): Promise<Project> {
     const row = await this.mustGetProjectRow(input.projectId);
     return this.db.transaction(async (tx) => {
@@ -1008,6 +1024,10 @@ export class PgEngine {
         ...(input.defaultSpecFolder !== undefined
           ? { defaultSpecFolder: input.defaultSpecFolder }
           : {}),
+        ...(input.gitUrl !== undefined ? { gitUrl: input.gitUrl } : {}),
+        ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
+        ...(input.forgeOwner !== undefined ? { forgeOwner: input.forgeOwner } : {}),
+        ...(input.forgeRepo !== undefined ? { forgeRepo: input.forgeRepo } : {}),
       };
       if (Object.keys(patch).length > 0) {
         await tx.update(projects).set(patch).where(eq(projects.id, row.id));
@@ -1882,6 +1902,18 @@ export class PgEngine {
       if (!commitOk) {
         throw new GuardFailedError(
           'final revision must be reachable on the remote (push is part of the HALT contract)',
+        );
+      }
+    }
+    // §9.6: gate-policy data can additionally require a MERGED PR (mirror of the
+    // reference engine). checkReviewEvidence runs BEFORE the transaction, so the
+    // policy read on this.db is safe.
+    if ((await this.getGatePolicy('review_approval')).requireMergedPr === true) {
+      const prEvidence = rows.filter((row) => row.kind === 'pr');
+      const latestPr = prEvidence[prEvidence.length - 1];
+      if (!latestPr || latestPr.payload['action'] !== 'merged_into_default') {
+        throw new GuardFailedError(
+          'review_approval requires a PR merged into the default branch (gate policy requireMergedPr)',
         );
       }
     }
