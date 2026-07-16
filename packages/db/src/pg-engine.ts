@@ -2439,4 +2439,24 @@ export class PgEngine {
         : await this.db.select().from(events).where(eq(events.streamId, streamId)).orderBy(asc(events.globalSeq));
     return rows.map((row) => this.eventFromRow(row));
   }
+
+  /** Per-event visibility (roadmap §8) — port of the memory engine's isEventVisibleTo. */
+  async isEventVisibleTo(event: SpineEvent, actorId: string): Promise<boolean> {
+    if (event.streamType !== 'thread') return true;
+    const role = await this.getGovernanceRole(actorId);
+    if (role === 'admin' || role === 'auditor' || actorId === this.systemActorId) return true;
+    const thread = (await this.db.select().from(threads).where(eq(threads.id, event.streamId)).limit(1))[0];
+    if (!thread || thread.visibility !== 'private') return true;
+    return this.isParticipant(thread, actorId);
+  }
+
+  /** Bulk visibility filter (roadmap §8): fetch private threads once, filter in memory. */
+  async eventsVisibleTo(actorId: string, streamId?: string): Promise<SpineEvent[]> {
+    const all = await this.events(streamId);
+    const role = await this.getGovernanceRole(actorId);
+    if (role === 'admin' || role === 'auditor' || actorId === this.systemActorId) return all;
+    const priv = await this.db.select().from(threads).where(eq(threads.visibility, 'private'));
+    const hidden = new Set(priv.filter((t) => !this.isParticipant(t, actorId)).map((t) => t.id));
+    return all.filter((event) => !(event.streamType === 'thread' && hidden.has(event.streamId)));
+  }
 }

@@ -478,3 +478,46 @@ describe('exit criterion round-trip at engine level (roadmap Phase 3)', () => {
     expect(narration.some((m) => m.body.includes('done'))).toBe(true);
   });
 });
+
+describe('event egress visibility (roadmap §8)', () => {
+  it("a non-participant cannot see a private thread's events; participant, auditor, and admin can", () => {
+    const rig = makeRig();
+    const auditor = rig.engine.createActor({
+      type: 'user',
+      displayName: 'Auditor',
+      governanceRole: 'auditor',
+    });
+
+    const thread = rig.engine.createThread({
+      actorId: rig.po.id,
+      kind: 'private',
+      visibility: 'private',
+    });
+    rig.engine.postMessage({ threadId: thread.id, actorId: rig.po.id, body: 'confidential' });
+
+    const onThread = (actorId: string): number =>
+      rig.engine.eventsVisibleTo(actorId).filter((e) => e.streamId === thread.id).length;
+
+    // The outsider is neither a participant nor an auditor → sees nothing on the
+    // private stream, not even the metadata that leaks its existence/author.
+    expect(onThread(rig.outsider.id)).toBe(0);
+    // Participant (creator), auditor, and governance admin all see the full trail.
+    expect(onThread(rig.po.id)).toBeGreaterThan(0);
+    expect(onThread(auditor.id)).toBeGreaterThan(0);
+    expect(onThread(rig.admin.id)).toBeGreaterThan(0);
+
+    // The per-event check the SSE relay uses agrees.
+    const evt = rig.engine.events(thread.id)[0]!;
+    expect(rig.engine.isEventVisibleTo(evt, rig.outsider.id)).toBe(false);
+    expect(rig.engine.isEventVisibleTo(evt, rig.po.id)).toBe(true);
+    expect(rig.engine.isEventVisibleTo(evt, auditor.id)).toBe(true);
+  });
+
+  it("an open thread's events are visible to everyone", () => {
+    const rig = makeRig();
+    const thread = rig.engine.createThread({ actorId: rig.po.id, kind: 'general' });
+    rig.engine.postMessage({ threadId: thread.id, actorId: rig.po.id, body: 'public' });
+    const seen = rig.engine.eventsVisibleTo(rig.outsider.id).filter((e) => e.streamId === thread.id);
+    expect(seen.length).toBeGreaterThan(0);
+  });
+});

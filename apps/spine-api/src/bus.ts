@@ -585,8 +585,10 @@ export function createCommandBus(
         return { awaitingSpec, awaitingReview };
       }
       case 'query_events': {
+        // Visibility-filtered (roadmap §8): a non-participant never sees a private
+        // thread's events, not even the metadata that leaks its existence/author.
         const p = parsed as QueryEventsIn;
-        return engine.events(p.streamId);
+        return engine.eventsVisibleTo(ctx.actorId, p.streamId);
       }
       case 'get_claims': {
         const p = parsed as WorkItemIn;

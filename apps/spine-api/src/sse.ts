@@ -53,6 +53,13 @@ export function registerEventStream(
   app: FastifyInstance,
   tail: EventTail,
   authenticate: (request: FastifyRequest) => ActorContext | null,
+  /**
+   * Per-connection visibility filter (roadmap §8): return false to withhold an
+   * event from this actor (e.g. a private thread they don't participate in). The
+   * cursor still advances past withheld events, so ids have gaps — Last-Event-ID
+   * resume is unaffected. Defaults to fully open for callers that don't filter.
+   */
+  isVisible: (event: SpineEvent, ctx: ActorContext) => boolean = () => true,
   options: EventStreamOptions = {},
 ): void {
   const pollMs = options.pollMs ?? 300;
@@ -91,6 +98,7 @@ export function registerEventStream(
     const flush = (): void => {
       for (const event of tail.after(cursor)) {
         cursor = event.globalSeq;
+        if (!isVisible(event, ctx)) continue; // withheld: cursor advances, id gaps
         res.write(`id: ${event.globalSeq}\ndata: ${JSON.stringify(event)}\n\n`);
       }
     };

@@ -1726,6 +1726,27 @@ class EngineImpl implements SpineEngine {
     const source = streamId === undefined ? this.eventLog : this.eventLog.filter((e) => e.streamId === streamId);
     return source.map((event) => ({ ...event, payload: { ...event.payload } }));
   }
+
+  /**
+   * Events an actor is allowed to see (roadmap §8): the full log minus events on
+   * `private` thread streams the actor does not participate in. Even metadata-only
+   * `message.posted` events leak the existence and author of a private thread, so
+   * they are masked. Auditors, governance admins, and the system actor see all —
+   * an auditor's whole job is to read the complete trail. Ids stay the global seq,
+   * so a filtered view has gaps; Last-Event-ID resume still works over them.
+   */
+  isEventVisibleTo(event: SpineEvent, actorId: string): boolean {
+    if (event.streamType !== 'thread') return true;
+    const role = this.getGovernanceRole(actorId);
+    if (role === 'admin' || role === 'auditor' || actorId === this.systemActorId) return true;
+    const thread = this.threads.get(event.streamId);
+    if (!thread || thread.visibility !== 'private') return true;
+    return this.isParticipant(thread, actorId);
+  }
+
+  eventsVisibleTo(actorId: string, streamId?: string): SpineEvent[] {
+    return this.events(streamId).filter((event) => this.isEventVisibleTo(event, actorId));
+  }
 }
 
 export function createEngine(options?: { wallClock?: boolean }): SpineEngine {

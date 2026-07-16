@@ -281,6 +281,16 @@ describe('sacred boundary + default-deny over HTTP', () => {
     expect(await reviewer.call<Message[]>('list_messages', { threadId: priv.id })).toHaveLength(1);
   });
 
+  it('query_events is visibility-filtered: a non-participant never sees a private thread; the creator and a governance admin do (roadmap §8)', async () => {
+    const priv = await po.call<Thread>('create_thread', { kind: 'private', visibility: 'private' });
+    await po.call('post_message', { threadId: priv.id, body: 'eyes only' });
+
+    const onPriv = (evs: SpineEvent[]): SpineEvent[] => evs.filter((e) => e.streamId === priv.id);
+    expect(onPriv(await outsider.call<SpineEvent[]>('query_events'))).toHaveLength(0);
+    expect(onPriv(await po.call<SpineEvent[]>('query_events')).length).toBeGreaterThan(0);
+    expect(onPriv(await admin.call<SpineEvent[]>('query_events')).length).toBeGreaterThan(0);
+  });
+
   it('only the job’s agent may complete a job (403 for anyone else)', async () => {
     const thread = await po.call<Thread>('create_thread', { kind: 'general' });
     await po.call('post_message', { threadId: thread.id, body: 'over to you', mentions: [agentActor.id] });
@@ -416,5 +426,47 @@ describe('SSE relay: GET /events/stream', () => {
     expect(frames.length).toBeGreaterThanOrEqual(2);
     expect(frames[0]!.id).toBe(resumeFrom + 1);
     expect(frames.every((f) => f.id > resumeFrom)).toBe(true);
+  });
+
+  it('a private thread is streamed to its participant but withheld from a bystander (roadmap §8)', async () => {
+    const insider = await admin.call<{ actor: Actor; token: string }>('create_actor', {
+      type: 'user',
+      displayName: 'SSE Insider',
+    });
+    const bystander = await admin.call<{ actor: Actor; token: string }>('create_actor', {
+      type: 'user',
+      displayName: 'SSE Bystander',
+    });
+    const insiderClient = makeClient({ baseUrl, token: insider.token });
+
+    const all = await admin.call<SpineEvent[]>('query_events');
+    const latest = all[all.length - 1]!.globalSeq;
+
+    // The bystander streams the new events while the insider creates a PRIVATE
+    // thread + posts, then an OPEN sentinel thread (visible to everyone).
+    const bystanderFrames = await collectFrames(
+      `/events/stream?since=${latest}`,
+      { authorization: `Bearer ${bystander.token}` },
+      (seen) => seen.some((f) => f.event.type === 'thread.created'),
+      async () => {
+        const priv = await insiderClient.call<Thread>('create_thread', {
+          kind: 'private',
+          visibility: 'private',
+        });
+        await insiderClient.call('post_message', { threadId: priv.id, body: 'secret' });
+        await insiderClient.call('create_thread', { kind: 'general' }); // open sentinel
+      },
+    );
+    // The bystander sees the open sentinel but NONE of the private thread's traffic.
+    expect(bystanderFrames.some((f) => f.event.type === 'thread.created')).toBe(true);
+    expect(bystanderFrames.some((f) => f.event.type === 'message.posted')).toBe(false);
+
+    // The insider (participant) replays the same range and DOES see the private post.
+    const insiderFrames = await collectFrames(
+      `/events/stream?since=${latest}`,
+      { authorization: `Bearer ${insider.token}` },
+      (seen) => seen.some((f) => f.event.type === 'message.posted'),
+    );
+    expect(insiderFrames.some((f) => f.event.type === 'message.posted')).toBe(true);
   });
 });

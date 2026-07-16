@@ -672,4 +672,8 @@ export interface SpineEngine {
     claimable?: boolean;
   }): WorkItem[];
   events(streamId?: string): SpineEvent[];
+  /** Events visible to an actor: the log minus private-thread streams they can't see (§8). */
+  eventsVisibleTo(actorId: string, streamId?: string): SpineEvent[];
+  /** Per-event visibility check (§8) — used by the SSE relay to filter each new event. */
+  isEventVisibleTo(event: SpineEvent, actorId: string): boolean;
 }

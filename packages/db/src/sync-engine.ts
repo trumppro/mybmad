@@ -112,6 +112,8 @@ const METHODS: Array<keyof SpineEngine> = [
   'listEvidence',
   'listWorkItems',
   'events',
+  'eventsVisibleTo',
+  'isEventVisibleTo',
 ];
 
 export interface PgSyncEngineOptions {

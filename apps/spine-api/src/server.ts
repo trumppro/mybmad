@@ -123,7 +123,13 @@ export async function buildServer(options: BuildServerOptions): Promise<FastifyI
   });
 
   registerMcpRoute(app, bus, authenticate);
-  registerEventStream(app, pollingEventTail(engine), authenticate, options.eventStream ?? {});
+  registerEventStream(
+    app,
+    pollingEventTail(engine),
+    authenticate,
+    (event, ctx) => engine.isEventVisibleTo(event, ctx.actorId),
+    options.eventStream ?? {},
+  );
   registerUiRoutes(app);
 
   return app;
