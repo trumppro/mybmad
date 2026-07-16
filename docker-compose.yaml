@@ -7,16 +7,19 @@
 # required to run. The postgres service is kept behind a profile for the future
 # DATABASE_URL path (roadmap §11, Phase 11 story 1); the spine does not use it yet.
 #   docker compose --profile postgres up -d postgres
+#
+# The `dispatcher` (§10.2) runs under the `runtime` profile — the ONLY service
+# holding the docker socket AND the model keys (.env). The spine service holds
+# NEITHER: it decides what runs, it does not run it (§4.3, D13).
+#   docker compose --profile runtime up -d --build dispatcher
 services:
   oahs:
     build:
       context: .
       dockerfile: apps/oahs/Dockerfile
     image: oahs:local
-    # Gateway creds (OAHS_MODEL_*) live in .env; optional so `up` works without it.
-    env_file:
-      - path: .env
-        required: false
+    # §10.2: the spine holds NO model keys — OAHS_MODEL_* moved to the `runtime`
+    # profile (the dispatcher/agent runtime). §0.1: the spine is not the gateway.
     environment:
       OAHS_ADMIN_TOKEN: ${OAHS_ADMIN_TOKEN:-change-me}
       OAHS_PORT: ${OAHS_PORT:-4521}
@@ -38,6 +41,57 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    restart: unless-stopped
+
+  # §10.2 — the container dispatcher: claims ready items on the spine and runs
+  # each in a one-shot agent-runtime container. It is the SOLE holder of the
+  # docker socket and the model keys; the spine service above has neither.
+  dispatcher:
+    profiles: ["runtime"] # opt-in: `docker compose --profile runtime up dispatcher`
+    build:
+      context: .
+      dockerfile: apps/oahs/Dockerfile.runner
+      args:
+        AGENT_NPM: ${OAHS_AGENT_NPM:-}
+    image: oahs-runner:local
+    depends_on:
+      oahs:
+        condition: service_healthy
+    # The dispatcher (host) holds the model keys (OAHS_MODEL_*) and AUTO-FORWARDS
+    # them to the AGENT child inside each container via the inner `oahs work
+    # --agent-env` (see `oahs dispatch` in cli.ts) — never into a container's
+    # scoped-token env, never to the spine (§0.1). Optional so the profile still
+    # builds without a filled .env.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # The dispatcher authenticates to the spine as a runner identity, then mints
+      # a per-claim scoped token for each container (§10.1). OAHS_TOKEN is the
+      # STATIC runner token — it never enters an agent container.
+      OAHS_URL: http://oahs:${OAHS_PORT:-4521}
+      OAHS_TOKEN: ${OAHS_RUNNER_TOKEN:-}
+    # The ONE process that may spawn work → the ONE socket binding (§4.3). The
+    # dispatcher reads only the spine, never the repo, so it needs the socket
+    # alone — not a repo mount of its own.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # `oahs dispatch` — poll+claim on the host, container-per-claim. --repo is the
+    # HOST-daemon path (docker-out-of-docker: the sibling `docker run -v` bind is
+    # resolved by the host, not inside this container), so it must be ABSOLUTE.
+    command:
+      [
+        "oahs",
+        "dispatch",
+        "--image",
+        "oahs-runner:local",
+        "--repo",
+        "${OAHS_REPO_PATH:?set OAHS_REPO_PATH to the absolute host path of the checkout}",
+        "--spec-folder",
+        "${OAHS_SPEC_FOLDER:-delivery/main}",
+        "--agent-cmd",
+        "${OAHS_AGENT_CMD:-echo no-agent}",
+      ]
     restart: unless-stopped
 
   postgres:

@@ -11,6 +11,8 @@ import { resolve } from 'node:path';
 
 import { Command } from 'commander';
 import { makeClient, type OahsClient } from '@oahs/contracts';
+// Type-only (erased): @oahs/runner is imported LAZILY at the call sites below.
+import type { RunnerOptions } from '@oahs/runner';
 
 import {
   actorCreateCommand,
@@ -836,6 +838,28 @@ export function buildProgram(): Command {
           // LAZY import: the runner is a fixed interface that may still be a
           // stub — the rest of the CLI must never pay for (or break on) it.
           const runner = await import('@oahs/runner');
+          // §10.2: ASSIGNED mode — this process is a dispatcher's container. The
+          // dispatcher pre-claimed on the host and handed us a complete
+          // assignment + a scoped OAHS_TOKEN via env; run exactly that one item
+          // with no poll/claim/context read. A normal return exits 0 (the run
+          // self-reported to the spine); a throw exits non-zero and the
+          // dispatcher blocks the item.
+          const assignmentRaw = process.env['OAHS_ASSIGNMENT'];
+          if (assignmentRaw !== undefined && assignmentRaw !== '') {
+            if (opts.repo === undefined || opts.specFolder === undefined) {
+              throw new Error('assigned mode (OAHS_ASSIGNMENT) requires --repo and --spec-folder');
+            }
+            const assignment = JSON.parse(assignmentRaw) as NonNullable<RunnerOptions['assignment']>;
+            await runner.runOnce({
+              client,
+              repoPath: resolve(opts.repo),
+              specFolder: opts.specFolder,
+              agentCmd: opts.agentCmd,
+              assignment,
+              ...envOpts,
+            });
+            return;
+          }
           if (opts.jobs === true) {
             // The served agent is ALWAYS the authenticated token's actor —
             // whoami, never a flag (owner-scoping mirrors the memory rails).
@@ -905,6 +929,106 @@ export function buildProgram(): Command {
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           process.stderr.write(`oahs work failed — ${err.name}: ${err.message}\n`);
+          process.exitCode = 1;
+        }
+      },
+    );
+
+  // -- Phase 10 (roadmap §4.3, §10.2): the container dispatcher ------------------
+  // The ONE process that spawns work. It claims + mints + reads context on the
+  // HOST (static token) and runs each claim in a container carrying ONLY the
+  // scoped token from §10.1 — never the static/admin token, never OAHS_MODEL_*.
+  withClientFlags(program.command('dispatch'))
+    .description('§10.2 dispatcher: claim ready items on the host and run each in a container (the container gets a job-scoped token, never the static token or model keys)')
+    .requiredOption('--image <ref>', 'agent-runtime container image (coding CLI + git + the oahs bin)')
+    .option('--repo <path>', 'project git checkout bind-mounted into the container (or the --project record’s repoPath)')
+    .option('--spec-folder <rel>', 'spec folder relative to the repo root (or the --project record’s defaultSpecFolder)')
+    .option('--project <projectId>', 'bind to a project (id or slug): dispatch ONLY its work items, repo + spec folder from the record')
+    .option('--feature <featureId>', 'only dispatch this feature’s work items')
+    .option('--agent-cmd <template>', 'agent command template run inside the container (required)')
+    .option('--once', 'run at most one dispatch cycle, then exit')
+    .option('--poll <ms>', 'poll interval in milliseconds')
+    .option('--claim-ttl <ms>', 'claim lease TTL (ms; default: engine 15 min)')
+    .option(
+      '--agent-env <KEY=VAL>',
+      'model/agent env forwarded to the AGENT child INSIDE the container (repeatable); kept out of the container’s scoped-token env',
+      collect,
+      [],
+    )
+    .action(
+      async (
+        opts: ClientFlags & {
+          image: string;
+          repo?: string;
+          specFolder?: string;
+          project?: string;
+          feature?: string;
+          agentCmd?: string;
+          once?: boolean;
+          poll?: string;
+          claimTtl?: string;
+          agentEnv?: string[];
+        },
+      ) => {
+        try {
+          if (opts.agentCmd === undefined) throw new Error('--agent-cmd is required');
+          const client = clientFrom(opts);
+          const explicitAgentEnv: Record<string, string> = {};
+          for (const pair of opts.agentEnv ?? []) {
+            const eq = pair.indexOf('=');
+            if (eq <= 0) throw new Error(`--agent-env expects KEY=VALUE, got: ${pair}`);
+            explicitAgentEnv[pair.slice(0, eq)] = pair.slice(eq + 1);
+          }
+          const { withForwardedModelEnv } = await import('./dispatcher.js');
+          // §10.2: forward the dispatcher's model creds (OAHS_MODEL_*, compose
+          // `runtime` profile) to the AGENT child — this is what makes the compose
+          // profile work without hand-listing keys; they never reach the spine or
+          // a container's scoped-token env.
+          const agentEnv = withForwardedModelEnv(explicitAgentEnv, process.env);
+          const project = opts.project ?? loadProfile().directory?.project;
+          let repoPath = opts.repo;
+          let specFolder = opts.specFolder;
+          if (project !== undefined) {
+            const record = await client.call<{
+              repoPath: string | null;
+              defaultSpecFolder: string | null;
+              forgeOwner: string | null;
+              forgeRepo: string | null;
+            }>('project_get', { projectId: project });
+            repoPath = repoPath ?? record.repoPath ?? undefined;
+            specFolder = specFolder ?? record.defaultSpecFolder ?? undefined;
+            // §10.2: PR-on-dispatch (§9.6) is not wired through the container
+            // model yet — it moves to the dispatcher-push path (§10.3/§10.4). Warn
+            // so a forge project’s missing PR is expected, not a silent surprise.
+            if (record.forgeOwner !== null && record.forgeRepo !== null) {
+              process.stderr.write(
+                `oahs dispatch: project ${project} has a forge (${record.forgeOwner}/${record.forgeRepo}); ` +
+                  'container runs push the claim branch and reach in_review WITHOUT opening a PR ' +
+                  '(PR-on-dispatch lands with §10.3/§10.4). Use `oahs work` for inline PRs.\n',
+              );
+            }
+          }
+          if (repoPath === undefined || specFolder === undefined) {
+            throw new Error('dispatch requires --repo and --spec-folder (or a --project whose record binds them)');
+          }
+          const { dispatchLoop } = await import('./dispatcher.js');
+          await dispatchLoop({
+            client,
+            baseUrl: opts.url,
+            image: opts.image,
+            repoPath: resolve(repoPath),
+            specFolder,
+            agentCmd: opts.agentCmd,
+            ...(Object.keys(agentEnv).length > 0 ? { agentEnv } : {}),
+            ...(project !== undefined ? { projectId: project } : {}),
+            ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),
+            ...(opts.poll !== undefined ? { pollMs: Number(opts.poll) } : {}),
+            ...(opts.claimTtl !== undefined ? { claimTtlMs: Number(opts.claimTtl) } : {}),
+            ...(opts.once === true ? { once: true } : {}),
+          });
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          process.stderr.write(`oahs dispatch failed — ${err.name}: ${err.message}\n`);
           process.exitCode = 1;
         }
       },

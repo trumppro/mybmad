@@ -1,0 +1,68 @@
+# oahs AGENT-RUNTIME image (product-roadmap.md §4.3, §10.2). This is the image
+# the §10.2 dispatcher runs one container per claim from:
+#
+#   docker run --rm -v <repo>:/repo \
+#     -e OAHS_URL -e OAHS_TOKEN -e OAHS_ASSIGNMENT \
+#     oahs-runner:local oahs work --once --repo /repo --spec-folder <sf> --agent-cmd <cmd>
+#
+# It carries the CLI + git + a coding-agent binary, and NOTHING that decides what
+# runs: the dispatcher injects a job-scoped, mutation-only token (§10.1) and a
+# pre-read assignment, so the container never holds the static/admin token, and
+# model keys reach only the AGENT child (via `oahs work --agent-env`, §8), never
+# the spine. The build differs from apps/oahs/Dockerfile ONLY in the runtime
+# stage: git + an agent binary, and `oahs` on PATH instead of a serve entrypoint.
+#
+# Node 22 matches .nvmrc and the esbuild target (node22).
+
+# ---------------------------------------------------------------------------
+FROM node:22-slim AS builder
+ENV PNPM_HOME=/pnpm
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+WORKDIR /repo
+
+# Manifests first — a dependency layer that caches until a package.json changes.
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY packages/contracts/package.json packages/contracts/
+COPY packages/core/package.json packages/core/
+COPY packages/db/package.json packages/db/
+COPY packages/gateway/package.json packages/gateway/
+COPY packages/runner/package.json packages/runner/
+COPY apps/oahs/package.json apps/oahs/
+COPY apps/spine-api/package.json apps/spine-api/
+
+RUN pnpm install --ignore-scripts --filter "@oahs/cli..."
+
+COPY packages/ packages/
+COPY apps/ apps/
+RUN pnpm --filter @oahs/cli run build
+RUN pnpm --filter @oahs/cli deploy --prod /app
+
+# ---------------------------------------------------------------------------
+FROM node:22-slim AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+
+# git + ssh: the runner clones/commits/pushes claim branches in the mounted repo.
+# The coding agent is optional and operator-selected: pass a build-arg to bake a
+# published CLI (e.g. AGENT_NPM=@anthropic-ai/claude-code), or mount/inherit your
+# own and point --agent-cmd at it.
+ARG AGENT_NPM=""
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
+  && rm -rf /var/lib/apt/lists/* \
+  && if [ -n "$AGENT_NPM" ]; then npm install -g "$AGENT_NPM"; fi
+
+# Run unprivileged. /repo is the bind-mounted worktree the dispatcher provides.
+RUN useradd --system --uid 10001 --create-home runner \
+  && mkdir -p /repo && chown runner:runner /repo
+COPY --from=builder --chown=runner:runner /app ./
+
+# `oahs` on PATH so the dispatcher's `docker run <image> oahs work --once …`
+# resolves — no serve ENTRYPOINT here (this image never serves the spine).
+RUN printf '#!/bin/sh\nexec node /app/bin/oahs.mjs "$@"\n' > /usr/local/bin/oahs \
+  && chmod 755 /usr/local/bin/oahs
+
+USER runner
+WORKDIR /repo
+CMD ["oahs", "--help"]

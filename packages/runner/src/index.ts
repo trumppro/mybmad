@@ -139,6 +139,22 @@ export interface RunnerOptions {
    * that rely on inherited configuration.
    */
   inheritEnv?: boolean;
+  /**
+   * §10.2 — ASSIGNED dispatch: run this exact, pre-claimed item instead of
+   * polling and claiming. The dispatcher (which holds the static token) claims
+   * on the host, mints a scoped token, reads the task context, and hands the
+   * container a complete assignment; the container then runs `oahs work --once`
+   * under a MUTATION-ONLY scoped token (`client` here IS that token). No poll,
+   * no `claim_task`, no `get_task_context` — every spine read is pre-supplied,
+   * so the run needs nothing outside the §10.1 dispatch allowlist. The forge PR
+   * path (which reads `list_evidence`) is left to the dispatcher and stays off
+   * here.
+   */
+  assignment?: {
+    claim: Claim;
+    workItem: WorkItem;
+    entryState: WorkItemState;
+  };
 }
 
 export interface RunOnceResult {
@@ -755,6 +771,12 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
     branch: args.branch,
   });
 
+  // NOTE (§10.2): git is synchronous (spawnSync), so a push that runs longer
+  // than the lease TTL blocks the heartbeat timer and lapses BOTH the lease and
+  // the scoped token together — a container run whose single push exceeds the
+  // TTL (default 15 min, renewed right above at the git_diff submit) is blocked
+  // `other`. Pathological only (a >15-min single push); the lever is a larger
+  // `--claim-ttl`, and §10.5's reaper reclaims the lease either way.
   git(['push', args.remote, args.branch], args.repoPath);
   const lsRemote = git(['ls-remote', args.remote, `refs/heads/${args.branch}`], args.repoPath);
   await args.submit('commit', {
@@ -916,36 +938,44 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   const remote = options.remote ?? 'origin';
   const allowlist = options.verificationAllowlist ?? DEFAULT_VERIFICATION_ALLOWLIST;
 
-  // 1 — poll. Order of the API response = import order; take the first.
-  // Fallback: an in_progress item with no live claim is a crashed dispatch.
-  const listUnblocked = async (state: WorkItemState): Promise<WorkItem[]> =>
-    (
-      await client.call<WorkItem[]>('list_work_items', {
-        state,
-        claimable: true,
-        ...(options.featureId !== undefined ? { featureId: options.featureId } : {}),
-        ...(options.projectId !== undefined ? { projectId: options.projectId } : {}),
-      })
-    ).filter((item) => item.blockedReason === null);
-  let candidates = await listUnblocked('ready_for_dev');
-  if (candidates.length === 0) candidates = await listUnblocked('in_progress');
-  const picked = candidates[0];
-  if (picked === undefined) return { dispatched: false };
-
+  // 1 — obtain a claim. §10.2 ASSIGNED mode: the dispatcher already claimed on
+  // the host, so skip poll + claim_task entirely (the scoped `client` cannot do
+  // either) and run the handed-down claim. Otherwise poll and claim as usual:
+  // response order = import order, take the first; an in_progress item with no
+  // live claim is a crashed dispatch to adopt.
   let claim: Claim;
-  try {
-    claim = await client.call<Claim>('claim_task', {
-      workItemId: picked.id,
-      ...(options.claimTtlMs !== undefined ? { ttlMs: options.claimTtlMs } : {}),
-    });
-  } catch (error) {
-    if (isRemoteError(error, 'ConflictError')) {
-      log(`lost the claim race for ${picked.externalKey}`);
-      return { dispatched: false, details: `lost the claim race for ${picked.externalKey}` };
+  if (options.assignment !== undefined) {
+    claim = options.assignment.claim;
+    log(`dispatch ${options.assignment.workItem.externalKey} (assigned claim ${claim.id})`);
+  } else {
+    const listUnblocked = async (state: WorkItemState): Promise<WorkItem[]> =>
+      (
+        await client.call<WorkItem[]>('list_work_items', {
+          state,
+          claimable: true,
+          ...(options.featureId !== undefined ? { featureId: options.featureId } : {}),
+          ...(options.projectId !== undefined ? { projectId: options.projectId } : {}),
+        })
+      ).filter((item) => item.blockedReason === null);
+    let candidates = await listUnblocked('ready_for_dev');
+    if (candidates.length === 0) candidates = await listUnblocked('in_progress');
+    const picked = candidates[0];
+    if (picked === undefined) return { dispatched: false };
+
+    try {
+      claim = await client.call<Claim>('claim_task', {
+        workItemId: picked.id,
+        ...(options.claimTtlMs !== undefined ? { ttlMs: options.claimTtlMs } : {}),
+      });
+    } catch (error) {
+      if (isRemoteError(error, 'ConflictError')) {
+        log(`lost the claim race for ${picked.externalKey}`);
+        return { dispatched: false, details: `lost the claim race for ${picked.externalKey}` };
+      }
+      throw error;
     }
-    throw error;
+    log(`dispatch ${picked.externalKey} (claim ${claim.id})`);
   }
-  log(`dispatch ${picked.externalKey} (claim ${claim.id})`);
 
   // §10.1: mint a job-scoped token for the dispatch MUTATIONS. Reads, poll,
   // claim, heartbeat and minting stay on the static client.
@@ -976,10 +1006,14 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   // eslint-disable-next-line no-inner-declarations
   async function runClaimed(): Promise<RunOnceResult> {
 
-  const context = await client.call<{ workItem: WorkItem; entryState: WorkItemState }>(
-    'get_task_context',
-    { workItemId: claim.workItemId },
-  );
+  // §10.2: in ASSIGNED mode the context is pre-supplied by the dispatcher (the
+  // scoped client cannot call get_task_context); otherwise read it live.
+  const context =
+    options.assignment !== undefined
+      ? { workItem: options.assignment.workItem, entryState: options.assignment.entryState }
+      : await client.call<{ workItem: WorkItem; entryState: WorkItemState }>('get_task_context', {
+          workItemId: claim.workItemId,
+        });
   const workItem = context.workItem;
   const specRel = join(options.specFolder, workItem.specPath);
   const branch = `claim/${claim.id}`;
@@ -1020,8 +1054,14 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
       inheritEnv: options.inheritEnv,
       extra: {},
     }),
-    // §9.6: a forge client for PR-on-dispatch, when the project has one.
-    ...(options.forge !== undefined
+    // §9.6: a forge client for PR-on-dispatch, when the project has one. §10.2:
+    // never in ASSIGNED mode — PR-on-dispatch reads `list_evidence`, outside the
+    // scoped allowlist. In the container model the run still pushes the claim
+    // branch and reaches in_review here; opening the PR moves to the
+    // dispatcher-push path (§10.3/§10.4, host static token), so a container run
+    // currently lands the branch WITHOUT a PR until that story wires it. BYO
+    // `oahs work` (no assignment) opens the PR inline, unchanged.
+    ...(options.forge !== undefined && options.assignment === undefined
       ? {
           forge: {
             client: new GitHubForge({

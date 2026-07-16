@@ -49,6 +49,24 @@ describe('TokenStore.issueScoped / resolve expiry (§10.1)', () => {
     const token = store.issue('actor_1');
     expect(store.resolve(token, Number.MAX_SAFE_INTEGER)).not.toBeNull();
   });
+
+  it('renewScopedForClaim extends a token to the fresh lease so a long run does not lose its credential (§10.2)', () => {
+    const store = new TokenStore();
+    const token = store.issueScoped('actor_1', { claimId: 'c1', workItemId: 'w1', allowedCommands: ['heartbeat'], expiresAt: 1_000 });
+    // Past the original expiry the token is dead...
+    expect(store.resolve(token, 1_500)).toBeNull();
+    // ...but a heartbeat that renewed the lease renews the token to match.
+    store.renewScopedForClaim('c1', 2_000);
+    expect(store.resolve(token, 1_500)).not.toBeNull();
+    expect(store.resolve(token, 2_000)).toBeNull(); // still dies at the NEW expiry
+    // Renewal never SHORTENS (a stale heartbeat cannot cut a run short) and only
+    // touches tokens for the named claim.
+    store.renewScopedForClaim('c1', 1_200);
+    expect(store.resolve(token, 1_900)).not.toBeNull();
+    const other = store.issueScoped('actor_2', { claimId: 'c2', workItemId: 'w2', allowedCommands: ['heartbeat'], expiresAt: 1_000 });
+    store.renewScopedForClaim('c1', 9_000);
+    expect(store.resolve(other, 1_500)).toBeNull(); // c2 untouched
+  });
 });
 
 // -- bus enforcement end-to-end ---------------------------------------------
@@ -113,11 +131,24 @@ describe('scoped-token bus enforcement (§10.1)', () => {
     expect(await status(app, ADMIN, 'mint_claim_token', { claimId: claim.id })).toBe(403);
   });
 
-  it('a scoped token may call its allowlist for its OWN claim', async () => {
+  it('a scoped token may call its allowlist for its OWN claim, and its heartbeat renews its own token (§10.2)', async () => {
     const app = await makeApp();
-    const { scoped, claim } = await setup(app);
-    // heartbeat is in the allowlist and names this claim → allowed.
-    await call(app, scoped, 'heartbeat', { claimId: claim.id, fencingToken: claim.fencingToken });
+    const store = new TokenStore();
+    const app2 = await buildServer({ engine: createMemoryEngine({ wallClock: true }), tokenStore: store, adminToken: ADMIN });
+    const { scoped, claim } = await setup(app2);
+    // heartbeat is in the allowlist and names this claim → allowed; it also
+    // renews THIS scoped token to the fresh lease (§10.2), never shortening it.
+    await call(app2, scoped, 'heartbeat', { claimId: claim.id, fencingToken: claim.fencingToken });
+    // After the heartbeat the token's expiry EQUALS the claim's live lease — the
+    // token tracks the heartbeated claim. (A frozen/unwired token would keep its
+    // mint-time expiry, which lags the renewed lease, so `toBe` catches a
+    // removed renewal call where `>=` would not.)
+    const after = store.resolve(scoped)!.expiresAt!;
+    const live = (await call<Claim[]>(app2, ADMIN, 'list_claims', {})).find((c) => c.id === claim.id)!;
+    expect(after).toBe(live.leaseExpiresAt);
+    // (the plain-app variant still exercises the allowlist path)
+    const s2 = await setup(app);
+    await call(app, s2.scoped, 'heartbeat', { claimId: s2.claim.id, fencingToken: s2.claim.fencingToken });
   });
 
   it('a scoped token calling a command OUTSIDE its allowlist → 403 (scope)', async () => {

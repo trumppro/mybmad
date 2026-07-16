@@ -120,6 +120,27 @@ export class TokenStore {
   }
 
   /**
+   * §10.2: extend every live scoped token bound to `claimId` out to `expiresAt`
+   * (the claim's freshly heartbeated lease). The container that runs a claim
+   * holds a MUTATION-ONLY token it can neither re-mint nor mint anew, so its
+   * credential would otherwise freeze at the lease-as-of-mint and die mid-run on
+   * any dispatch longer than the initial TTL. Renewing on heartbeat makes the
+   * token track the claim's life: the container sustains it with the very
+   * heartbeats it already sends, and a crashed container's token lapses with its
+   * lease. Never SHORTENS a token (a stale heartbeat cannot cut a run short).
+   */
+  renewScopedForClaim(claimId: string, expiresAt: number): void {
+    let changed = false;
+    for (const record of this.byHash.values()) {
+      if (record.claimId === claimId && record.expiresAt !== undefined && expiresAt > record.expiresAt) {
+        record.expiresAt = expiresAt;
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+  }
+
+  /**
    * Issued-token inventory: actor id + count, nothing else. The store holds
    * only sha256 hashes, so there is no secret HERE to leak — but the wire
    * gets counts, not hashes. Admin bootstrap entries are configuration and

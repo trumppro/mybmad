@@ -14,29 +14,29 @@ Pin: `pnpm -C apps/spine-api test`
 
 Tests first (`apps/spine-api/test/auth.test.ts` + a bus test):
 
-- [ ] `mint_claim_token(claimId)` by the claim holder returns a token that `resolve()`s
+- [x] `mint_claim_token(claimId)` by the claim holder returns a token that `resolve()`s
       to a record scoped `{actorId, claimId, allowedCommands, expiresAt}`.
-- [ ] A scoped token calling a command outside its allowlist → `PermissionDeniedError`
+- [x] A scoped token calling a command outside its allowlist → `PermissionDeniedError`
       (`scope`); calling an allowed command for a **different** claim → denied; after
       `expiresAt` → denied (unauthenticated-equivalent, 401).
-- [ ] The allowlist is exactly `[heartbeat, submit_evidence, advance_state, block_task,
+- [x] The allowlist is exactly `[heartbeat, submit_evidence, advance_state, block_task,
       release_claim]`; `mint_claim_token` itself is not in it (no self-minting chains).
-- [ ] The static runner token still works for `list_work_items`/`claim_task`.
+- [x] The static runner token still works for `list_work_items`/`claim_task`.
 
 Implementation:
 
-- [ ] `apps/spine-api/src/auth.ts`: extend `ResolvedToken` (currently `{actorId,
+- [x] `apps/spine-api/src/auth.ts`: extend `ResolvedToken` (currently `{actorId,
       isAdmin}`) with optional `claimId?`, `allowedCommands?: string[]`,
       `expiresAt?: number`; `resolve()` returns `null` when `expiresAt` has passed;
       persist the new fields in `PersistShape`. Add `issueScoped(actorId, scope)`.
-- [ ] `apps/spine-api/src/server.ts` `authenticate()`: on a scoped token, stamp the
+- [x] `apps/spine-api/src/server.ts` `authenticate()`: on a scoped token, stamp the
       scope onto `ActorContext` (`ctx.scope`).
-- [ ] `apps/spine-api/src/bus.ts`: before dispatching a command, if `ctx.scope` is
+- [x] `apps/spine-api/src/bus.ts`: before dispatching a command, if `ctx.scope` is
       present, enforce `command ∈ allowedCommands` and (for claim-bearing commands) the
       `claimId` matches the body's target claim; else 403.
-- [ ] Contracts `mint_claim_token` def (input `{claimId}`, output `{token, expiresAt}`);
+- [x] Contracts `mint_claim_token` def (input `{claimId}`, output `{token, expiresAt}`);
       bus case: only the live claim holder may mint, `expiresAt = lease expiry`.
-- [ ] `packages/runner/src/index.ts`: after `claim_task`, call `mint_claim_token` and use
+- [x] `packages/runner/src/index.ts`: after `claim_task`, call `mint_claim_token` and use
       the scoped token for all dispatch mutations; keep the static token only for the
       poll/claim client.
 
@@ -47,26 +47,26 @@ Pin: `pnpm -C apps/oahs test`
 Tests first (`apps/oahs/test/dispatcher.test.ts`, new — with an injectable spawner so no
 real Docker in CI, the way the supervisor test injects loops):
 
-- [ ] `oahs dispatch --once` claims a ready item, calls the (fake) container spawner with
+- [x] `oahs dispatch --once` claims a ready item, calls the (fake) container spawner with
       an argv containing the image, a `--rm` flag, the mounted repo, and env carrying the
       scoped token from 10.1 but **not** the static admin/runner token nor `OAHS_MODEL_*`.
-- [ ] On spawner exit 0 the dispatcher does not itself advance state (the in-container
+- [x] On spawner exit 0 the dispatcher does not itself advance state (the in-container
       `oahs work --once` did); on spawner non-zero it blocks the item `other` with the
       captured tail.
-- [ ] Exactly one docker-socket holder: the dispatcher; the spine process never
+- [x] Exactly one docker-socket holder: the dispatcher; the spine process never
       references a socket (grep test over `apps/spine-api/src`).
 
 Implementation:
 
-- [ ] `apps/oahs/src/dispatcher.ts`: poll+claim identical to `workLoop`
+- [x] `apps/oahs/src/dispatcher.ts`: poll+claim identical to `workLoop`
       (`packages/runner/src/index.ts`), then `spawn('docker', ['run','--rm', ...])` with
       one container per claim running `oahs work --once` inside; image = coding CLI +
       git + the oahs bin. Spawner is injectable (`{ spawn }` param) for tests.
-- [ ] `oahs dispatch` CLI command (mode sibling of `work`), `--once`, `--manifest`,
+- [x] `oahs dispatch` CLI command (mode sibling of `work`), `--once`, `--manifest`,
       `--image`, `--project`.
-- [ ] `apps/oahs/Dockerfile.runner` (new): the agent-runtime image (git + node + the CLI
+- [x] `apps/oahs/Dockerfile.runner` (new): the agent-runtime image (git + node + the CLI
       + a coding agent binary selected by build-arg `AGENT_CMD`, e.g. `claude`/`codex`).
-- [ ] `docker-compose.yaml`: `dispatcher` service under a `runtime` profile bound to
+- [x] `docker-compose.yaml`: `dispatcher` service under a `runtime` profile bound to
       `/var/run/docker.sock`; **remove `env_file: .env` from the `oahs` service** (the
       spine holds no model keys) and move it to the runtime profile only.
 

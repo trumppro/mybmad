@@ -451,6 +451,16 @@ export function createCommandBus(
           actorId: ctx.actorId,
           ...(p.fencingToken !== undefined ? { fencingToken: p.fencingToken } : {}),
         });
+        // §10.2: a container run sustains its OWN job-scoped token via the
+        // heartbeats it already sends — extend any scoped token bound to this
+        // claim to the fresh lease expiry, so the token tracks the heartbeated
+        // claim instead of freezing at the lease-as-of-mint. Assigned/container
+        // mode cannot re-mint (mint is not in the scoped allowlist), so without
+        // this a run longer than the initial TTL loses its credential mid-run.
+        const claim = engine.listClaims().find((c) => c.id === p.claimId);
+        if (claim !== undefined && claim.expired !== true) {
+          tokens.renewScopedForClaim(p.claimId, claim.leaseExpiresAt);
+        }
         return { renewed: true };
       }
       case 'release_claim': {
