@@ -11,6 +11,13 @@ Every phase folder holds the same three artifacts:
 Phases 1–7 are shipped (see git log and `OAHS.md` Status). The remaining work to complete
 the product is **phases 8–12**, in that order. This README is the master checklist.
 
+**[EXECUTION-PLAN.md](EXECUTION-PLAN.md)** turns that backlog into an ordered, code-grounded
+**PR-by-PR sequence** (41 PRs across the five phases): the cross-phase critical path, a
+copy-pasteable Phase-8 kickoff that drives each PR through the spine's own dogfood loop, a
+risk register (migrations, shared-file merge order, the pg-engine parity gate), and the
+anchor-drift corrections to apply before coding. It was produced by a code-reading multi-agent
+pass and adversarially reviewed; start there when you begin implementation.
+
 ## Build order and dependencies
 
 ```
