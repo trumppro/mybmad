@@ -28,8 +28,11 @@
  *   OAHS_STORY_ID  — the work item externalKey (stories.yaml id)
  *
  * Also part of this interface: the runner's OWN git commands run with
- * client-side hooks disabled (HOOK_ISOLATION), so a repo hook never observes
+ * client-side hooks disabled (HOOK_ISOLATION) and a git-specific env allowlist
+ * (buildGitEnv), so neither a repo hook nor an agent-set config knob observes
  * the runner's credentials. Hooks still run for git the AGENT invokes itself.
+ * OAHS_GIT_INHERIT_ENV=1 restores the full env for a BYO setup the allowlist
+ * starves.
  */
 // Phase 4 (roadmap §1.4): the deterministic document lint for non-code work.
 export { lintDoc, type DocLintResult, type LintDocOptions } from './doclint.js';
@@ -157,14 +160,14 @@ const ENTRY_STATUS: Readonly<Partial<Record<WorkItemState, string>>> = {
 /**
  * Hook isolation (roadmap §8) — prepended to EVERY runner-invoked git command.
  *
- * git is a trusted binary, so `git()` keeps the runner's full env: pushing the
- * claim branch needs SSH_AUTH_SOCK. But git also executes CLIENT-SIDE HOOKS out
- * of the repository the agent has write access to, and a hook runs with the env
- * of whoever invoked git. So an agent that plants `.git/hooks/pre-push` (or
- * points `core.hooksPath` at its own script) reads OAHS_TOKEN / OAHS_MODEL_* /
- * SSH_AUTH_SOCK out of the runner's environment the next time the runner
- * pushes — recovering exactly the secrets buildAgentEnv withholds from the
- * agent's own process.
+ * git is a trusted binary, but it executes CLIENT-SIDE HOOKS out of the
+ * repository the agent has write access to, and a hook runs with the env of
+ * whoever invoked git. So an agent that plants `.git/hooks/pre-push` (or points
+ * `core.hooksPath` at its own script) reads whatever the runner's git holds the
+ * next time the runner pushes. buildGitEnv keeps OAHS_TOKEN / OAHS_MODEL_* out
+ * of that env, but push must still authenticate, so the ssh-agent socket is
+ * there for a hook to take — which is why NOT RUNNING the hook is the half that
+ * carries the weight, and stays load-bearing even after the env narrowed.
  *
  * Pointing hooksPath at a path with no hooks in it suppresses every client-side
  * hook, and a command-line `-c` outranks repo config — so this also defeats an
@@ -174,16 +177,181 @@ const ENTRY_STATUS: Readonly<Partial<Record<WorkItemState, string>>> = {
  * `git diff --shortstat` runs inside the agent's worktree and would fire it.
  * The runner relies on no repo hook of its own.
  *
- * NOT closed by this: repo-local config also holds non-hook command knobs
- * (filter.<n>.smudge, core.sshCommand, credential.helper, diff.external) that a
- * worktree-writing agent can still point at a script. Narrowing git()'s own env
- * is the follow-up that covers those.
+ * `protocol.ext.allow=never` belongs here for the same reason: an `ext::` remote
+ * URL makes git run its argument as a command. git already blocks ext:: by
+ * default, but the DEFAULT is repo-config-overridable — an agent that writes
+ * `protocol.ext.allow=always` next to an `ext::` remote gets arbitrary exec, so
+ * the runner pins the refusal instead of relying on the default. The runner
+ * never speaks ext::.
+ *
+ * NOT closed by this: repo-local config holds further command knobs whose
+ * execution survives (filter.<n>.smudge, core.sshCommand, credential.helper,
+ * remote.<n>.uploadpack/receivepack, core.gitProxy), and `url.<x>.insteadOf`
+ * can redirect the push itself. buildGitEnv below is the other half — it takes
+ * the SECRETS off the table when one of them fires.
+ *
+ * Also not closed, and a cost of the hooks pin rather than a gap in it: hooks
+ * stay off for `push` too, and git-lfs's upload path IS its pre-push hook — so
+ * against an LFS repo the runner would push pointers whose objects never
+ * uploaded, exit 0. Re-enabling hooks on push is not the fix: push is the one
+ * call that carries the ssh-agent socket, so it would hand an agent-planted
+ * pre-push hook the operator's live signing identity.
  */
-const HOOK_ISOLATION = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
+const HOOK_ISOLATION = [
+  '-c', 'core.hooksPath=/dev/null',
+  '-c', 'core.fsmonitor=false',
+  '-c', 'protocol.ext.allow=never',
+];
+
+/**
+ * The env for the runner's OWN git commands (roadmap §8) — the sibling of
+ * buildAgentEnv, and the other half of HOOK_ISOLATION.
+ *
+ * HOOK_ISOLATION stops agent-planted HOOKS from running. It cannot stop every
+ * knob: repo-local `.git/config` is agent-writable (worktrees share the common
+ * dir) and still names commands git will execute — a `filter.<n>.smudge` bound
+ * by a committed `.gitattributes` fires on the runner's own `worktree add`;
+ * `core.sshCommand` and `credential.helper` fire on push. Those run with the env
+ * of whoever invoked git, so today they read the runner's OAHS_TOKEN and
+ * OAHS_MODEL_* straight out of process.env. This allowlist takes that away: the
+ * knob still fires, but inherits no secret from the RUNNER'S ENV.
+ *
+ * Be clear about what that is worth. A knob that fires is arbitrary code running
+ * as the runner's uid, and it can read anything that uid can — including
+ * $HOME/.oahs/config.json, which under the supervisor holds EVERY named identity
+ * (po/dev/admin), and an unencrypted ~/.ssh/id_* it can sign with. Dropping HOME
+ * would not fix that (the code resolves the home dir from getpwuid regardless)
+ * and would break git's config discovery for nothing. So this is defence in
+ * depth against the env vector, NOT a containment boundary. Real containment is
+ * a sandboxed agent (roadmap §10).
+ *
+ * Deny-by-default, like AGENT_ENV_ALLOWLIST — but git's needs are wider than a
+ * shell's, and every entry below is here because dropping it BREAKS
+ * authenticated push, usually SILENTLY (git skips config it cannot find rather
+ * than erroring). Do not trim this list without testing a real ssh/https push.
+ */
+const GIT_ENV_ALLOWLIST = [
+  // Execution + config discovery. Without HOME git silently skips ~/.gitconfig,
+  // taking the operator's credential.helper and url.*.insteadOf with it.
+  'PATH', 'HOME', 'USER', 'LOGNAME',
+  'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', // $XDG_CONFIG_HOME/git/config; credential-cache socket
+  'TMPDIR', 'TEMP', 'TMP', 'TZ', 'TERM',
+  // Passphrase prompting for operators who use an askpass helper over an agent.
+  'SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE', 'DISPLAY',
+  // Corporate proxies. Case matters: libcurl reads lowercase `http_proxy` ONLY
+  // (a CGI-safety rule), and honours either case for the rest — so carry both.
+  'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+  // Private CAs behind TLS-inspecting proxies. Apple git ignores these three in
+  // favour of GIT_SSL_CAINFO (carried by the GIT_ prefix rule), but the Linux
+  // libcurl build the Dockerfile ships resolves CAs differently — they are inert
+  // file paths, so carrying them costs nothing and hedges the platform we cannot
+  // test from here.
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'CURL_CA_BUNDLE',
+  // Commit signing, for an operator with commit.gpgsign on globally.
+  'GNUPGHOME', 'GPG_TTY',
+] as const;
+
+/**
+ * GIT_* is passed through as a PREFIX: those vars are operator configuration
+ * (GIT_SSH_COMMAND pins a key, GIT_SSL_CAINFO a private CA, GIT_CONFIG_GLOBAL
+ * the config a container bakes in), and the agent has no write path into the
+ * runner's environment — a child cannot mutate its parent's env, and the runner
+ * loads no env files.
+ *
+ * These are the exception: they are per-invocation REPOSITORY POINTERS, not
+ * daemon policy, and they silently retarget the very calls the runner uses to
+ * attest the agent's work. A stray GIT_DIR makes `git -C <dir> rev-parse HEAD`
+ * report a DIFFERENT repository's HEAD — the runner would attest the wrong tree.
+ * The runner always says which repo it means via cwd.
+ */
+const GIT_ENV_POINTER_DENYLIST = new Set([
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_NAMESPACE',
+  'GIT_CEILING_DIRECTORIES', 'GIT_DISCOVERY_ACROSS_FILESYSTEM',
+  'GIT_INDEX_VERSION', 'GIT_ATTR_SOURCE', 'GIT_CONFIG',
+]);
+
+/**
+ * The credentials that CANNOT be dropped — push authenticates with them. So they
+ * are granted per-call instead of globally: a subcommand that reaches no remote
+ * has no business holding one, which keeps them off the reproduced `worktree
+ * add` smudge-filter path. Both entries here are brokers, not strings: with the
+ * ssh socket a filter SIGNS as the operator, and over the D-Bus session bus it
+ * reads the whole keyring — strictly worse prizes than any token.
+ *
+ * Listed by LOCAL subcommand rather than by remote one, so that anything
+ * unrecognised — a new call site, an arg shape this misreads — keeps them and
+ * pushes fine. A miss here must never break authentication; the test suite
+ * pushes over file:// and would not catch it.
+ */
+const GIT_LOCAL_ONLY_SUBCOMMANDS = new Set(['rev-parse', 'diff', 'worktree', 'branch']);
+const GIT_REMOTE_AUTH_ENV = [
+  'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
+  // Secret-Service credential helpers (libsecret, GCM secretservice, KWallet)
+  // reach the keyring over the session bus, found via $DBUS_SESSION_BUS_ADDRESS
+  // or $XDG_RUNTIME_DIR/bus. Unset outside a login session, so this is a no-op
+  // in a container and restores https push on a desktop-session host.
+  'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR',
+] as const;
+
+/** First non-option token: the subcommand. `-c`/`-C` swallow the next token. */
+function gitSubcommand(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === undefined) break;
+    if (arg === '-c' || arg === '-C') {
+      i += 1; // skip its value
+      continue;
+    }
+    if (!arg.startsWith('-')) return arg;
+  }
+  return undefined;
+}
+
+export function buildGitEnv(args: string[]): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  // Escape hatch for a BYO setup this allowlist starves (a vendor SSO helper, a
+  // credential helper reading env of its own choosing). Mirrors --inherit-env's
+  // intent; an env var rather than a RunnerOptions field because git() is
+  // module-level plumbing with no access to the options.
+  if (process.env['OAHS_GIT_INHERIT_ENV'] === '1') {
+    Object.assign(env, process.env);
+  } else {
+    for (const key of GIT_ENV_ALLOWLIST) {
+      const value = process.env[key];
+      if (value !== undefined) env[key] = value;
+    }
+    for (const [key, value] of Object.entries(process.env)) {
+      if (!key.startsWith('GIT_') || GIT_ENV_POINTER_DENYLIST.has(key)) continue;
+      env[key] = value;
+    }
+    const subcommand = gitSubcommand(args);
+    if (subcommand === undefined || !GIT_LOCAL_ONLY_SUBCOMMANDS.has(subcommand)) {
+      for (const key of GIT_REMOTE_AUTH_ENV) {
+        const value = process.env[key];
+        if (value !== undefined) env[key] = value;
+      }
+    }
+  }
+  // Forced in BOTH paths — these are correctness, not secrecy, so the escape
+  // hatch does not relax them. The runner is headless: an inherited
+  // GIT_TERMINAL_PROMPT=1 lets git block forever on a credential prompt, hanging
+  // the claim until its lease expires. And finishRun parses git's ENGLISH output
+  // (`/(\d+) files? changed/` on --shortstat), which a localized git would break
+  // — mis-measuring the agent's diff into the evidence record.
+  env['GIT_TERMINAL_PROMPT'] = '0';
+  env['LC_ALL'] = 'C';
+  return env;
+}
 
 /** Run a git command; throws on non-zero exit; returns trimmed stdout. */
 export function git(args: string[], cwd: string): string {
-  const result = spawnSync('git', [...HOOK_ISOLATION, ...args], { cwd, encoding: 'utf8' });
+  const result = spawnSync('git', [...HOOK_ISOLATION, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: buildGitEnv(args),
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(

@@ -4,10 +4,10 @@
  *
  * buildAgentEnv keeps the runner's secrets out of the agent's process. But the
  * agent owns the worktree, and git executes hooks out of the repo the agent can
- * write to — under the env of whoever invoked git. The runner's git() keeps the
- * full env on purpose (pushing the claim branch needs SSH_AUTH_SOCK), so an
- * agent-planted `.git/hooks/pre-push` would hand back OAHS_TOKEN and the SSH
- * agent socket the moment the runner pushes.
+ * write to — under the env of whoever invoked git. git() must still authenticate
+ * its push, so an agent-planted `.git/hooks/pre-push` would hand back the ssh
+ * agent socket the moment the runner pushes. buildGitEnv (git-env.test.ts) takes
+ * the secrets off the table; NOT RUNNING the hook at all is this file's half.
  *
  * Every case here is paired with an UNPROTECTED control that fires the same
  * hook: without it a broken fixture (hook not executable, wrong path) would let
@@ -164,6 +164,19 @@ describe('git() — agent-planted hooks never run under the runner (§8)', () =>
   });
 
   it('git() worktree add does not fire post-checkout', () => {
+    // Control first: post-checkout is bound and live for an unprotected add.
+    // Without this the assertion below passes just as happily against a hook
+    // that was never wired up.
+    const controlDir = join(tmpRoot, 'wt-control');
+    const control = spawnSync('git', ['worktree', 'add', '-b', 'ctl/wt', controlDir, 'main'], {
+      cwd: repoDir,
+      encoding: 'utf8',
+    });
+    expect(control.status).toBe(0);
+    expect(readCanary()).toContain('POST-CHECKOUT');
+    git(['worktree', 'remove', '--force', controlDir], repoDir);
+
+    rmSync(canary, { force: true });
     const worktreeDir = join(tmpRoot, 'wt-1');
 
     git(['worktree', 'add', '-b', 'claim/wt-1', worktreeDir, 'main'], repoDir);

@@ -204,15 +204,38 @@ Cùng ranh giới đó áp cho **lệnh kiểm chứng ghim** (`pinnedVerificati
 `pytest`, …): chúng chạy **code do agent viết** trong worktree, nên nhận đúng env tối
 thiểu như agent, không phải env đầy đủ của runner. `--inherit-env` nới cho cả hai.
 
-**Git của runner chạy không hook.** `git()` vẫn giữ env đầy đủ — nó gọi binary git tin
-cậy và cần `SSH_AUTH_SOCK` để push nhánh claim — nhưng git lại *thực thi hook phía client*
-lấy từ chính repo mà agent có quyền ghi, và hook chạy với env của tiến trình gọi git. Một
-agent cắm `.git/hooks/pre-push` (hoặc trỏ `core.hooksPath` / `core.fsmonitor` sang script
-của nó) sẽ đọc được đúng những bí mật mà allowlist ở trên giữ lại, ngay lần runner push
-kế tiếp. Vì vậy mọi lệnh git của runner đều kèm `-c core.hooksPath=/dev/null
--c core.fsmonitor=false`. **Hệ quả vận hành:** hook trong repo của bạn (`pre-push`,
-`post-checkout`, …) KHÔNG chạy cho các thao tác git *của runner*; hook vẫn chạy bình
-thường với git do agent tự gọi.
+**Git của runner chạy không hook.** git *thực thi hook phía client* lấy từ chính repo mà
+agent có quyền ghi, và hook chạy với env của tiến trình gọi git. Một agent cắm
+`.git/hooks/pre-push` (hoặc trỏ `core.hooksPath` / `core.fsmonitor` sang script của nó)
+sẽ đọc được đúng những bí mật mà allowlist ở trên giữ lại, ngay lần runner push kế tiếp.
+Vì vậy mọi lệnh git của runner đều kèm `-c core.hooksPath=/dev/null
+-c core.fsmonitor=false -c protocol.ext.allow=never`. **Hệ quả vận hành:** hook trong repo
+của bạn (`pre-push`, `post-checkout`, …) KHÔNG chạy cho các thao tác git *của runner*;
+hook vẫn chạy bình thường với git do agent tự gọi.
+
+**Và git của runner cũng chạy env tối thiểu** (`buildGitEnv`). Chặn hook là chưa đủ:
+`.git/config` **repo-local cũng do agent ghi được** (mọi worktree dùng chung common dir),
+và nó còn trỏ tới lệnh khác mà git sẽ chạy — `filter.<n>.smudge` gắn qua `.gitattributes`
+nổ ngay lúc runner `worktree add`; `core.sshCommand` / `credential.helper` nổ lúc push.
+Không chặn được *việc chúng chạy*, nên ta lấy đi phần env: git của runner chỉ nhận một
+allowlist riêng cho git (PATH/HOME, `GIT_*`, proxy, CA, XDG, askpass…), tuyệt đối không có
+`OAHS_TOKEN` / `OAHS_MODEL_*`. Thêm hai lớp: các **broker credential**
+(`SSH_AUTH_SOCK`, bus D-Bus của keyring) chỉ cấp cho lệnh thật sự chạm remote (`push`,
+`ls-remote`) — lệnh cục bộ như `worktree add` không giữ chúng; và các biến **con trỏ repo**
+(`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, …) bị loại kể cả khi khớp `GIT_*`, vì một
+`GIT_DIR` lạc sẽ khiến runner đo và chứng thực **nhầm repo**.
+
+**Đừng hiểu quá lời cam kết này.** Một knob đã nổ là *code chạy dưới đúng uid của runner*:
+nó đọc được mọi thứ uid đó đọc được — kể cả `~/.oahs/config.json` (ở deployment supervisor,
+file này giữ **mọi** identity: po/dev/admin) và `~/.ssh/id_*` chưa đặt passphrase, tức là
+vẫn **ký được** bằng khoá của bạn dù không có `SSH_AUTH_SOCK`. Bỏ `HOME` không cứu được
+(code vẫn tra ra home qua `getpwuid`) mà chỉ làm git mất chỗ đọc config. Vì vậy đây là
+**phòng thủ theo lớp** cho hướng env, **không phải** một ranh giới cách ly — ranh giới thật
+là sandbox cho agent (roadmap §10).
+
+Nếu hạ tầng của bạn cần biến env mà allowlist không lường trước (helper credential nội bộ,
+SSO của hãng), mở cửa thoát: `OAHS_GIT_INHERIT_ENV=1` trả lại **toàn bộ** env cho git của
+runner — cùng tinh thần `--inherit-env`, và cùng đánh đổi.
 
 Cấp key cho agent qua kênh tường minh, không qua env thừa kế:
 
