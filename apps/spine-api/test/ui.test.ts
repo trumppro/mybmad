@@ -52,6 +52,23 @@ describe('GET /ui (static shell)', () => {
     // The bundle drives the SAME rails as every client: RPC + event stream.
     expect(response.body).toContain('/rpc/');
     expect(response.body).toContain('/events/stream');
+    // §9.7: the bundle ships the ⌘K palette (a view over GET /commands).
+    expect(response.body).toContain('palette-overlay');
+    expect(response.body).toContain('/commands');
+  });
+
+  it('§9.7: GET /commands returns the public command manifest (no auth) for the ⌘K palette', async () => {
+    const response = await app.inject({ method: 'GET', url: '/commands' });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { commands: Array<{ name: string; description: string; readonly: boolean }> };
+    expect(Array.isArray(body.commands)).toBe(true);
+    const byName = new Map(body.commands.map((c) => [c.name, c]));
+    // A mutating command and a readonly one, so the palette can split ACTIONS vs reads.
+    expect(byName.get('approve_gate')?.readonly).toBe(false);
+    expect(byName.get('get_feature')?.readonly).toBe(true);
+    // The registry is live: §9 commands appear automatically.
+    expect(byName.has('feature_advance')).toBe(true);
+    expect(byName.has('claim_agent_job')).toBe(true);
   });
 
   it('serves app.css', async () => {

@@ -8,7 +8,8 @@ import type { Feature } from '@oahs/core';
 
 import { clear, el, run, setStatus } from '../core/dom.js';
 import { rpc } from '../core/rpc.js';
-import type { View } from '../core/router.js';
+import { navigate, type View } from '../core/router.js';
+import { groupFeaturesByColumn, FEATURE_STAGE_LABEL } from '../core/feature-stages.js';
 import { button, card, cardSub, cardTitle, field, section, textInput } from '../components/widgets.js';
 
 interface StoriesImportResult {
@@ -21,6 +22,28 @@ export const featuresView: View = {
   mount(container: HTMLElement): () => void {
     const view = el('div', 'view');
     view.appendChild(el('h2', undefined, 'Features'));
+
+    // -- board: features grouped by stage (§9.7 portal parity) ----------------
+    const board = section('Board');
+    const boardBody = el('div', 'feature-board');
+    board.body.appendChild(boardBody);
+    view.appendChild(board.section);
+    run(async () => {
+      const features = await rpc<Feature[]>('feature_list', {});
+      clear(boardBody);
+      for (const column of groupFeaturesByColumn(features)) {
+        const col = el('div', 'board-col');
+        col.appendChild(el('div', 'board-col-head', `${column.label} · ${String(column.features.length)}`));
+        for (const feature of column.features) {
+          const c = card('card board-card');
+          c.appendChild(cardTitle(feature.name ?? feature.id));
+          c.appendChild(cardSub(`${FEATURE_STAGE_LABEL[feature.state]}${feature.dispatchHold ? ' · hold' : ''}`));
+          c.addEventListener('click', () => navigate(`feature/${feature.id}`));
+          col.appendChild(c);
+        }
+        boardBody.appendChild(col);
+      }
+    });
 
     // -- create
     const create = section('Create feature');

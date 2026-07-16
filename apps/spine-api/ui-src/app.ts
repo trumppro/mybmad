@@ -8,6 +8,7 @@
  * app shell, and run the global SSE relay once connected.
  */
 import { buildAppShell } from './components/shell.js';
+import { registerPalette } from './core/command-palette.js';
 import { byId } from './core/dom.js';
 import { rpc } from './core/rpc.js';
 import { defineRoutes, type Route, stopRouter } from './core/router.js';
@@ -19,6 +20,7 @@ import { claimsView } from './views/claims.js';
 import { dashboardView } from './views/dashboard.js';
 import { entitlementsView } from './views/entitlements.js';
 import { eventsView } from './views/events.js';
+import { featureView } from './views/feature.js';
 import { featuresView } from './views/features.js';
 import { insightsView } from './views/insights.js';
 import { itemView } from './views/item.js';
@@ -43,19 +45,25 @@ function routeTable(): Route[] {
     { path: 'insights', label: 'Insights', view: insightsView },
     { path: 'project', label: 'Project', view: projectView, hidden: true },
     { path: 'item', label: 'Work item', view: itemView, hidden: true },
+    { path: 'feature', label: 'Feature', view: featureView, hidden: true },
   ];
 }
+
+let unbindPalette: (() => void) | null = null;
 
 function startApp(root: HTMLElement): void {
   defineRoutes(routeTable());
   state.connected = true;
   buildAppShell(root, () => logout(root));
+  unbindPalette = registerPalette(); // ⌘K over the COMMANDS registry (§9.7)
   void streamEvents();
 }
 
 function logout(root: HTMLElement): void {
   state.connected = false;
   stopRouter();
+  unbindPalette?.();
+  unbindPalette = null;
   state.abort?.abort();
   localStorage.removeItem(LS_TOKEN);
   renderLogin(root, () => startApp(root));

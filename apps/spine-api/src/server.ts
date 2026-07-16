@@ -13,6 +13,7 @@ import {
   type SpineEngine,
 } from '@oahs/core';
 import {
+  COMMANDS,
   COMMAND_MAP,
   HTTP_STATUS,
   type ActorContext,
@@ -97,6 +98,15 @@ export async function buildServer(options: BuildServerOptions): Promise<FastifyI
   };
 
   app.get('/healthz', async () => ({ ok: true }));
+
+  // §9.7: the command manifest for the ⌘K palette — a browser-safe view over the
+  // registry (name/description/readonly ONLY, no schemas, no secrets, no
+  // per-actor data). Unauthenticated on purpose: it is public shape metadata,
+  // and every command still authenticates + authorizes at /rpc. The palette is a
+  // VIEW over this, never a hand-maintained list.
+  app.get('/commands', async () => ({
+    commands: COMMANDS.map((c) => ({ name: c.name, description: c.description, readonly: c.readonly })),
+  }));
 
   app.post('/rpc/:command', async (request, reply) => {
     const ctx = authenticate(request);

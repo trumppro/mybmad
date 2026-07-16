@@ -331,3 +331,32 @@ details > pre.payload {
   word-break: break-all;
 }
 details > summary { cursor: pointer; color: var(--muted); }
+
+/* ---- §9.7 feature board ---- */
+.feature-board { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; }
+.board-col { flex: 0 0 200px; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px; }
+.board-col-head { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+.board-card { cursor: pointer; margin-bottom: 8px; }
+.board-card:hover { border-color: var(--accent); }
+
+/* ---- §9.7 feature IDE tabs ---- */
+.tabbar { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 8px 0 12px; }
+.tab { background: none; border: none; color: var(--muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.blocked-hint { color: var(--warn); font-size: 13px; margin-top: 4px; }
+
+/* ---- §9.7 ⌘K command palette ---- */
+.palette-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 1000; }
+.palette { width: min(620px, 92vw); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.4); overflow: hidden; }
+.palette-input { width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 15px; background: var(--panel); color: var(--text); border: none; border-bottom: 1px solid var(--border); outline: none; }
+.palette-list { max-height: 52vh; overflow-y: auto; }
+.palette-group { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; padding: 8px 16px 4px; }
+.palette-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; cursor: pointer; }
+.palette-item.active, .palette-item:hover { background: var(--panel-2); }
+.palette-tag { font-size: 10px; color: var(--muted); text-transform: uppercase; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+.palette-tag.navigate { color: var(--accent); }
+.palette-tag.agent { color: var(--system); }
+.palette-run { padding: 16px; }
+.palette-run-title { font-weight: 600; }
+.palette-run-desc { color: var(--muted); font-size: 13px; margin: 4px 0 8px; }
+.palette-payload { width: 100%; box-sizing: border-box; margin-bottom: 8px; }

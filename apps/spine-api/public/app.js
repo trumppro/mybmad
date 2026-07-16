@@ -179,6 +179,35 @@
     });
   }
 
+  // ../spine-api/ui-src/core/palette-entries.ts
+  function buildPaletteEntries(input) {
+    const entries = [];
+    for (const r of input.routes) {
+      if (r.hidden === true) continue;
+      if (r.adminOnly === true && !input.isAdmin) continue;
+      entries.push({ id: r.path, label: `Go to ${r.label}`, group: "navigate", kind: "route" });
+    }
+    for (const c of input.commands) {
+      if (c.readonly) continue;
+      const group = c.name.includes("agent_job") ? "agent" : "action";
+      entries.push({ id: c.name, label: c.name, group, kind: "command", description: c.description });
+    }
+    return entries;
+  }
+  function filterEntries(entries, query) {
+    const q = query.trim().toLowerCase();
+    if (q === "") return [...entries];
+    return entries.filter((e) => {
+      const hay = `${e.label} ${e.group} ${e.description ?? ""}`.toLowerCase();
+      let i = 0;
+      for (const ch of hay) {
+        if (ch === q[i]) i += 1;
+        if (i === q.length) return true;
+      }
+      return false;
+    });
+  }
+
   // ../spine-api/ui-src/core/rpc.ts
   async function rpc(command, input = {}) {
     const response = await fetch(`${state.url}/rpc/${command}`, {
@@ -192,6 +221,143 @@
     const envelope = await response.json();
     if (envelope.ok) return envelope.result;
     throw new Error(`${envelope.error.name}: ${envelope.error.message}`);
+  }
+
+  // ../spine-api/ui-src/core/command-palette.ts
+  var commandCache = [];
+  async function loadCommands() {
+    try {
+      const res = await fetch(`${state.url}/commands`);
+      const body = await res.json();
+      commandCache = body.commands ?? [];
+    } catch {
+      commandCache = [];
+    }
+  }
+  var GROUP_LABEL = {
+    navigate: "Navigate",
+    action: "Actions",
+    agent: "Agent"
+  };
+  var overlay = null;
+  function closePalette() {
+    if (overlay !== null) {
+      overlay.remove();
+      overlay = null;
+    }
+  }
+  function openPalette() {
+    if (overlay !== null) return;
+    const allEntries = buildPaletteEntries({
+      commands: commandCache,
+      routes: getRoutes(),
+      isAdmin: state.isAdmin
+    });
+    overlay = el("div", "palette-overlay");
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) closePalette();
+    });
+    const box = el("div", "palette");
+    const input = el("input", "palette-input");
+    input.type = "text";
+    input.placeholder = "Type to filter \xB7 Enter to run \xB7 Esc to close";
+    const list = el("div", "palette-list");
+    box.appendChild(input);
+    box.appendChild(list);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const runEntry = (entry) => {
+      if (entry.kind === "route") {
+        closePalette();
+        navigate(entry.id);
+        return;
+      }
+      clear(list);
+      const form = el("div", "palette-run");
+      form.appendChild(el("div", "palette-run-title", entry.id));
+      if (entry.description !== void 0) form.appendChild(el("div", "palette-run-desc", entry.description));
+      const payload = el("textarea", "palette-payload");
+      payload.rows = 4;
+      payload.placeholder = "{ }  \u2014 JSON input for this command";
+      payload.value = "{}";
+      const runBtn = el("button", "btn primary", "Run via /rpc");
+      runBtn.addEventListener("click", () => {
+        run(async () => {
+          let body = {};
+          try {
+            body = JSON.parse(payload.value === "" ? "{}" : payload.value);
+          } catch {
+            throw new Error("payload must be valid JSON");
+          }
+          const result = await rpc(entry.id, body);
+          setStatus(`${entry.id}: ${JSON.stringify(result).slice(0, 200)}`);
+          closePalette();
+        });
+      });
+      form.appendChild(payload);
+      form.appendChild(runBtn);
+      list.appendChild(form);
+      payload.focus();
+    };
+    let filtered = [];
+    let active = 0;
+    const renderList = () => {
+      filtered = filterEntries(allEntries, input.value);
+      active = 0;
+      clear(list);
+      let group = null;
+      filtered.forEach((entry, index) => {
+        if (entry.group !== group) {
+          group = entry.group;
+          list.appendChild(el("div", "palette-group", GROUP_LABEL[group]));
+        }
+        const row = el("div", index === active ? "palette-item active" : "palette-item");
+        row.appendChild(el("span", "palette-item-label", entry.label));
+        row.appendChild(el("span", `palette-tag ${entry.group}`, entry.group));
+        row.addEventListener("click", () => runEntry(entry));
+        list.appendChild(row);
+      });
+    };
+    const highlight = () => {
+      [...list.querySelectorAll(".palette-item")].forEach((node, index) => {
+        node.classList.toggle("active", index === active);
+      });
+    };
+    input.addEventListener("input", renderList);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closePalette();
+      } else if (event.key === "ArrowDown") {
+        event.preventDefault();
+        active = Math.min(active + 1, filtered.length - 1);
+        highlight();
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        active = Math.max(active - 1, 0);
+        highlight();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        const entry = filtered[active];
+        if (entry !== void 0) runEntry(entry);
+      }
+    });
+    renderList();
+    input.focus();
+  }
+  function registerPalette() {
+    void loadCommands();
+    const onKey = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (overlay === null) openPalette();
+        else closePalette();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      closePalette();
+    };
   }
 
   // ../spine-api/ui-src/core/loaders.ts
@@ -456,11 +622,11 @@
           run(async () => {
             await rpc("provision_personas", {});
             setStatus("personas provisioned");
-            reload();
+            reload2();
           });
         })
       );
-      toolbar.appendChild(button("Refresh", () => reload()));
+      toolbar.appendChild(button("Refresh", () => reload2()));
       head.appendChild(toolbar);
       view.appendChild(head);
       const create = section("Create actor");
@@ -487,7 +653,7 @@
               line.appendChild(cardTitle(`${created.actor.displayName} \u2014 ${created.actor.id}`));
               line.appendChild(cardSub(`token (copy now): ${created.token}`));
               createdOut.prepend(line);
-              reload();
+              reload2();
             });
           },
           "primary"
@@ -533,7 +699,7 @@
       listSection.body.appendChild(body);
       view.appendChild(listSection.section);
       container.appendChild(view);
-      function reload() {
+      function reload2() {
         run(async () => {
           const actors = await rpc("list_actors");
           clear(body);
@@ -550,7 +716,7 @@
           body.appendChild(table(["Id", "Type", "Name", "Persona"], rows));
         });
       }
-      reload();
+      reload2();
       return () => {
       };
     }
@@ -882,7 +1048,7 @@
       const toolbar = el("div", "toolbar");
       const workItemId = textInput("blank = ALL live claims; or a workItemId / externalKey");
       toolbar.appendChild(field("Work item", workItemId));
-      toolbar.appendChild(button("Load claims", () => reload(), "primary"));
+      toolbar.appendChild(button("Load claims", () => reload2(), "primary"));
       toolbar.appendChild(
         button(
           "Force-release live claim",
@@ -892,7 +1058,7 @@
               if (id === "") throw new Error("workItemId is required");
               await rpc("force_release_claim", { workItemId: id });
               setStatus(`forced release on ${id}`);
-              reload();
+              reload2();
             });
           },
           "danger"
@@ -902,7 +1068,7 @@
       const body = el("div", "view-body");
       view.appendChild(body);
       container.appendChild(view);
-      function reload() {
+      function reload2() {
         run(async () => {
           const id = workItemId.value.trim();
           const claims = id === "" ? await rpc("list_claims") : await rpc("get_claims", { workItemId: id });
@@ -922,7 +1088,7 @@
             claim.released ? "\u2014" : button("Release", () => {
               run(async () => {
                 await rpc("release_claim", { claimId: claim.id });
-                reload();
+                reload2();
               });
             })
           ]);
@@ -970,7 +1136,7 @@
   var dashboardView = {
     mount(container) {
       const { view, toolbar, body } = viewShell("Dashboard");
-      const refresh = button("Refresh", () => reload(), "primary");
+      const refresh = button("Refresh", () => reload2(), "primary");
       toolbar.appendChild(refresh);
       container.appendChild(view);
       function newProjectForm(parent) {
@@ -993,7 +1159,7 @@
                   ...repo.value.trim() !== "" ? { repoPath: repo.value.trim() } : {},
                   ...spec.value.trim() !== "" ? { defaultSpecFolder: spec.value.trim() } : {}
                 });
-                reload();
+                reload2();
               });
             },
             "primary"
@@ -1001,7 +1167,7 @@
         );
         parent.appendChild(form);
       }
-      function reload() {
+      function reload2() {
         run(async () => {
           const [rollups, runners, inbox] = await Promise.all([
             rpc("project_list"),
@@ -1063,7 +1229,7 @@
           body.appendChild(runnersSection.section);
         });
       }
-      reload();
+      reload2();
       return () => {
       };
     }
@@ -1276,12 +1442,12 @@
       const toolbar = el("div", "toolbar");
       const streamId = textInput("streamId (optional \u2014 blank = all)");
       toolbar.appendChild(field("Stream", streamId));
-      toolbar.appendChild(button("Query", () => reload(), "primary"));
+      toolbar.appendChild(button("Query", () => reload2(), "primary"));
       view.appendChild(toolbar);
       const body = el("div", "view-body");
       view.appendChild(body);
       container.appendChild(view);
-      function reload() {
+      function reload2() {
         run(async () => {
           const id = streamId.value.trim();
           const input = id === "" ? {} : { streamId: id };
@@ -1308,17 +1474,227 @@
           body.appendChild(table(["Seq", "When", "Stream", "Type", "Actor", "Payload"], rows));
         });
       }
-      reload();
+      reload2();
       return () => {
       };
     }
   };
+
+  // ../spine-api/ui-src/core/blocked-hints.ts
+  var BLOCKED_HINT = {
+    unclear_intent: "The frozen intent contract changed or is ambiguous. Renegotiate the spec, then `oahs intent rebaseline` + unblock to re-open dispatch.",
+    no_stories_yaml_found: "The runner found no stories.yaml in the spec folder. Add/commit it (or fix --spec-folder), then unblock.",
+    ambiguous_story_file_match: "More than one spec file matched the story. Disambiguate the file name, then unblock.",
+    review_non_convergence: "The review loop hit its limit (5 rejections). A review-gate holder must resolve the disagreement and unblock.",
+    no_subagents: "The agent command produced no sub-agents / no work. Check the agent-cmd template and its environment, then unblock.",
+    dirty_tree: "The worktree had uncommitted or conflicting changes. Clean/resolve the branch (conflict resolution is a \xA710 runner phase), then unblock.",
+    stale_worktree: "A leftover worktree with no commit past baseline was cleaned. Re-dispatch the item (it returns to the pool on unblock).",
+    awaiting_human_input: "The agent explicitly needs a human decision. Provide the answer in the task thread, then unblock.",
+    other: "See the HALT report / transcript for the blocking condition, resolve it, then unblock."
+  };
+  function blockedHint(reason) {
+    if (reason === null || reason === void 0) return null;
+    return BLOCKED_HINT[reason] ?? BLOCKED_HINT.other;
+  }
+
+  // ../spine-api/ui-src/core/feature-stages.ts
+  var FEATURE_STAGE_LABEL = {
+    backlog: "Backlog",
+    spec: "In Design",
+    design: "In Design",
+    breakdown: "Ready for Impl",
+    executing: "In Implementation",
+    handoff: "In Handoff",
+    done: "Done",
+    cancelled: "Cancelled"
+  };
+  var BOARD_COLUMNS = [
+    { label: "Backlog", states: ["backlog"] },
+    { label: "In Design", states: ["spec", "design"] },
+    { label: "Ready for Impl", states: ["breakdown"] },
+    { label: "In Implementation", states: ["executing"] },
+    { label: "In Handoff", states: ["handoff"] },
+    { label: "Done", states: ["done"] },
+    { label: "Cancelled", states: ["cancelled"] }
+  ];
+  function groupFeaturesByColumn(features) {
+    return BOARD_COLUMNS.map((col) => ({
+      label: col.label,
+      features: features.filter((f) => col.states.includes(f.state))
+    }));
+  }
+
+  // ../spine-api/ui-src/views/feature.ts
+  var TABS = ["Spec", "Design", "Tasks", "Handoff", "Activity"];
+  var NEXT_ADVANCE = {
+    backlog: "spec",
+    spec: "design",
+    breakdown: "executing",
+    executing: "handoff"
+  };
+  async function reload(featureId) {
+    const feature = await rpc("get_feature", { featureId });
+    const items = await rpc("list_work_items", { featureId });
+    return { feature, items };
+  }
+  var featureView = {
+    mount(container) {
+      const featureId = routeParam();
+      const view = el("div", "view");
+      container.appendChild(view);
+      if (featureId === "") {
+        view.appendChild(emptyState("No feature id in the route."));
+        return () => {
+        };
+      }
+      let tab = "Tasks";
+      const header = el("div", "feature-header");
+      const tabbar = el("div", "tabbar");
+      const body = el("div", "feature-body");
+      view.appendChild(header);
+      view.appendChild(tabbar);
+      view.appendChild(body);
+      const render = (feature, items) => {
+        clear(header);
+        header.appendChild(el("h2", void 0, feature.name ?? feature.id));
+        header.appendChild(
+          cardSub(`stage: ${FEATURE_STAGE_LABEL[feature.state]} (${feature.state})${feature.dispatchHold ? " \xB7 dispatch hold" : ""}`)
+        );
+        clear(tabbar);
+        for (const t of TABS) {
+          const b = el("button", t === tab ? "tab active" : "tab", t);
+          b.addEventListener("click", () => {
+            tab = t;
+            render(feature, items);
+          });
+          tabbar.appendChild(b);
+        }
+        clear(body);
+        if (tab === "Spec" || tab === "Design") {
+          const c = card();
+          c.appendChild(cardTitle(`${tab} metadata`));
+          c.appendChild(cardSub(`feature ${feature.id} \xB7 stage ${FEATURE_STAGE_LABEL[feature.state]}`));
+          c.appendChild(cardSub("Full document body renders once get_spec_content (\xA711.3) is available."));
+          body.appendChild(c);
+        } else if (tab === "Tasks") {
+          if (items.length === 0) body.appendChild(emptyState("No work items in this feature yet."));
+          for (const item of items) {
+            const c = card();
+            const title = el("div", "c-title");
+            title.appendChild(el("span", void 0, `${item.externalKey} \xB7 ${item.title} `));
+            title.appendChild(badge(item.state));
+            c.appendChild(title);
+            if (item.blockedReason !== null) {
+              c.appendChild(cardSub(`blocked: ${item.blockedReason}`));
+              const hint = blockedHint(item.blockedReason);
+              if (hint !== null) c.appendChild(el("div", "blocked-hint", `\u2192 ${hint}`));
+            }
+            body.appendChild(c);
+          }
+        } else if (tab === "Handoff") {
+          renderHandoff(body, feature, featureId, () => refresh());
+        } else {
+          run(async () => {
+            const events = await rpc("query_events", { streamId: featureId });
+            clear(body);
+            if (events.length === 0) body.appendChild(emptyState("No events for this feature yet."));
+            for (const ev of [...events].reverse()) {
+              const c = card("card event-card");
+              c.appendChild(cardTitle(ev.type));
+              c.appendChild(cardSub(`by ${ev.actorId} \xB7 seq ${String(ev.globalSeq)}`));
+              body.appendChild(c);
+            }
+          });
+        }
+      };
+      const refresh = () => {
+        run(async () => {
+          const { feature, items } = await reload(featureId);
+          render(feature, items);
+        });
+      };
+      refresh();
+      return () => {
+      };
+    }
+  };
+  function renderHandoff(body, feature, featureId, onChange) {
+    const c = card();
+    c.appendChild(cardTitle("Feature gates & stage"));
+    c.appendChild(cardSub(`current: ${FEATURE_STAGE_LABEL[feature.state]} (${feature.state})`));
+    const actions = el("div", "c-actions");
+    const next = NEXT_ADVANCE[feature.state];
+    if (next !== void 0) {
+      actions.appendChild(
+        button(
+          `Advance \u2192 ${next}`,
+          () => run(async () => {
+            await rpc("feature_advance", { featureId, to: next });
+            setStatus(`feature advanced to ${next}`);
+            onChange();
+          })
+        )
+      );
+    }
+    if (feature.state === "design") {
+      actions.appendChild(gateBtn("Approve design", "approve_feature_gate", "design_approval", featureId, onChange));
+      actions.appendChild(gateBtn("Reject design", "reject_feature_gate", "design_approval", featureId, onChange));
+    }
+    if (feature.state === "handoff") {
+      actions.appendChild(gateBtn("Approve handoff", "approve_feature_gate", "handoff_approval", featureId, onChange));
+      actions.appendChild(gateBtn("Reject handoff", "reject_feature_gate", "handoff_approval", featureId, onChange));
+    }
+    if (feature.state !== "done" && feature.state !== "cancelled") {
+      actions.appendChild(
+        button(
+          "Cancel feature",
+          () => run(async () => {
+            await rpc("cancel_feature", { featureId });
+            setStatus("feature cancelled");
+            onChange();
+          })
+        )
+      );
+    }
+    c.appendChild(actions);
+    body.appendChild(c);
+  }
+  function gateBtn(label, command, gate, featureId, onChange) {
+    return button(
+      label,
+      () => run(async () => {
+        await rpc(command, { featureId, gate });
+        setStatus(`${command} ${gate} sent`);
+        onChange();
+      })
+    );
+  }
 
   // ../spine-api/ui-src/views/features.ts
   var featuresView = {
     mount(container) {
       const view = el("div", "view");
       view.appendChild(el("h2", void 0, "Features"));
+      const board = section("Board");
+      const boardBody = el("div", "feature-board");
+      board.body.appendChild(boardBody);
+      view.appendChild(board.section);
+      run(async () => {
+        const features = await rpc("feature_list", {});
+        clear(boardBody);
+        for (const column of groupFeaturesByColumn(features)) {
+          const col = el("div", "board-col");
+          col.appendChild(el("div", "board-col-head", `${column.label} \xB7 ${String(column.features.length)}`));
+          for (const feature of column.features) {
+            const c = card("card board-card");
+            c.appendChild(cardTitle(feature.name ?? feature.id));
+            c.appendChild(cardSub(`${FEATURE_STAGE_LABEL[feature.state]}${feature.dispatchHold ? " \xB7 hold" : ""}`));
+            c.addEventListener("click", () => navigate(`feature/${feature.id}`));
+            col.appendChild(c);
+          }
+          boardBody.appendChild(col);
+        }
+      });
       const create = section("Create feature");
       const createdList = el("div", "section-body");
       create.body.appendChild(
@@ -1521,7 +1897,7 @@
       const handle = routeParam();
       const { view, toolbar, body } = viewShell(`Work item ${handle}`);
       toolbar.appendChild(button("\u2190 Back", () => window.history.back()));
-      toolbar.appendChild(button("Refresh", () => reload(), "primary"));
+      toolbar.appendChild(button("Refresh", () => reload2(), "primary"));
       container.appendChild(view);
       function gateActions(item, parent) {
         const gate = item.state === "draft" && item.specCheckpoint ? "spec_approval" : item.state === "in_review" ? "review_approval" : null;
@@ -1542,7 +1918,7 @@
               run(async () => {
                 await rpc("approve_gate", { workItemId: item.id, gate });
                 setStatus(`approved ${gate} on ${item.externalKey}`);
-                reload();
+                reload2();
               });
             },
             "approve"
@@ -1555,7 +1931,7 @@
               run(async () => {
                 await rpc("reject_gate", { workItemId: item.id, gate });
                 setStatus(`rejected ${gate} on ${item.externalKey}`);
-                reload();
+                reload2();
               });
             },
             "reject"
@@ -1563,7 +1939,7 @@
         );
         parent.appendChild(row);
       }
-      function reload() {
+      function reload2() {
         run(async () => {
           const item = await rpc("get_work_item", { workItemId: handle });
           const [claims, evidence, events, feature] = await Promise.all([
@@ -1635,7 +2011,7 @@
                     () => {
                       run(async () => {
                         await rpc("force_release_claim", { workItemId: item.id });
-                        reload();
+                        reload2();
                       });
                     },
                     "danger"
@@ -1660,7 +2036,7 @@
           body.appendChild(timeline.section);
         });
       }
-      reload();
+      reload2();
       return () => {
       };
     }
@@ -1725,9 +2101,9 @@
       const handle = routeParam();
       const { view, toolbar, body } = viewShell(`Project ${handle}`);
       toolbar.appendChild(button("\u2190 Dashboard", () => navigate("dashboard")));
-      toolbar.appendChild(button("Refresh", () => reload(), "primary"));
+      toolbar.appendChild(button("Refresh", () => reload2(), "primary"));
       container.appendChild(view);
-      function reload() {
+      function reload2() {
         run(async () => {
           const [project, items, inbox] = await Promise.all([
             rpc("project_get", { projectId: handle }),
@@ -1796,7 +2172,7 @@
           body.appendChild(board.section);
         });
       }
-      reload();
+      reload2();
       return () => {
       };
     }
@@ -1807,7 +2183,7 @@
     const input = stateFilter === "all" ? {} : { state: stateFilter };
     return rpc("list_work_items", input);
   }
-  function actionsCell(item, reload) {
+  function actionsCell(item, reload2) {
     const wrap = el("div", "c-actions");
     const to = select(WORK_ITEM_STATES, item.state);
     to.title = "advance to state";
@@ -1816,7 +2192,7 @@
       button("Advance", () => {
         run(async () => {
           await rpc("advance_state", { workItemId: item.id, to: to.value });
-          reload();
+          reload2();
         });
       })
     );
@@ -1827,7 +2203,7 @@
           () => {
             run(async () => {
               await rpc("unblock_task", { workItemId: item.id });
-              reload();
+              reload2();
             });
           },
           "danger"
@@ -1845,14 +2221,14 @@
       const stateFilter = select(["all", ...WORK_ITEM_STATES], "all");
       stateFilter.title = "filter by state";
       toolbar.appendChild(stateFilter);
-      const refresh = button("Refresh", () => reload());
+      const refresh = button("Refresh", () => reload2());
       toolbar.appendChild(refresh);
       head.appendChild(toolbar);
       view.appendChild(head);
       const body = el("div", "view-body");
       view.appendChild(body);
       container.appendChild(view);
-      function reload() {
+      function reload2() {
         run(async () => {
           const items = await fetchItems(stateFilter.value);
           clear(body);
@@ -1867,15 +2243,15 @@
             badge(item.state),
             item.blockedReason ?? "\u2014",
             String(item.reviewLoopIteration),
-            actionsCell(item, reload)
+            actionsCell(item, reload2)
           ]);
           body.appendChild(
             table(["Key", "Title", "Kind", "State", "Blocked", "Review#", "Actions"], rows)
           );
         });
       }
-      stateFilter.addEventListener("change", () => reload());
-      reload();
+      stateFilter.addEventListener("change", () => reload2());
+      reload2();
       return () => {
       };
     }
@@ -1894,18 +2270,23 @@
       { path: "actors", label: "Actors", view: actorsView, adminOnly: true },
       { path: "insights", label: "Insights", view: insightsView },
       { path: "project", label: "Project", view: projectView, hidden: true },
-      { path: "item", label: "Work item", view: itemView, hidden: true }
+      { path: "item", label: "Work item", view: itemView, hidden: true },
+      { path: "feature", label: "Feature", view: featureView, hidden: true }
     ];
   }
+  var unbindPalette = null;
   function startApp(root) {
     defineRoutes(routeTable());
     state.connected = true;
     buildAppShell(root, () => logout(root));
+    unbindPalette = registerPalette();
     void streamEvents();
   }
   function logout(root) {
     state.connected = false;
     stopRouter();
+    unbindPalette?.();
+    unbindPalette = null;
     state.abort?.abort();
     localStorage.removeItem(LS_TOKEN);
     renderLogin(root, () => startApp(root));
