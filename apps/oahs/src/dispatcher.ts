@@ -162,10 +162,19 @@ function defaultLog(line: string): void {
 }
 
 /**
- * The real spawner: `docker run …`. The container inherits ONLY the vars named
- * by `-e` flags in the argv (OAHS_URL/OAHS_TOKEN/OAHS_ASSIGNMENT), whose values
- * come from `req.env` set on the docker CLI's own env — so the dispatcher's
- * `OAHS_MODEL_*` never crosses into the container.
+ * The real spawner: `docker run …`. The container's ENVIRONMENT holds only the vars
+ * named by `-e` flags (OAHS_URL/OAHS_TOKEN/OAHS_ASSIGNMENT), whose values come from
+ * `req.env` set on the docker CLI's own env.
+ *
+ * `OAHS_MODEL_*` is NOT in that env — but do not read that as "the keys stay out of
+ * the container". They cannot: the agent runs INSIDE it and needs them. They go on
+ * the inner `oahs work --agent-env` ARGV instead, so they are in the container, on
+ * PID 1's command line, readable via /proc/1/cmdline and `docker inspect`.
+ *
+ * What keeping them out of the env DOES buy is real and is the whole point: env is
+ * inherited by every child automatically, argv is not. An untrusted `npm test` the
+ * agent shells out to sees no model key. Only `oahs work` parses them and hands them
+ * to the agent child it spawns. What they never reach is the SPINE (§0.1).
  */
 function realDockerSpawn(req: SpawnRequest): Promise<SpawnResult> {
   return new Promise((resolvePromise) => {

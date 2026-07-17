@@ -24,8 +24,10 @@ that makes the rest worth versioning.
 - **Container-isolated execution (§10).** `oahs dispatch` claims work on the host
   with a static token, mints a job-scoped mutation-only token, and runs one
   container per claim. The agent container never receives the admin token, a push
-  credential, model keys, or a Docker client — the last one is a failing CI
-  assertion, not a convention.
+  credential, or a Docker client — the last one is a failing CI assertion, not a
+  convention. It DOES receive the model credentials its agent needs, on the inner
+  `oahs work --agent-env` argv rather than in its environment, so they are not
+  inherited by everything the agent shells out to. They never reach the spine.
 - **Claim-scoped push credentials, a durability push, and spine-driven adoption**
   of a claim branch across machines.
 - **A lease reaper** that records expiries without deciding anything.
