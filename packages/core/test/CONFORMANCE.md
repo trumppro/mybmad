@@ -38,7 +38,7 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 
 ### Gates & authorization
 - `approveGate` performs the gated forward transition itself (spec_approval: `draft→ready_for_dev`; review_approval: `in_review→done`); evidence guards are evaluated there. (`checkpoints-dispatch` accepts either shape; `gates-evidence` pins it.)
-- Grants decide, actor type never does: an *agent* with `gate.review.approve` approves. `required_actor_types` is Phase-2 gate-definition data, not an engine check.
+- Grants decide; actor type is never a SOURCE of authority — an *agent* with `gate.review.approve` approves (on the default self-host plan). Two opt-in, restrict-ONLY policy checks may narrow that by type, and BOTH are engine checks: a plan/workspace ceiling (`agentCeilingAllows`) can forbid an *agent* from using a gate-approve/reject or self-dispatch grant on the `free`/`team` plans (the self-host default `enterprise` leaves it fully open), and a gate's `requiredActorTypes` quorum can require an approver of a given type. Neither can grant authority a grant did not — type only ever subtracts, never adds.
 - `state.downgrade` alone suffices for privileged correction (no claim, no `task.advance`).
 - Generic unblock authz is deliberately **unpinned**; only `review_non_convergence` is pinned to `gate.review.approve` holders.
 - Items without `spec_checkpoint` may advance `draft→ready_for_dev` via plain `advanceState` (the gate is mandatory only when the checkpoint is set).

@@ -142,10 +142,10 @@ OAHS_TOKEN=<agent-token> oahs work --jobs \
 
 **Verified end-to-end against a live router**: a teammate driven by a real model read a mention, drafted a genuine PRD rate-limiting analysis, asked the PO a clarifying question back — all through the rails — recorded an episodic memory, and (audited) touched **zero** lifecycle events, holding no gate it wasn't granted. *AI does the work; rules run the process; permissioned actors hold the gates — now with a real AI.*
 
-## Invariants (machine-checked)
+## Invariants
 
 - **No LLM SDK inside the spine** — grep-lint in CI (GitHub Actions `.github/workflows/oahs-ci.yaml`, mirrored on GitLab as `.gitlab-ci.yml`); the spine never interprets, it checks.
-- **No writes outside the command bus** — HTTP, MCP, CLI, and runner all execute the same handlers.
+- **No writes outside the command bus** — HTTP, MCP, CLI, and runner all execute the same handlers, so there is no second write path. This holds by CONSTRUCTION, not by a check: nothing greps or lints for stray writes (the only grep-enforced spine-purity properties are no-LLM-SDK and no-gateway-import, above/§0.1).
 - **Evidence is measured, verdicts are computed**: pinned commands only (an LLM-authored command is never a guard), fencing tokens on every worker mutation, empty diff = fake-done deny, push required for the done gate.
 - **Reconciliation is detect-only** (D6). Chat, when it lands (Phase 3), never mutates lifecycle.
 

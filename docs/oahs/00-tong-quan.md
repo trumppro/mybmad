@@ -92,10 +92,12 @@ MCP client    ──→  POST /mcp (oahs_*)   ─┘
 - **Auth**: header `Authorization: Bearer <token>`; token map về một actor. Không có
   đường ghi nào nằm ngoài bus này.
 
-Hệ quả (các *bất biến* được máy kiểm tra): không SDK LLM trong spine; không ghi ngoài
-command bus; bằng chứng được *đo* còn verdict được *tính*; reconcile chỉ phát hiện
-(detect-only); chat không bao giờ làm thay đổi vòng đời; `@oahs/gateway` không bị spine
-import.
+Hệ quả — các *bất biến* của spine, được thực thi bằng những cách KHÁC nhau: không SDK LLM
+trong spine (grep trong CI) và `@oahs/gateway` không bị spine import (grep trong CI) là hai
+tính chất được MÁY kiểm; không ghi ngoài command bus là bất biến giữ bằng KIẾN TRÚC (chỉ một
+command bus, không có đường ghi thứ hai) chứ không có lint nào quét; còn bằng chứng được *đo*
+/ verdict được *tính*, reconcile chỉ phát hiện, và chat không đổi vòng đời được khoá bằng bộ
+test conformance.
 
 ## Khái niệm cốt lõi
 
