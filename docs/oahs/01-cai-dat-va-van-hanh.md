@@ -35,7 +35,7 @@ make build      # build CLI bundle (bin + PGlite worker + web UI)
 make serve      # build xong chạy spine, PGlite bền dưới .oahs/data, cổng 4521
 ```
 
-`make serve` đặt `OAHS_ADMIN_TOKEN` mặc định là `change-me` nếu bạn chưa export.
+`make serve` KHÔNG đặt token mặc định. Nếu bạn không export `OAHS_ADMIN_TOKEN`, `serve` tự sinh một token ngẫu nhiên và in ra lúc khởi động — hãy dùng chính token đó. (Trước đây nó mặc định `change-me`, nghĩa là mọi máy chạy `make serve` đều có chung một token admin đoán được.)
 Đổi cổng hoặc thư mục data:
 
 ```bash
@@ -162,7 +162,7 @@ item (`1-1` kind `code`, `1-2` kind `spec_draft`), và provision 6 persona BMAD 
 `/ui` có sẵn dữ liệu để xem. Mọi thứ đi qua `/rpc`, cùng đường ống như mọi client.
 
 ```bash
-OAHS_ADMIN_TOKEN=change-me OAHS_PORT=4521 ./tools/oahs-bootstrap.sh
+OAHS_ADMIN_TOKEN=<token mà serve in ra> OAHS_PORT=4521 ./tools/oahs-bootstrap.sh
 # → mở http://localhost:4521/ui và đăng nhập bằng admin token
 ```
 

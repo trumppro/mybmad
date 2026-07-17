@@ -13,7 +13,7 @@
 # Display names come from env (placeholders by default — keep real names out of
 # the repo): OAHS_PO_NAME, OAHS_TL_NAME, OAHS_DEV_NAME, OAHS_MATE_NAME.
 #
-#   OAHS_ADMIN_TOKEN=change-me OAHS_PORT=4521 ./tools/team-seed.sh
+#   OAHS_ADMIN_TOKEN=<the token `oahs serve` printed> OAHS_PORT=4521 ./tools/team-seed.sh
 #
 # Run once per workspace: re-running creates NEW actors (actor create is not
 # idempotent by name — tokens are per-actor). Everything goes through /rpc,
@@ -21,7 +21,7 @@
 set -eu
 
 URL="${OAHS_URL:-http://localhost:${OAHS_PORT:-4521}}"
-TOKEN="${OAHS_ADMIN_TOKEN:-change-me}"
+TOKEN="${OAHS_ADMIN_TOKEN:?is unset. oahs serve generates a random admin token and prints it at startup - export that one. (It used to default to change-me, so every machine shared one guessable admin token; now an unset token fails here instead of 401-ing later.)}"
 PO_NAME="${OAHS_PO_NAME:-PO}"
 TL_NAME="${OAHS_TL_NAME:-Tech Lead}"
 DEV_NAME="${OAHS_DEV_NAME:-Coding agent}"

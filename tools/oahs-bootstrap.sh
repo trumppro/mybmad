@@ -4,13 +4,13 @@
 # work items, and provision the six BMAD personas. Idempotent-ish (re-running
 # creates fresh features; personas provision idempotently).
 #
-#   OAHS_ADMIN_TOKEN=change-me OAHS_PORT=4521 ./tools/oahs-bootstrap.sh
+#   OAHS_ADMIN_TOKEN=<the token `oahs serve` printed> OAHS_PORT=4521 ./tools/oahs-bootstrap.sh
 #
 # Everything goes through /rpc — the same rails as every client.
 set -eu
 
 URL="${OAHS_URL:-http://localhost:${OAHS_PORT:-4521}}"
-TOKEN="${OAHS_ADMIN_TOKEN:-change-me}"
+TOKEN="${OAHS_ADMIN_TOKEN:?is unset. oahs serve generates a random admin token and prints it at startup - export that one. (It used to default to change-me, so every machine shared one guessable admin token; now an unset token fails here instead of 401-ing later.)}"
 
 rpc() { # rpc <command> <json>
   curl -fsS -X POST "$URL/rpc/$1" \
