@@ -1,10 +1,15 @@
 # Dependencies
 **/node_modules/
-pnpm-lock.yaml
 bun.lock
 deno.lock
-pnpm-workspace.yaml
 package-lock.json
+
+# pnpm-lock.yaml and pnpm-workspace.yaml are COMMITTED, not ignored (they came
+# ignored from upstream BMAD, which installs over npm). oahs is a pnpm workspace:
+# the lock is what `pnpm install --frozen-lockfile` needs in CI and what both
+# Dockerfiles COPY, and the workspace file is what makes packages/* + apps/*
+# resolve at all. Ignoring them meant CI could never install and an image could
+# never be reproduced — the repo built only on the author's machine.
 
 test-output/*
 coverage/

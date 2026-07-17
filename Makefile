@@ -26,9 +26,11 @@ build: ## Build the CLI bundle (bin + PGlite worker + public UI)
 build-ui: ## Rebuild only the web UI bundle
 	pnpm -C apps/spine-api build:ui
 
+# OAHS_ADMIN_TOKEN is passed through UNSET unless you set it: serve then generates
+# a random admin token and prints it. It used to default to `change-me`, which
+# overrode that safety for everyone who just ran `make serve`.
 serve: build ## Build then run the spine locally (durable PGlite under DATA_DIR)
-	OAHS_ADMIN_TOKEN=$${OAHS_ADMIN_TOKEN:-change-me} \
-	  node apps/oahs/bin/oahs.mjs serve --data $(DATA_DIR) --port $(OAHS_PORT)
+	node apps/oahs/bin/oahs.mjs serve --data $(DATA_DIR) --port $(OAHS_PORT)
 
 dev: serve ## Alias for `serve`
 

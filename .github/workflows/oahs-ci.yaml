@@ -9,7 +9,10 @@
 #   * make check — typecheck + every @oahs/* suite (incl. the packages/db pg-engine
 #     parity run that re-executes the core conformance suite against PGlite).
 #
-# pnpm-workspace.yaml is gitignored by design (see docs/oahs/); CI regenerates it.
+# pnpm-lock.yaml and pnpm-workspace.yaml are COMMITTED (see .gitignore). Until they
+# were, `pnpm install --frozen-lockfile` below could only ever fail with
+# ERR_PNPM_NO_LOCKFILE — so `make check` gated nothing, and spine-purity's three
+# greps were the entire pipeline.
 
 name: oahs CI
 
@@ -21,6 +24,7 @@ on:
       - 'Makefile'
       - '.nvmrc'
       - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
       - 'delivery/**'
       - 'docs/oahs/**'
       - '.github/workflows/oahs-ci.yaml'
@@ -60,9 +64,6 @@ jobs:
         run: |
           corepack enable
           corepack prepare pnpm@11.13.0 --activate
-      - name: Generate the gitignored workspace file
-        run: |
-          printf 'packages:\n  - packages/*\n  - apps/*\nallowBuilds:\n  esbuild: true\n  sharp: true\n  unrs-resolver: true\n' > pnpm-workspace.yaml
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: make check

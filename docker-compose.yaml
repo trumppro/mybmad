@@ -21,12 +21,21 @@ services:
     # §10.2: the spine holds NO model keys — OAHS_MODEL_* moved to the `runtime`
     # profile (the dispatcher/agent runtime). §0.1: the spine is not the gateway.
     environment:
-      OAHS_ADMIN_TOKEN: ${OAHS_ADMIN_TOKEN:-change-me}
+      # UNSET by default, and that is the safe setting: `oahs serve` then generates
+      # a random admin token and prints it (`docker compose logs oahs`). It used to
+      # default to `change-me`, which OVERRODE that safety on a published port —
+      # anyone who guessed one word was workspace admin. Set it in .env only when
+      # you want a stable credential.
+      OAHS_ADMIN_TOKEN: ${OAHS_ADMIN_TOKEN:-}
       OAHS_PORT: ${OAHS_PORT:-4521}
-    # `oahs serve` binds 0.0.0.0 by default (serve.ts) — no --host flag exists.
+    # `oahs serve` binds 0.0.0.0 INSIDE the container (serve.ts, no --host flag) —
+    # correct, because docker does the publishing. The publish below is what decides
+    # exposure, and it is loopback-only: the spine has no user auth beyond a bearer
+    # token over plaintext HTTP, so it must not be reachable from the network until
+    # it does. Change to "${OAHS_PORT}:${OAHS_PORT}" deliberately, not by default.
     command: ["serve", "--data", "/data", "--port", "${OAHS_PORT:-4521}"]
     ports:
-      - "${OAHS_PORT:-4521}:${OAHS_PORT:-4521}"
+      - "127.0.0.1:${OAHS_PORT:-4521}:${OAHS_PORT:-4521}"
     volumes:
       - oahs-data:/data
     healthcheck:
@@ -79,6 +88,13 @@ services:
     # `oahs dispatch` — poll+claim on the host, container-per-claim. --repo is the
     # HOST-daemon path (docker-out-of-docker: the sibling `docker run -v` bind is
     # resolved by the host, not inside this container), so it must be ABSOLUTE.
+    #
+    # It is left EMPTY rather than `${OAHS_REPO_PATH:?...}`: compose interpolates
+    # the whole file BEFORE it filters by profile, so a required variable on this
+    # opt-in `runtime` service made every ordinary `docker compose` command fail —
+    # including the `up -d --build oahs` in this file's own header. `oahs dispatch`
+    # rejects an empty --repo with a readable error, so the requirement is enforced
+    # where it applies: when you actually start the dispatcher.
     command:
       [
         "oahs",
@@ -86,7 +102,7 @@ services:
         "--image",
         "oahs-runner:local",
         "--repo",
-        "${OAHS_REPO_PATH:?set OAHS_REPO_PATH to the absolute host path of the checkout}",
+        "${OAHS_REPO_PATH:-}",
         "--spec-folder",
         "${OAHS_SPEC_FOLDER:-delivery/main}",
         "--agent-cmd",

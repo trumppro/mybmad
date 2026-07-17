@@ -995,6 +995,17 @@ export function buildProgram(): Command {
       ) => {
         try {
           if (opts.agentCmd === undefined) throw new Error('--agent-cmd is required');
+          // An EMPTY --repo is not "unset": `resolve('')` is the cwd, so the
+          // dispatcher would bind-mount whatever directory it happens to run in.
+          // docker-compose passes the value through unset-as-empty (it cannot make
+          // this required without breaking every compose command), so the check
+          // belongs here.
+          if (opts.repo !== undefined && opts.repo.trim() === '') {
+            throw new Error(
+              'dispatch: --repo is empty. Set OAHS_REPO_PATH to the ABSOLUTE HOST path of the checkout ' +
+                '(docker-out-of-docker: the container-per-claim bind mount is resolved by the host daemon, not by this process).',
+            );
+          }
           const client = clientFrom(opts);
           const explicitAgentEnv: Record<string, string> = {};
           for (const pair of opts.agentEnv ?? []) {
