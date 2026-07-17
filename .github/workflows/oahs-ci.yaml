@@ -7,7 +7,8 @@
 #     + apps/spine-api (§0.1); grep 2: no @oahs/gateway import in the same trees (§2.5);
 #     grep 3: no TODO/FIXME/TBD/LOREM markers in delivery/ or docs/oahs/;
 #   * make check — typecheck + every @oahs/* suite (incl. the packages/db pg-engine
-#     parity run that re-executes the core conformance suite against PGlite).
+#     parity run that re-executes the core conformance suite against PGlite);
+#   * tools — the CARRIED BMAD tree, which had no CI at all until 2026-07-17.
 #
 # pnpm-lock.yaml and pnpm-workspace.yaml are COMMITTED (see .gitignore). Until they
 # were, `pnpm install --frozen-lockfile` below could only ever fail with
@@ -62,6 +63,64 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: make check
         run: make check
+
+  # The carried upstream tree: tools/ and the installer. It had NO CI, ever — and not
+  # because quality.yaml was deleted. quality.yaml ran `npm ci`, which cannot work in
+  # a pnpm workspace with no package-lock.json, so it was red 15/15 from this fork's
+  # first commit and never executed a single one of these suites. Deleting it lost
+  # nothing; there was never anything to lose.
+  #
+  # All six of upstream's suites pass under pnpm, in ~2 seconds total, and each one
+  # `require()`s tools/ directly (installer core, manifest, validate-file-refs,
+  # channel-plan/resolver, custom-module-manager, validate-skills). Nobody had tried.
+  #
+  # This matters now because the fork EDITS this tree: tools/oahs-bootstrap.sh and
+  # tools/team-seed.sh are net-new, and tools/installer/bmad-cli.js carries the one
+  # fork edit in the installer.
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # test:renderer runs src/bmm-skills/4-implementation/bmad-quick-dev/render.py,
+      # which imports tomllib — stdlib only since 3.11. Pinned rather than inherited
+      # so a runner-image bump cannot silently take this job out. (It is also why the
+      # suite looks broken on macOS: /usr/bin/python3 there is 3.9.)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.13.0 --activate
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: "upstream's own suites — each one requires() tools/ directly"
+        run: |
+          pnpm run test:refs
+          pnpm run test:install
+          pnpm run test:urls
+          pnpm run test:channels
+          pnpm run test:skills
+          pnpm run test:renderer
+          pnpm run validate:refs
+          pnpm run validate:skills
+
+      # The carried installer hardcodes upstream's package name and would tell fork
+      # users to install upstream over us. Asserts both halves of the gate: the guard
+      # in bmad-cli.js AND `private: true` in the manifest it reads.
+      - name: the fork's guard on the carried installer
+        run: pnpm run test:fork-gate
+
+      # The fork's OWN shell only. tools/validate-svg-changes.sh is upstream's and
+      # trips 3 info-level SC2086s we have no business rewriting.
+      - name: shellcheck the fork's shell scripts
+        run: |
+          shellcheck --version
+          shellcheck tools/oahs-bootstrap.sh tools/team-seed.sh scripts/e2e-dispatch.sh
 
   # The §10.2/§10.3 container path, against a REAL docker daemon. Everything else
   # that covers the dispatcher injects a fake spawner, so before this job the agent

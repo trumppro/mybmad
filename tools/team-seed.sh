@@ -46,9 +46,16 @@ actor() { # actor <type> <name> — create, print "id token"
 echo "→ team seed against $URL"
 curl -fsS "$URL/healthz" >/dev/null || { echo "server not reachable at $URL"; exit 1; }
 
+# `actor` prints "<id> <token>"; the unquoted expansion IS the mechanism — word
+# splitting is what fills $1/$2. Both fields are generated (actor_00000N, a sha256
+# hex token), so they can carry neither whitespace nor a glob character.
+# shellcheck disable=SC2046
 set -- $(actor user "$PO_NAME");   PO_ID=$1;   PO_TOKEN=$2
+# shellcheck disable=SC2046
 set -- $(actor user "$TL_NAME");   TL_ID=$1;   TL_TOKEN=$2
+# shellcheck disable=SC2046
 set -- $(actor agent "$DEV_NAME"); DEV_ID=$1;  DEV_TOKEN=$2
+# shellcheck disable=SC2046
 set -- $(actor agent "$MATE_NAME"); MATE_ID=$1; MATE_TOKEN=$2
 
 echo "  roles: $PO_NAME → product_owner"
