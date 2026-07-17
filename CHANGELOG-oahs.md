@@ -47,8 +47,19 @@ presence than the reverse:
   and what compose runs) is `PgEngine` on embedded PGlite. What is missing is a
   connection to a real Postgres server, not the engine.
 - **No migrations.** Idempotent DDL is re-applied on every open. Nothing stamps or
-  checks a schema version — `GET /version` reports `schemaVersion` for diagnosis
-  only. Two binaries against one data dir is possible and silent.
+  checks a schema version — `GET /version` reports `schemaVersion` for diagnosis only.
+- **Nothing locks the data dir.** A second `oahs serve` on a directory already being
+  served DESTROYS it, and needs no flags to do so: `--data` defaults to `~/.oahs/data`,
+  so two bare `oahs serve` target the same place. Both accept writes and answer 200;
+  the directory then fails to open at the next start with `RuntimeError: Aborted()`
+  and does not recover. Run one spine per data dir, and copy the directory only while
+  the server is stopped.
+
+  0.1.0 shipped this bullet saying "two BINARIES against one data dir is possible and
+  silent", filed under "No migrations". Every part of that was wrong: the trigger is a
+  second PROCESS, not a second version; it is not about schema at all; and the
+  inference it invited — "I am fine as long as I run one version" — is precisely the
+  belief that loses your data.
 - **No multi-tenancy.** There is no `workspace_id` column on any table.
 - **Grant scopes are stored but not enforced.**
 - **No metering, billing, SSO, or audit signing.**

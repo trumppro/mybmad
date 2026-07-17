@@ -81,9 +81,18 @@ async function getDb(): Promise<ReturnType<typeof drizzle>> {
 
 /**
  * Durable databases, one PGlite per data directory. Re-opening the same
- * directory within one worker lifetime reuses the live instance (PGlite
- * holds an exclusive lock on its directory) — which is exactly the
- * restart-in-process shape the persistence tests exercise.
+ * directory within one worker lifetime reuses the live instance — which is
+ * exactly the restart-in-process shape the persistence tests exercise.
+ *
+ * WARNING: that reuse is THIS MAP, not a lock. PGlite does NOT hold an exclusive
+ * lock on its directory, whatever this comment used to claim. Two processes open
+ * the same dataDir happily, both serve writes, and the directory is destroyed —
+ * reproduced: two `oahs serve --data <same>`, ten writes each, all 200; restart
+ * either one and PGlite dies with `RuntimeError: Aborted()`, permanently.
+ *
+ * The false claim here is why no cross-process lock was ever written: the codebase
+ * asserted one existed. Nothing in packages/ or apps/ locks a data dir today.
+ * Do not re-introduce that claim; if you add the lock, describe what it actually does.
  */
 const persistentDbs = new Map<string, ReturnType<typeof drizzle>>();
 
