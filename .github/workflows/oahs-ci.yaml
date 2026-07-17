@@ -16,21 +16,15 @@
 
 name: oahs CI
 
-on:
-  push:
-    paths: &oahs_paths
-      - 'packages/**'
-      - 'apps/**'
-      - 'Makefile'
-      - '.nvmrc'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'delivery/**'
-      - 'docs/oahs/**'
-      - '.github/workflows/oahs-ci.yaml'
-      - '.gitlab-ci.yml'
-  pull_request:
-    paths: *oahs_paths
+# NO `paths:` filter, on purpose. Two reasons, both learned the hard way:
+#   * these checks are meant to be REQUIRED for merging, and a path-filtered check
+#     simply never reports on a PR that misses the filter — GitHub then blocks that
+#     PR forever on "Expected — Waiting for status", which looks like a hung CI
+#     rather than a misconfigured one;
+#   * the filter was already wrong: it did not list `scripts/**`, so a change to
+#     the dispatch e2e — which IS one of these jobs — ran nothing at all.
+# The whole pipeline is ~4 minutes. That is cheaper than either failure mode.
+on: [push, pull_request]
 
 jobs:
   spine-purity:
