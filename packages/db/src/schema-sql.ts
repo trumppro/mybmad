@@ -1,8 +1,30 @@
 /**
+ * The durable schema's version. It lives HERE, next to the DDL, because they change
+ * together: adding a table or a column is what bumps it. The db worker (which owns the
+ * schema) reads this compiled-in constant to guard a data dir; nothing is transported in
+ * over the wire, so there is no sentinel-0 "silently never enforces" path.
+ *
+ * oahs-version.json's `schemaVersion` (what GET /version reports) MUST equal this — a test
+ * pins it (packages/db/test/schema-version-guard.test.ts), so a schema change here forces
+ * the reported number to follow.
+ *
+ * Bump this when a change makes an OLDER binary unsafe to open a dir a NEWER one wrote —
+ * i.e. any non-additive change, or an additive one an old binary would mishandle. Purely
+ * additive DDL an old binary simply ignores does not require a bump, but when in doubt bump:
+ * a false bump only refuses a mixed-version open, a missed one risks the corruption this guards.
+ */
+export const SCHEMA_VERSION = 1;
+
+/**
  * Hand-maintained DDL matching schema.ts 1-1 (drizzle-kit migration pipeline
  * is later debt). Runs on PGlite in the conformance harness worker.
  */
 export const SCHEMA_SQL = `
+-- The stamp the version guard reads. A single row; see SCHEMA_VERSION.
+CREATE TABLE IF NOT EXISTS schema_meta (
+  id TEXT PRIMARY KEY DEFAULT 'singleton',
+  version INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS actors (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,

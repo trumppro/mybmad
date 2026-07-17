@@ -22,6 +22,7 @@ import {
 
 import { PgEngine } from './pg-engine.js';
 import { SCHEMA_SQL } from './schema-sql.js';
+import { assertSchemaCompatible, stampSchema } from './schema-guard.js';
 
 /**
  * The @oahs/core error classes do not set `this.name`, so `err.name` is
@@ -100,8 +101,15 @@ async function getPersistentDb(dataDir: string): Promise<ReturnType<typeof drizz
   const existing = persistentDbs.get(dataDir);
   if (existing) return existing;
   const instance = new PGlite(dataDir);
+  // BEFORE any DDL: if a prior, NEWER binary wrote this dir, refuse rather than run our
+  // (older) schema over it. Reading the stamp needs it to exist, which it only does once a
+  // guard-aware binary has opened the dir — a fresh dir and every pre-guard v1 dir have no
+  // stamp, which reads as "≤ current" and is allowed. exec(SCHEMA_SQL) then creates the
+  // table and we stamp forward.
+  await assertSchemaCompatible(instance);
   const database = drizzle(instance);
   await instance.exec(SCHEMA_SQL);
+  await stampSchema(instance);
   persistentDbs.set(dataDir, database);
   return database;
 }

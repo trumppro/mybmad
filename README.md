@@ -36,7 +36,7 @@ Phases 0–10 shipped: the spine and its conformance suite, entitlements, collab
 **What is *not* in it** — [CHANGELOG-oahs.md](CHANGELOG-oahs.md)'s "What is NOT in it" is authoritative; read it before you believe anything else on this page:
 
 - **No Postgres server.** `serve` offers `memory` and `pglite` only; nothing reads a `DATABASE_URL`. But do not read that as "`PgEngine` is unwired": `PgEngine` IS the durable engine — `serve --data` is `PgEngine` on embedded PGlite, and that is the default and what compose runs. What is absent is a connection to a real Postgres server.
-- **No migrations.** Idempotent DDL is re-applied on every open. Nothing stamps or checks a schema version; `GET /version` reports `schemaVersion` for diagnosis only.
+- **No migrations**, but the schema is versioned. Idempotent, additive DDL is re-applied on every open; there is no down-migration. Instead `oahs serve` refuses to open a data dir written by a *newer* binary than itself (an old binary cannot know what a newer schema changed), so it cannot corrupt one. `GET /version` reports the `schemaVersion`.
 - **⚠ Nothing locks the data dir, and a second `oahs serve` on it destroys it.** No flags needed to hit this: `--data` defaults to `~/.oahs/data`, so two bare `oahs serve` — two terminals, or a service restart racing a manual start — target the same directory. Both accept writes and report success; the loss surfaces at the *next* start as `RuntimeError: Aborted()`, and the directory is not recoverable. Run one spine per data dir until this is fixed, and back the directory up while the server is stopped.
 - **No multi-tenancy.** There is no `workspace_id` column on any table.
 - **Grant scopes are stored but not enforced.**

@@ -46,8 +46,10 @@ presence than the reverse:
   waiting to be wired — it IS the durable engine, and `serve --data` (the default,
   and what compose runs) is `PgEngine` on embedded PGlite. What is missing is a
   connection to a real Postgres server, not the engine.
-- **No migrations.** Idempotent DDL is re-applied on every open. Nothing stamps or
-  checks a schema version — `GET /version` reports `schemaVersion` for diagnosis only.
+- **No migrations**, but the schema is versioned. Idempotent, additive DDL is re-applied
+  on every open. There is no down-migration; instead `oahs serve` REFUSES to open a data
+  dir stamped by a newer binary than itself (`schema v… will not open it`), so an old
+  binary cannot corrupt a newer dir. `GET /version` reports the same `schemaVersion`.
 - **Nothing locks the data dir.** A second `oahs serve` on a directory already being
   served DESTROYS it, and needs no flags to do so: `--data` defaults to `~/.oahs/data`,
   so two bare `oahs serve` target the same place. Both accept writes and answer 200;

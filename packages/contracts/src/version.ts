@@ -25,17 +25,12 @@ export const OAHS_VERSION: string =
 /**
  * Version of the durable schema this binary writes.
  *
- * Reported for diagnosis only — NOTHING enforces it yet. A binary will happily open
- * a data dir written by any other binary. That guard is a separate PR.
- *
- * The justification that used to sit here — "PR 10.4 shipped cross-machine claim
- * adoption, so two machines on different binaries against one data dir is possible
- * today" — was FALSE, and it had been copied into the README and the release notes.
- * §10.4 runners share a git remote and a spine over HTTP; they never share a data
- * dir. The real reason to build the guard is timing: schemaVersion is still 1, and a
- * guard added after the first bump cannot protect the binaries that shipped before it.
- *
- * Do not describe this number as a safety check.
+ * This mirrors packages/db's SCHEMA_VERSION for reporting; a test pins the two equal.
+ * The ENFORCEMENT lives in packages/db (schema-guard.ts): `oahs serve` refuses to open a
+ * data dir stamped by a NEWER binary than itself (an old binary cannot know what a newer
+ * schema changed). The other direction is allowed — the DDL is additive. So this number is
+ * reported for diagnosis AND backs a real guard now; keep them in step by bumping
+ * SCHEMA_VERSION and oahs-version.json together (the test enforces it).
  */
 export const OAHS_SCHEMA_VERSION: number =
   typeof __OAHS_SCHEMA_VERSION__ === 'undefined' ? 0 : __OAHS_SCHEMA_VERSION__;

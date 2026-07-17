@@ -16,6 +16,7 @@ import {
   StoriesValidationError,
   type SpineEngine,
 } from '@oahs/core';
+import { SchemaVersionError } from './schema-version-error.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workerPath = join(here, '..', 'dist', 'worker.mjs');
@@ -27,6 +28,7 @@ type WireResult =
 const callWorker = createSyncFn(workerPath) as (op: unknown) => WireResult;
 
 const ERROR_CLASSES: Record<string, new (...args: never[]) => Error> = {
+  SchemaVersionError: SchemaVersionError as never,
   ConflictError: ConflictError as never,
   GuardFailedError: GuardFailedError as never,
   InvalidTransitionError: InvalidTransitionError as never,
