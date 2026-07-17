@@ -39,7 +39,7 @@ RUN pnpm --filter @oahs/cli run build
 RUN pnpm --filter @oahs/cli deploy --prod /app
 
 # ---------------------------------------------------------------------------
-FROM node:22-slim AS runtime
+FROM node:22-slim AS agent
 ENV NODE_ENV=production
 WORKDIR /app
 
@@ -78,7 +78,7 @@ CMD ["oahs", "--help"]
 # docker client there is one stray socket mount away from host root.
 #
 #   docker build -f apps/oahs/Dockerfile.runner --target dispatcher -t oahs-dispatcher:local .
-FROM runtime AS dispatcher
+FROM agent AS dispatcher
 USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
@@ -93,3 +93,14 @@ RUN apt-get update \
 # spawn host containers is host-root already — pretending otherwise is theatre.
 WORKDIR /app
 CMD ["oahs", "dispatch", "--help"]
+
+# ---------------------------------------------------------------------------
+# The DEFAULT target must be the safe one.
+#
+# docker builds the LAST stage when no --target is given, so simply appending the
+# dispatcher above silently turned `docker build -f Dockerfile.runner -t agent .`
+# — the documented way to build the agent runtime — into an image carrying a
+# docker client. CI caught it; a person would not have. `dispatcher` cannot be
+# moved earlier (it derives FROM agent), so the file ends by naming the safe stage
+# last. Build the privileged one only by asking for it: --target dispatcher.
+FROM agent AS default
