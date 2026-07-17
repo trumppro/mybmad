@@ -68,3 +68,39 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: make check
         run: make check
+
+  # The §10.2/§10.3 container path, against a REAL docker daemon. Everything else
+  # that covers the dispatcher injects a fake spawner, so before this job the agent
+  # image had never been built and no claim container had ever started — Phase 10's
+  # confidence came entirely from stubs. It found four defects on first contact
+  # (see scripts/e2e-dispatch.sh). ubuntu-latest ships docker; the runner shares the
+  # host network namespace, which is why the script routes the container via
+  # --network host there and host.docker.internal on Docker Desktop.
+  dispatch-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.13.0 --activate
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build the CLI (the e2e drives the real bin)
+        run: make build
+      - name: Build the images — both of them, for the first time in CI
+        run: |
+          docker build -f apps/oahs/Dockerfile -t oahs:local .
+          docker build -f apps/oahs/Dockerfile.runner -t oahs-runner:local .
+          docker build -f apps/oahs/Dockerfile.runner --target dispatcher -t oahs-dispatcher:local .
+      - name: The dispatcher must have a docker client; the AGENT image must not
+        run: |
+          docker run --rm oahs-dispatcher:local docker --version
+          if docker run --rm oahs-runner:local sh -c 'command -v docker' >/dev/null 2>&1; then
+            echo "FAIL: the agent runtime carries a docker client — one stray socket mount from host root"; exit 1
+          fi
+      - name: End-to-end dispatch through a real container
+        run: ./scripts/e2e-dispatch.sh

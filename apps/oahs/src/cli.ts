@@ -973,6 +973,14 @@ export function buildProgram(): Command {
     )
     .option('--remote <name>', 'git remote the claim branch is pushed to (default: origin)')
     .option(
+      '--container-url <url>',
+      'spine URL as seen FROM a claim container (default: --url). Needed when the dispatcher runs on the host: its 127.0.0.1 is the container’s own loopback — use http://host.docker.internal:<port>.',
+    )
+    .option(
+      '--network <name>',
+      'docker network to attach each claim container to — the network on which --url resolves (compose: the project network). Without it the container lands on the default bridge and cannot reach the spine.',
+    )
+    .option(
       '--push-user <username>',
       'username presented with $OAHS_PUSH_TOKEN when pushing the claim branch (default: x-access-token)',
     )
@@ -991,6 +999,8 @@ export function buildProgram(): Command {
           agentEnv?: string[];
           remote?: string;
           pushUser?: string;
+          network?: string;
+          containerUrl?: string;
         },
       ) => {
         try {
@@ -1064,6 +1074,8 @@ export function buildProgram(): Command {
             agentCmd: opts.agentCmd,
             ...(pushCredential !== undefined ? { pushCredential } : {}),
             ...(opts.remote !== undefined ? { remote: opts.remote } : {}),
+            ...(opts.network !== undefined ? { network: opts.network } : {}),
+            ...(opts.containerUrl !== undefined ? { containerUrl: opts.containerUrl } : {}),
             ...(Object.keys(agentEnv).length > 0 ? { agentEnv } : {}),
             ...(project !== undefined ? { projectId: project } : {}),
             ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),

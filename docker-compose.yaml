@@ -38,6 +38,7 @@ services:
       - "127.0.0.1:${OAHS_PORT:-4521}:${OAHS_PORT:-4521}"
     volumes:
       - oahs-data:/data
+    networks: [oahs]
     healthcheck:
       test:
         [
@@ -60,9 +61,13 @@ services:
     build:
       context: .
       dockerfile: apps/oahs/Dockerfile.runner
+      # The `dispatcher` target = the agent image PLUS a docker client. `oahs
+      # dispatch` shells out to `docker run`, so the agent image (which has no
+      # client, deliberately) would fail with "docker: not found".
+      target: dispatcher
       args:
         AGENT_NPM: ${OAHS_AGENT_NPM:-}
-    image: oahs-runner:local
+    image: oahs-dispatcher:local
     depends_on:
       oahs:
         condition: service_healthy
@@ -85,6 +90,7 @@ services:
     # alone — not a repo mount of its own.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    networks: [oahs]
     # `oahs dispatch` — poll+claim on the host, container-per-claim. --repo is the
     # HOST-daemon path (docker-out-of-docker: the sibling `docker run -v` bind is
     # resolved by the host, not inside this container), so it must be ABSOLUTE.
@@ -101,6 +107,10 @@ services:
         "dispatch",
         "--image",
         "oahs-runner:local",
+        # Each claim's container is a SIBLING (spawned via the daemon), so it must
+        # be put on this network explicitly or OAHS_URL below resolves to nothing.
+        "--network",
+        "oahs-net",
         "--repo",
         "${OAHS_REPO_PATH:-}",
         "--spec-folder",
@@ -126,6 +136,12 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+# A FIXED name, because the dispatcher hands it to `docker run --network` for every
+# claim — a compose-generated `<project>_default` would not be predictable.
+networks:
+  oahs:
+    name: oahs-net
 
 volumes:
   oahs-data: {}

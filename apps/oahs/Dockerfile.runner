@@ -66,3 +66,30 @@ RUN printf '#!/bin/sh\nexec node /app/bin/oahs.mjs "$@"\n' > /usr/local/bin/oahs
 USER runner
 WORKDIR /repo
 CMD ["oahs", "--help"]
+
+# ---------------------------------------------------------------------------
+# dispatcher — the SAME image plus a docker client, and nothing else.
+#
+# `oahs dispatch` shells out to `docker run` for every claim, so in a container it
+# needs a docker CLI; mounting the socket without one just yields "docker: not
+# found" (which is exactly what the compose `runtime` profile did, because it ran
+# the agent image). It is a SEPARATE target on purpose: the agent runtime above
+# must never carry a docker client — that image runs untrusted agent code, and a
+# docker client there is one stray socket mount away from host root.
+#
+#   docker build -f apps/oahs/Dockerfile.runner --target dispatcher -t oahs-dispatcher:local .
+FROM runtime AS dispatcher
+USER root
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+  && install -m 0755 -d /etc/apt/keyrings \
+  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+  && chmod a+r /etc/apt/keyrings/docker.asc \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends docker-ce-cli \
+  && rm -rf /var/lib/apt/lists/*
+# Root: talking to the mounted docker socket needs it, and a process that can
+# spawn host containers is host-root already — pretending otherwise is theatre.
+WORKDIR /app
+CMD ["oahs", "dispatch", "--help"]

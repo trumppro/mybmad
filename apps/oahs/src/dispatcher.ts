@@ -64,8 +64,16 @@ export interface DispatchOptions {
    * never receives this token.
    */
   client: OahsClient;
-  /** Spine base URL the container talks back to (its `OAHS_URL`). */
+  /** Spine base URL THIS process uses to poll/claim/mint. */
   baseUrl: string;
+  /**
+   * Spine base URL the CONTAINER should use (its `OAHS_URL`). Defaults to
+   * `baseUrl`, which is right only when the dispatcher and the container see the
+   * spine at the same address — true under compose (both on one network), false
+   * whenever the dispatcher runs on the host: its `127.0.0.1` is the container's
+   * own loopback. On Docker Desktop that is `http://host.docker.internal:<port>`.
+   */
+  containerUrl?: string;
   /** Agent-runtime image: coding CLI + git + the oahs bin. */
   image: string;
   /** Host path of the project checkout, bind-mounted into the container. */
@@ -82,6 +90,13 @@ export interface DispatchOptions {
   claimTtlMs?: number;
   /** Git remote the claim branch is pushed to. Default 'origin'. */
   remote?: string;
+  /**
+   * Docker network to attach each claim's container to — the network on which
+   * `baseUrl` resolves. Under compose that is the project network the spine sits
+   * on. Absent → the daemon's default bridge, where the spine is unreachable
+   * unless `baseUrl` names a routable host.
+   */
+  network?: string;
   /**
    * §10.3 — the CLAIM-SCOPED push credential. It stays on the HOST: the
    * container is given no push credential at all, and the dispatcher pushes the
@@ -159,6 +174,13 @@ function buildSpawnRequest(
     argv: [
       'run',
       '--rm',
+      // The container must be able to REACH the spine. It is a sibling — the
+      // dispatcher talks to the docker daemon, so the new container lands on the
+      // default bridge and shares no network with us. Without this the container
+      // resolves OAHS_URL against ITSELF: a host-run dispatcher's 127.0.0.1 is
+      // the container's own loopback (ECONNREFUSED), and under compose the
+      // service name simply does not resolve. Verified against a real daemon.
+      ...(options.network !== undefined ? ['--network', options.network] : []),
       '-v',
       `${options.repoPath}:${CONTAINER_MOUNT}`,
       // Only these three names cross into the container; model keys never do.
@@ -181,7 +203,7 @@ function buildSpawnRequest(
       ...agentEnvFlags,
     ],
     env: {
-      OAHS_URL: options.baseUrl,
+      OAHS_URL: options.containerUrl ?? options.baseUrl,
       // The container's ONLY spine credential — scoped, mutation-only, lease-bound.
       OAHS_TOKEN: scopedToken,
       OAHS_ASSIGNMENT: JSON.stringify(assignment),
