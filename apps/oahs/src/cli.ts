@@ -977,6 +977,10 @@ export function buildProgram(): Command {
       'spine URL as seen FROM a claim container (default: --url). Needed when the dispatcher runs on the host: its 127.0.0.1 is the container’s own loopback — use http://host.docker.internal:<port>.',
     )
     .option(
+      '--container-user <uid:gid>',
+      'run each claim container as this user (default: the owner of --repo). The container writes into the bind-mounted repo, so its user must own those files.',
+    )
+    .option(
       '--network <name>',
       'docker network to attach each claim container to — the network on which --url resolves (compose: the project network). Without it the container lands on the default bridge and cannot reach the spine.',
     )
@@ -1001,6 +1005,7 @@ export function buildProgram(): Command {
           pushUser?: string;
           network?: string;
           containerUrl?: string;
+          containerUser?: string;
         },
       ) => {
         try {
@@ -1091,6 +1096,7 @@ export function buildProgram(): Command {
             ...(opts.remote !== undefined ? { remote: opts.remote } : {}),
             ...(opts.network !== undefined ? { network: opts.network } : {}),
             ...(opts.containerUrl !== undefined ? { containerUrl: opts.containerUrl } : {}),
+            ...(opts.containerUser !== undefined ? { containerUser: opts.containerUser } : {}),
             ...(Object.keys(agentEnv).length > 0 ? { agentEnv } : {}),
             ...(project !== undefined ? { projectId: project } : {}),
             ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),

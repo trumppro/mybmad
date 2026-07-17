@@ -12,6 +12,7 @@
  * test injects loops.
  */
 import { spawn as spawnChild } from 'node:child_process';
+import { statSync } from 'node:fs';
 
 import type { OahsClient } from '@oahs/contracts';
 import type { Claim, WorkItem, WorkItemState } from '@oahs/core';
@@ -98,6 +99,15 @@ export interface DispatchOptions {
   /** Git remote the claim branch is pushed to. Default 'origin'. */
   remote?: string;
   /**
+   * Run each claim's container as this `uid:gid`. Default: whoever owns the
+   * checkout. The container writes into a BIND-MOUNTED repo, so its user must own
+   * those files — otherwise git refuses outright ("detected dubious ownership")
+   * and, if it did not, the writes would fail on permissions anyway. Docker
+   * Desktop hides this by remapping ownership at the mount; every Linux host,
+   * i.e. every real deployment, does not.
+   */
+  containerUser?: string;
+  /**
    * Docker network to attach each claim's container to — the network on which
    * `baseUrl` resolves. Under compose that is the project network the spine sits
    * on. Absent → the daemon's default bridge, where the spine is unreachable
@@ -173,12 +183,30 @@ function realDockerSpawn(req: SpawnRequest): Promise<SpawnResult> {
   });
 }
 
+/**
+ * `uid:gid` of whoever owns the checkout, or undefined when that cannot be known
+ * (Windows, or a dispatcher that cannot see the path — a containerised dispatcher
+ * is handed the HOST path, which it may not have mounted). Undefined means "let
+ * the image decide", which is right on Docker Desktop and wrong on Linux — hence
+ * the explicit --container-user escape hatch.
+ */
+function repoOwner(repoPath: string): string | undefined {
+  if (process.platform === 'win32') return undefined;
+  try {
+    const st = statSync(repoPath);
+    return `${st.uid}:${st.gid}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Build the `docker run` argv + env for one claim's container. */
 function buildSpawnRequest(
   options: DispatchOptions,
   scopedToken: string,
   assignment: { claim: Claim; workItem: WorkItem; entryState: WorkItemState },
 ): SpawnRequest {
+  const containerUser = options.containerUser ?? repoOwner(options.repoPath);
   const agentEnvFlags: string[] = [];
   for (const [key, value] of Object.entries(options.agentEnv ?? {})) {
     agentEnvFlags.push('--agent-env', `${key}=${value}`);
@@ -187,6 +215,8 @@ function buildSpawnRequest(
     argv: [
       'run',
       '--rm',
+      // Own the files we are about to write. See DispatchOptions.containerUser.
+      ...(containerUser !== undefined ? ['--user', containerUser] : []),
       // The container must be able to REACH the spine. It is a sibling — the
       // dispatcher talks to the docker daemon, so the new container lands on the
       // default bridge and shares no network with us. Without this the container
