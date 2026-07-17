@@ -611,6 +611,51 @@ export function redactSecrets(message: string, secret?: string): string {
 export const CREDENTIAL_HELPER_RESET: readonly string[] = ['-c', 'credential.helper='];
 
 /**
+ * §9.6 — open (or find) the PR for a pushed claim branch and record it as `pr`
+ * evidence. Returns the PR number when one was opened/found, else null.
+ *
+ * Dedup is on the SPINE's evidence, item-keyed, NOT on the branch: after a crash
+ * and adoption the claim branch is fresh, so `findPrByHead` alone cannot see a PR
+ * a prior run already opened, and the item would collect a second one.
+ *
+ * Skip-with-log on any forge error: a forge hiccup must not fail an otherwise-good
+ * run — the work is pushed and the evidence stands whether or not a PR exists.
+ *
+ * Shared because BOTH pushers need it: BYO `oahs work` opens the PR inline, and
+ * the §10.2 dispatcher opens it on the host after the container exits (the
+ * container holds no forge token, and §10.3 leaves it unable to push at all).
+ */
+export async function openPrForBranch(input: {
+  client: OahsClient;
+  workItemId: string;
+  branch: string;
+  forge: { client: GitHubForge; baseBranch: string; title: string };
+  submit: (kind: Evidence['kind'], payload: Record<string, unknown>) => Promise<void>;
+  log?: (line: string) => void;
+}): Promise<number | null> {
+  try {
+    const priorOpened = (
+      await input.client.call<Evidence[]>('list_evidence', { workItemId: input.workItemId })
+    ).some((e) => e.kind === 'pr' && e.payload['action'] === 'opened');
+    if (priorOpened) return null;
+    const existing = await input.forge.client.findPrByHead({ head: input.branch });
+    const pr =
+      existing ??
+      (await input.forge.client.openPr({
+        head: input.branch,
+        base: input.forge.baseBranch,
+        title: input.forge.title,
+      }));
+    await input.submit('pr', { action: 'opened', number: pr.number, url: pr.url });
+    return pr.number;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    (input.log ?? defaultRunnerLog)(`pr open skipped for ${input.workItemId}: ${message}`);
+    return null;
+  }
+}
+
+/**
  * §10.3 — push ONE ref and return the remote's view of it (`git ls-remote`
  * output), presenting a claim-scoped credential through a per-dispatch
  * GIT_ASKPASS broker when one is given; without a credential this is the
@@ -1468,29 +1513,13 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
   // as `pr` evidence. Skip-with-log on any forge error — a forge hiccup must not
   // fail an otherwise-good run, and a BYO project with no forge never gets here.
   if (args.forge !== undefined && final !== args.baseline) {
-    try {
-      // Dedup on the SPINE's evidence (item-keyed), not the branch: after a
-      // crash + adoption the claim branch is fresh, so findPrByHead alone can't
-      // see a PR a prior run already opened. If `pr opened` evidence exists, the
-      // PR is already there — don't open a second one.
-      const priorOpened = (
-        await args.client.call<Evidence[]>('list_evidence', { workItemId: workItem.id })
-      ).some((e) => e.kind === 'pr' && e.payload['action'] === 'opened');
-      if (!priorOpened) {
-        const existing = await args.forge.client.findPrByHead({ head: args.branch });
-        const pr =
-          existing ??
-          (await args.forge.client.openPr({
-            head: args.branch,
-            base: args.forge.baseBranch,
-            title: args.forge.title,
-          }));
-        await args.submit('pr', { action: 'opened', number: pr.number, url: pr.url });
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      defaultRunnerLog(`pr open skipped for ${workItem.externalKey}: ${message}`);
-    }
+    await openPrForBranch({
+      client: args.client,
+      workItemId: workItem.id,
+      branch: args.branch,
+      forge: args.forge,
+      submit: args.submit,
+    });
   }
 
   // 9 — routing: the file says what the agent claims; the core decides.
@@ -1772,11 +1801,9 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     }),
     // §9.6: a forge client for PR-on-dispatch, when the project has one. §10.2:
     // never in ASSIGNED mode — PR-on-dispatch reads `list_evidence`, outside the
-    // scoped allowlist. In the container model the run still pushes the claim
-    // branch and reaches in_review here; opening the PR moves to the
-    // dispatcher-push path (§10.3/§10.4, host static token), so a container run
-    // currently lands the branch WITHOUT a PR until that story wires it. BYO
-    // `oahs work` (no assignment) opens the PR inline, unchanged.
+    // scoped allowlist, and the container holds no forge token. The DISPATCHER
+    // opens the PR on the host instead, after it pushes (see apps/oahs/src/
+    // dispatcher.ts). BYO `oahs work` (no assignment) opens it inline, unchanged.
     ...(options.forge !== undefined && options.assignment === undefined
       ? {
           forge: {

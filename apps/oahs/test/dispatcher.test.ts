@@ -322,6 +322,75 @@ describe('§10.3 dispatcher pushes on the container’s behalf', () => {
     expect(item.blockedReason).toBe('awaiting_human_input');
   });
 
+  it('opens the PR itself (§9.6) — the container cannot, so nobody else would', async () => {
+    // The hole this closes: §10.3 leaves the container unable to push, and PR-on-
+    // dispatch was deferred to stories that then shipped without it — so every
+    // dispatched run reached in_review with no PR, making the `requireMergedPr`
+    // gate policy unsatisfiable outside BYO `oahs work`.
+    const calls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      calls.push(`${method} ${url.replace('https://api.github.com', '')}`);
+      if (method === 'GET' && url.includes('/pulls?')) {
+        return new Response('[]', { status: 200 }); // no existing PR for this head
+      }
+      if (method === 'POST' && url.endsWith('/pulls')) {
+        return new Response(JSON.stringify({ number: 42, html_url: 'https://github.com/acme/widgets/pull/42' }), {
+          status: 201,
+        });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const spawn = async (req: SpawnRequest): Promise<SpawnResult> => {
+      const assignment = JSON.parse(req.env['OAHS_ASSIGNMENT']!) as { claim: Claim };
+      await containerSucceeds(assignment.claim);
+      return { code: 0, tail: '' };
+    };
+    const result = await dispatchOnce({
+      ...baseOptions(),
+      client: host,
+      spawn,
+      forge: { owner: 'acme', repo: 'widgets', baseBranch: 'main', token: 'ghp_forge', fetchImpl },
+    });
+    expect(result.outcome).toBe('container_exited');
+
+    // It looked for an existing PR before opening one, then opened it.
+    expect(calls.some((c) => c.startsWith('GET /repos/acme/widgets/pulls?'))).toBe(true);
+    expect(calls).toContain('POST /repos/acme/widgets/pulls');
+    // …and recorded it, which is what the done-gate's requireMergedPr reads.
+    const evidence = await host.call<Evidence[]>('list_evidence', { workItemId: itemId });
+    const pr = evidence.find((e) => e.kind === 'pr');
+    expect(pr?.payload).toMatchObject({ action: 'opened', number: 42 });
+  });
+
+  it('does not open a SECOND PR when the item already has one (crash/adopt safety)', async () => {
+    // Dedup is on the spine's item-keyed evidence, not the branch: an adopted run
+    // has a fresh branch, so findPrByHead alone would open a duplicate.
+    await host.call('submit_evidence', {
+      workItemId: itemId,
+      evidence: { kind: 'pr', payload: { action: 'opened', number: 7, url: 'u' } },
+    });
+    let posted = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'POST' && String(input).endsWith('/pulls')) posted += 1;
+      return new Response('[]', { status: 200 });
+    }) as unknown as typeof fetch;
+    const spawn = async (req: SpawnRequest): Promise<SpawnResult> => {
+      const assignment = JSON.parse(req.env['OAHS_ASSIGNMENT']!) as { claim: Claim };
+      await containerSucceeds(assignment.claim);
+      return { code: 0, tail: '' };
+    };
+    await dispatchOnce({
+      ...baseOptions(),
+      client: host,
+      spawn,
+      forge: { owner: 'acme', repo: 'widgets', baseBranch: 'main', token: 'ghp_forge', fetchImpl },
+    });
+    expect(posted).toBe(0);
+  });
+
   it('never hands the container a push credential', async () => {
     let req: SpawnRequest | undefined;
     const spawn = (r: SpawnRequest): Promise<SpawnResult> => {

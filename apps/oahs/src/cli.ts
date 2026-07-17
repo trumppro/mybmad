@@ -1032,23 +1032,37 @@ export function buildProgram(): Command {
           const project = opts.project ?? loadProfile().directory?.project;
           let repoPath = opts.repo;
           let specFolder = opts.specFolder;
+          let forge: { owner: string; repo: string; baseBranch: string; token: string } | undefined;
           if (project !== undefined) {
             const record = await client.call<{
               repoPath: string | null;
               defaultSpecFolder: string | null;
+              baseBranch: string | null;
               forgeOwner: string | null;
               forgeRepo: string | null;
             }>('project_get', { projectId: project });
             repoPath = repoPath ?? record.repoPath ?? undefined;
             specFolder = specFolder ?? record.defaultSpecFolder ?? undefined;
-            // §10.2: PR-on-dispatch (§9.6) is not wired through the container
-            // model yet — it moves to the dispatcher-push path (§10.3/§10.4). Warn
-            // so a forge project’s missing PR is expected, not a silent surprise.
-            if (record.forgeOwner !== null && record.forgeRepo !== null) {
+            // §9.6 PR-on-dispatch: the DISPATCHER opens the PR, because it is the
+            // side that pushes (§10.3 leaves the container unable to). The forge
+            // token lives here and in the runner only — never on the spine (§0.1).
+            const forgeToken = process.env['OAHS_GITHUB_TOKEN'];
+            if (
+              record.forgeOwner !== null &&
+              record.forgeRepo !== null &&
+              forgeToken !== undefined &&
+              forgeToken !== ''
+            ) {
+              forge = {
+                owner: record.forgeOwner,
+                repo: record.forgeRepo,
+                baseBranch: record.baseBranch ?? 'main',
+                token: forgeToken,
+              };
+            } else if (record.forgeOwner !== null && record.forgeRepo !== null) {
               process.stderr.write(
-                `oahs dispatch: project ${project} has a forge (${record.forgeOwner}/${record.forgeRepo}); ` +
-                  'container runs push the claim branch and reach in_review WITHOUT opening a PR ' +
-                  '(PR-on-dispatch lands with §10.3/§10.4). Use `oahs work` for inline PRs.\n',
+                `oahs dispatch: project ${project} has a forge (${record.forgeOwner}/${record.forgeRepo}) but ` +
+                  'OAHS_GITHUB_TOKEN is unset — dispatched runs will reach in_review without opening a PR.\n',
               );
             }
           }
@@ -1073,6 +1087,7 @@ export function buildProgram(): Command {
             specFolder,
             agentCmd: opts.agentCmd,
             ...(pushCredential !== undefined ? { pushCredential } : {}),
+            ...(forge !== undefined ? { forge } : {}),
             ...(opts.remote !== undefined ? { remote: opts.remote } : {}),
             ...(opts.network !== undefined ? { network: opts.network } : {}),
             ...(opts.containerUrl !== undefined ? { containerUrl: opts.containerUrl } : {}),

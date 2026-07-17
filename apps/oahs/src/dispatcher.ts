@@ -15,7 +15,14 @@ import { spawn as spawnChild } from 'node:child_process';
 
 import type { OahsClient } from '@oahs/contracts';
 import type { Claim, WorkItem, WorkItemState } from '@oahs/core';
-import { pushClaimBranch, resolvePushAnchor, type PushCredential } from '@oahs/runner';
+import {
+  GitHubForge,
+  openPrForBranch,
+  pushClaimBranch,
+  resolvePushAnchor,
+  type FetchImpl,
+  type PushCredential,
+} from '@oahs/runner';
 
 /** Where the host checkout is mounted inside the container. */
 export const CONTAINER_MOUNT = '/repo';
@@ -104,6 +111,12 @@ export interface DispatchOptions {
    * credential helper does the push (BYO-shaped hosts).
    */
   pushCredential?: PushCredential;
+  /**
+   * §9.6 PR-on-dispatch. The dispatcher opens the PR because it is the side that
+   * pushed: the container holds no forge token and, since §10.3, cannot push at
+   * all. The spine never sees this token (§0.1) — it lives in this process only.
+   */
+  forge?: { owner: string; repo: string; baseBranch: string; token: string; baseUrl?: string; fetchImpl?: FetchImpl };
   /**
    * Agent env pairs (e.g. model keys) forwarded to the AGENT child INSIDE the
    * container via the inner `oahs work --agent-env`. Deliberately NOT part of
@@ -316,6 +329,35 @@ export async function dispatchOnce(options: DispatchOptions): Promise<DispatchRe
     });
     if (push.pushed) {
       log(`pushed claim/${claim.id} for ${picked.externalKey}`);
+      // §9.6: the branch is on the remote, so the PR is openable — and this is the
+      // only process that can. Evidence-only and failure-tolerant: a forge hiccup
+      // must not undo a good dispatch. Without this the gate policy
+      // `requireMergedPr` is unsatisfiable for every containerised run.
+      if (options.forge !== undefined) {
+        const number = await openPrForBranch({
+          client,
+          workItemId: picked.id,
+          branch: `claim/${claim.id}`,
+          forge: {
+            client: new GitHubForge({
+              owner: options.forge.owner,
+              repo: options.forge.repo,
+              token: options.forge.token,
+              ...(options.forge.baseUrl !== undefined ? { baseUrl: options.forge.baseUrl } : {}),
+              ...(options.forge.fetchImpl !== undefined ? { fetchImpl: options.forge.fetchImpl } : {}),
+            }),
+            baseBranch: options.forge.baseBranch,
+            title: `${picked.externalKey}: ${picked.title}`,
+          },
+          submit: async (kind, payload) => {
+            // No fencing token: the container released the claim on its way out,
+            // and a stale one would be REJECTED, whereas evidence needs none.
+            await client.call('submit_evidence', { workItemId: picked.id, evidence: { kind, payload } });
+          },
+          log,
+        });
+        if (number !== null) log(`opened PR #${number} for ${picked.externalKey}`);
+      }
     } else if (push.reason !== undefined) {
       // The work exists but must not be certified as reachable: record it (already
       // done as `commit{pushRefused}`) and block for a human.
