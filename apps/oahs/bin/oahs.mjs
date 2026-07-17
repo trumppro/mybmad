@@ -44,7 +44,7 @@ var OAHS_VERSION, OAHS_SCHEMA_VERSION;
 var init_version = __esm({
   "../../packages/contracts/src/version.ts"() {
     "use strict";
-    OAHS_VERSION = false ? "0.0.0-dev" : "0.1.0";
+    OAHS_VERSION = false ? "0.0.0-dev" : "0.1.1";
     OAHS_SCHEMA_VERSION = false ? 0 : 1;
   }
 });

@@ -6,6 +6,38 @@ whose tree this fork carries; it is not ours to write in.
 Versions are sourced from [`oahs-version.json`](oahs-version.json) and tagged
 `oahs-v*` — never `v*`, which is upstream's tag namespace.
 
+## 0.1.1 — 2026-07-18
+
+A corrective release. **0.1.0 shipped a data-loss bug**; this is the version to run.
+
+### Fixed
+
+- **Two `oahs serve` on one data dir no longer destroy it.** PGlite does not lock its
+  directory, so two servers — two terminals, or a service restart racing a manual start,
+  both defaulting to `~/.oahs/data` — both accepted writes and then corrupted the dir
+  (`RuntimeError: Aborted()` at the next open). `oahs serve` now takes a cross-process
+  lock and a second server refuses with a clear message. This was present in 0.1.0.
+- **`$OAHS_PORT` is honoured by `serve`.** The runtime image advertised it and health-checked
+  that port while `serve` read only `--port`, so `docker run -e OAHS_PORT=8080` bound 4521
+  and the container was unhealthy forever.
+- Two APIs stopped pretending: a scoped grant is now refused rather than silently applied
+  globally, and `oahs ping` no longer constructs a meter nothing reads.
+
+### Added
+
+- **Schema-version guard.** `oahs serve` refuses to open a data dir written by a newer
+  binary than itself, so an old binary cannot corrupt a newer dir. `GET /version` reports
+  the `schemaVersion` it enforces.
+- **CI for the carried BMAD tree and repo-wide style** (`tools` and `style` jobs), both
+  now required. The carried installer no longer phones upstream's npm registry or steers
+  fork users to install upstream over this fork.
+
+### Docs
+
+- Corrected claims that asserted machine-enforcement the code lacks (the "no writes outside
+  the command bus" invariant holds by construction, not a lint rule; actor type is never a
+  source of authority but two opt-in policy checks can restrict by it).
+
 ## 0.1.0 — 2026-07-17
 
 First tagged version. It marks the point where the container execution path was
