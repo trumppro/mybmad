@@ -22,7 +22,7 @@ variables:
 workflow:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH'
+    - if: "$CI_COMMIT_BRANCH"
 
 # The two invariants and the doc-marker check run against the source tree only —
 # no install needed, so this job is fast and can gate before the heavier suite.

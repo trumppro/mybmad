@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "bmad-method",
-  "private": true,
   "version": "6.10.0",
+  "private": true,
   "description": "Workspace root of a fork. This tree is BMAD-METHOD (MIT, (c) BMad Code, LLC), carried unmodified; the oahs platform (packages/, apps/, delivery/, docs/oahs/) is net-new here -- see OAHS.md. Private: nothing in this workspace is published to npm.",
   "keywords": [
     "agile",

@@ -10,6 +10,7 @@ _bmad*/
 
 # IDE integration folders (user-specific, not in repo)
 .junie/
+.obsidian/
 
 # Quality scan artifacts produced by bmad-workflow-builder
 # (per-skill .analysis/ folders contain JSON/HTML reports that should
@@ -22,3 +23,7 @@ packages/
 apps/
 delivery/
 pnpm-workspace.yaml
+# pnpm writes this file; prettier reformatting it just picks a fight with the
+# package manager, which rewrites it on the next install. (eslint.config.mjs already
+# ignores it for the same reason — .prettierignore had simply missed it.)
+pnpm-lock.yaml

@@ -106,8 +106,7 @@ services:
     # including the `up -d --build oahs` in this file's own header. `oahs dispatch`
     # rejects an empty --repo with a readable error, so the requirement is enforced
     # where it applies: when you actually start the dispatcher.
-    command:
-      [
+    command: [
         "oahs",
         "dispatch",
         "--image",

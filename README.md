@@ -80,7 +80,7 @@ oahs events wi_00000d        # who did what, on what evidence — a query, not a
                              # — no error, no hint that the handle was never resolved.
 ```
 
-Then open **http://localhost:4521/ui** and log in with a token: portfolio rollups, gate inbox, live messages over SSE, work-item detail with the evidence trail. Every **spine** command is also an MCP tool (`oahs_*`) at `POST /mcp` on the same bearer token; CLI-local commands (`init`, `work`, `dispatch`, `serve`, `identities`) are not spine commands and have no tool. `make help` lists the real targets; `make bootstrap` seeds a demo into an already-running server.
+Then open **<http://localhost:4521/ui>** and log in with a token: portfolio rollups, gate inbox, live messages over SSE, work-item detail with the evidence trail. Every **spine** command is also an MCP tool (`oahs_*`) at `POST /mcp` on the same bearer token; CLI-local commands (`init`, `work`, `dispatch`, `serve`, `identities`) are not spine commands and have no tool. `make help` lists the real targets; `make bootstrap` seeds a demo into an already-running server.
 
 Compose, equivalently — published on loopback only, deliberately:
 

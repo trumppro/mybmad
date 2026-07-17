@@ -13,7 +13,7 @@ name: oahs release
 
 on:
   push:
-    tags: ['oahs-v*']
+    tags: ["oahs-v*"]
 
 permissions:
   contents: write

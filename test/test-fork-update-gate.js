@@ -75,10 +75,7 @@ const result = spawnSync(process.execPath, [cli, '--help'], {
 const elapsed = Date.now() - started;
 
 assert(result.status === 0, '`bmad-cli --help` still works', `exit=${result.status}`);
-assert(
-  /Usage: bmad-cli/.test(result.stdout ?? ''),
-  'the installer itself is untouched — it still prints its usage',
-);
+assert(/Usage: bmad-cli/.test(result.stdout ?? ''), 'the installer itself is untouched — it still prints its usage');
 assert(
   elapsed < 2500,
   `no registry call blocks startup (took ${elapsed}ms; ungated is ~5000ms)`,

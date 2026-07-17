@@ -8,7 +8,8 @@
 #     grep 3: no TODO/FIXME/TBD/LOREM markers in delivery/ or docs/oahs/;
 #   * make check — typecheck + every @oahs/* suite (incl. the packages/db pg-engine
 #     parity run that re-executes the core conformance suite against PGlite);
-#   * tools — the CARRIED BMAD tree, which had no CI at all until 2026-07-17.
+#   * tools — the CARRIED BMAD tree, which had no CI at all until 2026-07-17;
+#   * style — eslint + prettier + markdownlint, repo-wide.
 #
 # pnpm-lock.yaml and pnpm-workspace.yaml are COMMITTED (see .gitignore). Until they
 # were, `pnpm install --frozen-lockfile` below could only ever fail with
@@ -32,17 +33,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 'grep 1/3 — no LLM-provider SDK inside the spine (§0.1)'
+      - name: "grep 1/3 — no LLM-provider SDK inside the spine (§0.1)"
         run: |
           if grep -rnE '@anthropic-ai/|openai|@google/generative|mistralai|cohere|ollama' packages/core/src packages/db/src packages/contracts/src apps/spine-api/src; then
             echo "FAIL (§0.1): an LLM-provider SDK reference is inside the spine"; exit 1
           fi
-      - name: 'grep 2/3 — no @oahs/gateway import inside the spine (§2.5)'
+      - name: "grep 2/3 — no @oahs/gateway import inside the spine (§2.5)"
         run: |
           if grep -rn '@oahs/gateway' packages/core/src packages/db/src packages/contracts/src apps/spine-api/src; then
             echo "FAIL (§2.5): @oahs/gateway is imported inside the spine"; exit 1
           fi
-      - name: 'grep 3/3 — no unfinished-work markers in delivery/ or docs/oahs/'
+      - name: "grep 3/3 — no unfinished-work markers in delivery/ or docs/oahs/"
         run: |
           if grep -rnE '\b(TODO|FIXME|TBD|LOREM IPSUM)\b' delivery/ docs/oahs/; then
             echo "FAIL: an unfinished-work marker is in delivery/ or docs/oahs/"; exit 1
@@ -90,7 +91,7 @@ jobs:
       # suite looks broken on macOS: /usr/bin/python3 there is 3.9.)
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
       - name: Enable pnpm
         run: |
           corepack enable
@@ -121,6 +122,40 @@ jobs:
         run: |
           shellcheck --version
           shellcheck tools/oahs-bootstrap.sh tools/team-seed.sh scripts/e2e-dispatch.sh
+
+  # Repo-wide style: ESLint, Prettier, markdownlint. Green as of 2026-07-17 — before
+  # that all three were red and nothing ran them (quality.yaml, their only caller,
+  # died at `npm ci` on every push). Wiring them in is the whole point: a style check
+  # that is green but ungated is green until the next commit.
+  #
+  # Scope is set by .prettierignore and eslint.config.mjs, not here. Both deliberately
+  # exclude packages/, apps/ and delivery/ — the oahs workspaces own their toolchain
+  # (TS strict + vitest) and `make check` gates them.
+  style:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.13.0 --activate
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: ESLint
+        run: pnpm run lint
+      - name: Prettier
+        run: pnpm run format:check
+      - name: markdownlint
+        run: pnpm run lint:md
+
+      # NOTE for whoever edits the comments in this file: a YAML comment that begins
+      # with `# eslint` is an ESLint DIRECTIVE, not prose. The first version of the
+      # block above started "# eslint + prettier + markdownlint" and eslint tried to
+      # parse the rest of the sentence as a rule config, failing the very job it
+      # describes. Start such comments with anything else.
 
   # The §10.2/§10.3 container path, against a REAL docker daemon. Everything else
   # that covers the dispatcher injects a fake spawner, so before this job the agent

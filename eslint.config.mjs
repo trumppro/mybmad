@@ -145,4 +145,15 @@ export default [
       'unicorn/filename-case': 'off',
     },
   },
+
+  // GitLab mandates this exact filename. `yml/file-extension` wants `.yaml` for
+  // consistency, which is a fine house rule and an impossible one here: rename the
+  // file and GitLab simply stops running CI on the mirror. The rule is off for this
+  // path only — the extension is the platform's to choose, not ours.
+  {
+    files: ['.gitlab-ci.yml'],
+    rules: {
+      'yml/file-extension': 'off',
+    },
+  },
 ];
