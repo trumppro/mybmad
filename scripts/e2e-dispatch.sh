@@ -120,7 +120,18 @@ $OAHS dispatch --once \
 
 say "assert"
 STATE="$(rpc get_work_item '{"workItemId":"e2e-1"}' "$RUNNER_TOKEN" | field state)"
-[ "$STATE" = "in_review" ] || fail "expected in_review, got '$STATE'"
+if [ "$STATE" != "in_review" ]; then
+  # The container's own words. The dispatcher files them as evidence rather than
+  # logging them, so without this a CI failure says only "exited 1".
+  echo "--- what the container actually said -------------------------------"
+  rpc list_evidence '{"workItemId":"e2e-1"}' "$RUNNER_TOKEN" \
+    | node -e "
+      const d=JSON.parse(require('fs').readFileSync(0,'utf8'));
+      for (const e of d.result ?? []) if (e.kind==='halt_report') console.log(String(e.payload.autoRunResult ?? '').slice(-3000));
+    " || true
+  echo "-------------------------------------------------------------------"
+  fail "expected in_review, got '$STATE'"
+fi
 echo "  ✓ item reached in_review"
 
 BRANCH="$(git --git-dir="$WORK/origin.git" for-each-ref --format='%(refname:short)' 'refs/heads/claim/*' | head -1)"
