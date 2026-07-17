@@ -131,7 +131,7 @@ export interface RunnerOptions {
     fetchImpl?: FetchImpl;
   };
   /** TEST ONLY: die at a specific point to exercise crash recovery. */
-  failpoint?: 'before_report';
+  failpoint?: 'before_report' | 'after_durability_push';
   /** Max wall time for one agent invocation (ms). Default 30 minutes. */
   agentTimeoutMs?: number;
   /** Extra environment variables passed to the agent invocation. */
@@ -493,6 +493,28 @@ function samePushGuard(a: readonly string[], b: readonly string[]): boolean {
 }
 
 /**
+ * §8, asked as a question instead of a verdict: may this revision be published
+ * at all? EVERY reason the authoritative push refuses must be honoured here too —
+ * a divergent push config (redirect or command knob), a missing anchor, and an
+ * LFS repo whose objects the disabled pre-push hook never uploads. The §10.4
+ * durability push uses this and must be SILENT when the answer is no: the
+ * authoritative push reports the refusal, blocks, and records it exactly once.
+ */
+function mayPublish(args: {
+  remote: string;
+  repoPath: string;
+  workDir: string;
+  baseline: string;
+  trustedPushGuard: readonly string[];
+}): boolean {
+  if (args.trustedPushGuard.length === 0) return false;
+  if (!samePushGuard(pushGuardFingerprint(args.remote, args.repoPath), args.trustedPushGuard)) return false;
+  const final = git(['rev-parse', 'HEAD'], args.workDir);
+  if (final !== args.baseline && commitUsesLfs(final, args.workDir)) return false;
+  return true;
+}
+
+/**
  * §10.3 — a claim-scoped push credential. The forge issues it authorizing ONLY
  * `refs/heads/claim/<claimId>` and only for the life of the lease: a leaked one
  * can rewrite the claim's own branch and nothing else, which is the whole point
@@ -624,6 +646,100 @@ export function pushRef(input: {
   } finally {
     broker?.cleanup();
   }
+}
+
+/**
+ * §10.4 — a previous claim of this item whose pushed work is worth adopting.
+ *
+ * Every fact here comes from the SPINE or from git's own structure — never from
+ * repo CONTENT. That is the whole design: a claim branch's commits (and their
+ * messages) are written by the agent, which §8/§10.3 model as the adversary, so
+ * nothing an agent can author may decide which branch belongs to which work item
+ * or where its baseline is. Instead:
+ *  - WHICH branches are this item's: the spine knows every claim ever taken on it,
+ *    and `claim/<claimId>` is the runner's own naming convention, not the agent's;
+ *  - WHERE the work starts: `git merge-base` against the checkout's own base —
+ *    structural, unforgeable;
+ *  - WHETHER it is already spent: the spine's `commit` evidence names the branch
+ *    it certified. This is what stops a rework dispatch (a review rejection loops
+ *    the item back with no local worktree) from re-adopting the very branch that
+ *    was just rejected instead of re-invoking the agent.
+ *
+ * Only a DEAD claim qualifies: the spine permits one live claim per item, and the
+ * caller holds it. Remote-touching, so never called from an assigned container
+ * (§10.3 gives it no credential).
+ */
+export async function findAdoptableRemoteClaim(input: {
+  client: OahsClient;
+  repoPath: string;
+  remote: string;
+  workItemId: string;
+  /** This dispatch's own claim — never a candidate. */
+  currentClaimId: string;
+  credential?: PushCredential;
+}): Promise<{ branch: string; head: string; baseline: string; claimId: string } | null> {
+  const [claims, evidence] = await Promise.all([
+    input.client.call<Claim[]>('list_claims', { includeReleased: true }),
+    input.client.call<Evidence[]>('list_evidence', { workItemId: input.workItemId }),
+  ]);
+  // Work the spine already certified is SPENT: re-adopting it would resubmit work
+  // that was already judged — and a review REJECTION is exactly the state where a
+  // re-dispatch finds no local worktree and comes looking here.
+  //
+  // Spent-ness is keyed on the REVISION, not the branch name. A `commit` record
+  // names the branch of the run that made it, and an ADOPTING run certifies the
+  // adopted revision under its OWN new branch — so branch names alone would leave
+  // the source branch looking forever fresh and re-adoptable. The sha is what was
+  // actually judged, and it is the same sha wherever it is pointed from.
+  const consumed = new Set<string>();
+  for (const e of evidence) {
+    if (e.kind !== 'commit') continue;
+    for (const key of ['sha', 'branch']) {
+      const value = e.payload[key];
+      if (typeof value === 'string') consumed.add(value);
+    }
+  }
+  const candidates = claims
+    // kind 'work' only: a REVIEW claim (§9.4) dispatches a reviewer, never an
+    // agent, so it has no branch and nothing to adopt.
+    .filter((c) => c.workItemId === input.workItemId && c.kind === 'work' && c.id !== input.currentClaimId)
+    .map((c) => `claim/${c.id}`)
+    .filter((branch) => !consumed.has(branch));
+  if (candidates.length === 0) return null;
+
+  const broker =
+    input.credential !== undefined
+      ? writePushAskpass(join(input.repoPath, '.oahs', 'tmp'), input.credential)
+      : undefined;
+  const brokerArgs = broker !== undefined ? [...CREDENTIAL_HELPER_RESET] : [];
+  try {
+    // Newest claim first: the last machine to get anywhere did the most work.
+    for (const branch of candidates.reverse()) {
+      let head: string;
+      try {
+        git([...brokerArgs, 'fetch', input.remote, `+refs/heads/${branch}:refs/remotes/oahs-adopt/${branch}`], input.repoPath, broker?.env);
+        head = git(['rev-parse', `refs/remotes/oahs-adopt/${branch}`], input.repoPath);
+      } catch {
+        continue; // never pushed (the machine died before publishing), or gone
+      }
+      // The decisive spent-ness check: this REVISION was already certified, under
+      // whatever branch name. Catches the adopt-of-an-adopt case that a branch-name
+      // check misses (an adopting run records the source's sha under its own branch).
+      if (consumed.has(head)) continue;
+      // Structural baseline: where this branch forked from what we have.
+      let baseline: string;
+      try {
+        baseline = git(['merge-base', head, 'HEAD'], input.repoPath);
+      } catch {
+        continue;
+      }
+      if (head === baseline) continue; // published, but the agent committed nothing
+      return { branch, head, baseline, claimId: branch.slice('claim/'.length) };
+    }
+  } finally {
+    broker?.cleanup();
+  }
+  return null;
 }
 
 /**
@@ -1127,6 +1243,8 @@ interface FinishArgs {
    * Absent → ambient credentials, unchanged.
    */
   pushCredential?: PushCredential;
+  /** TEST ONLY: die at a specific point to exercise crash recovery. */
+  failpoint?: RunnerOptions['failpoint'];
   submit: (kind: Evidence['kind'], payload: Record<string, unknown>) => Promise<void>;
 }
 
@@ -1142,6 +1260,34 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
     agentExitCode: args.agentExitCode,
     ...(args.agentLogPath !== undefined ? { agentLogPath: args.agentLogPath } : {}),
   });
+
+  // 6.5 — §10.4 DURABILITY push. The agent has finished and its work exists only
+  // on this machine's disk; pinned verification below can then run for many
+  // minutes. A machine lost in that window takes an entire agent run with it, and
+  // no second machine can recover what it never saw. So publish the claim branch
+  // NOW, the moment the work is trustworthy — and only then: this is the same §8
+  // check the authoritative push makes below, so an agent that redirected the push
+  // config still lands nothing anywhere (the refusal is reported down there, once).
+  //
+  // Best-effort and evidence-free: the push below remains the authoritative one
+  // that measures reachability and records `commit`. This only buys durability.
+  if (!args.assigned && mayPublish(args)) {
+    try {
+      pushRef({
+        repoPath: args.repoPath,
+        remote: args.remote,
+        branch: args.branch,
+        ...(args.pushCredential !== undefined ? { credential: args.pushCredential } : {}),
+      });
+      if (args.failpoint === 'after_durability_push') {
+        throw new Error('failpoint after_durability_push: machine died during verification');
+      }
+    } catch (error) {
+      if (args.failpoint === 'after_durability_push') throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      defaultRunnerLog(`durability push skipped for ${args.branch}: ${redactSecrets(message, args.pushCredential?.password)}`);
+    }
+  }
 
   // 7 — pinned verification only; the allowlist gates what ever gets executed.
   for (const command of workItem.pinnedVerification ?? []) {
@@ -1557,6 +1703,7 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     // §10.3: an assigned (container) run holds no push credential and pushes
     // nothing — the dispatcher pushes on the host afterwards.
     assigned: options.assignment !== undefined,
+    ...(options.failpoint !== undefined ? { failpoint: options.failpoint } : {}),
     ...(options.pushCredential !== undefined ? { pushCredential: options.pushCredential } : {}),
     specRel,
     branch,
@@ -1633,6 +1780,75 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
       outcome: outcome === 'in_review' ? 'adopted_in_review' : outcome,
       details: `adopted finished worktree ${dir}`,
     };
+  }
+  // 10b — §10.4 CROSS-MACHINE adopt. No local worktree survived, but a previous
+  // machine may have PUBLISHED this item's work before dying (§10.4 pushes the
+  // claim branch as soon as the §8 guard passes, so an agent run outlives the
+  // machine that produced it). Adopt it as late evidence rather than paying for
+  // the agent again. Everything trusted here comes from the spine or from git's
+  // structure — see findAdoptableRemoteClaim.
+  //
+  // Never from an assigned container: it holds no credential to fetch with (§10.3).
+  if (scan.adoptable === null && scan.wrecked.length === 0 && options.assignment === undefined) {
+    const candidate = await findAdoptableRemoteClaim({
+      client,
+      repoPath,
+      remote,
+      workItemId: workItem.id,
+      currentClaimId: claim.id,
+      ...(options.pushCredential !== undefined ? { credential: options.pushCredential } : {}),
+    });
+    if (candidate !== null) {
+      mkdirSync(worktreesRoot, { recursive: true });
+      const dir = join(worktreesRoot, claim.id);
+      git(['worktree', 'add', '--detach', dir, candidate.head], repoPath);
+      // The marker goes down FIRST: any throw from here on must leave a worktree
+      // the normal sweep can recognise and reclaim (as adoptable or wrecked).
+      // Without it a leftover directory is invisible to scanOldWorktrees, and its
+      // stable name makes every later dispatch die on `worktree add` — the item
+      // would become permanently un-dispatchable, silently.
+      writeMarker(dir, {
+        workItemId: workItem.id,
+        claimId: claim.id,
+        baseline: candidate.baseline,
+        invocations: 1, // an agent DID run for this work — just not on this machine
+      });
+      // Only finished work is adoptable: the HALT report must be readable from the
+      // branch itself. A run whose agent never committed its report is
+      // indistinguishable from a half-write to a machine that has only the branch.
+      const status = normalizeStatus(readSpecReport(join(dir, specRel)).status);
+      if (status === 'done' || status === 'in_review') {
+        git(['branch', branch, candidate.head], repoPath);
+        await dispatch.call('advance_state', {
+          workItemId: workItem.id,
+          to: 'in_progress',
+          fencingToken: claim.fencingToken,
+        });
+        const outcome = await finishRun({
+          ...finishArgs,
+          workDir: dir,
+          baseline: candidate.baseline,
+          agentExitCode: null,
+          // §8 anchors must be taken WHERE THE PUSH HAPPENS — the same rule that
+          // keeps §10.3 from fingerprinting inside the container. The rails anchor
+          // belongs to the machine that crashed, and a fingerprint spans global and
+          // system git config, so importing it here would read THIS machine's own
+          // legitimate setup (its credential helper, its clone URL scheme) as agent
+          // tampering and block work that a plain dispatch on this very machine
+          // would push happily. No agent ran here, so this reading IS our pre-agent
+          // moment — exactly what the fresh path below records for itself.
+          trustedPushGuard: pushGuardFingerprint(remote, repoPath),
+        });
+        removeWorktree(dir, repoPath);
+        log(`${workItem.externalKey} → ${outcome === 'in_review' ? 'adopted_in_review' : outcome} (adopted ${candidate.branch} from the remote)`);
+        return {
+          ...base,
+          outcome: outcome === 'in_review' ? 'adopted_in_review' : outcome,
+          details: `adopted remote claim branch ${candidate.branch}`,
+        };
+      }
+      removeWorktree(dir, repoPath);
+    }
   }
   if (scan.wrecked.length > 0) {
     // A wrecked worktree (no commit past baseline / non-terminal status) is

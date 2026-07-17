@@ -313,6 +313,32 @@ chặn nhầm; (2) phải neo vào **rails**, không phải đọc lại config 
 của dispatcher **dùng chung và tồn tại lâu dài** giữa các lượt dispatch — đọc lại config sống
 sẽ âm thầm "phong thánh" đúng cái redirect mà agent lượt trước để lại thành baseline mới.
 
+### Công của agent sống lâu hơn cái máy chạy nó (§10.4)
+
+Ngay khi agent xong và **§8 cho phép push**, runner publish nhánh `claim/<claimId>` — *trước*
+giai đoạn kiểm chứng vốn có thể chạy hàng chục phút. Mất máy sau đó không còn mất trắng cả
+một lượt agent: máy khác nhận cùng item sẽ **adopt** phần việc đã publish (nộp evidence muộn)
+thay vì trả tiền chạy agent lần nữa. Lượt push này là *best-effort, không ghi evidence* — push
+chính thức phía sau vẫn là bên đo `reachableOnRemote` và ghi `commit`. Nó dùng **đúng** các điều
+kiện từ chối của §8 (khớp mốc neo + không phải repo LFS), nên agent thao túng config vẫn không
+đẩy được gì đi đâu.
+
+Điều quyết định **an toàn** là chỗ lấy niềm tin. Commit trên nhánh claim — **kể cả message** —
+do agent viết, mà §8/§10.3 coi agent là *đối thủ*. Nên không có gì trong **nội dung repo** được
+quyền quyết định nhánh nào thuộc item nào, baseline ở đâu, hay đã dùng chưa. Ba câu trả lời đó lấy từ:
+
+- **nhánh nào là của item này** → spine (`list_claims`, và tên `claim/<claimId>` là quy ước của
+  runner, không phải của agent);
+- **work bắt đầu từ đâu** → `git merge-base` (cấu trúc, không giả mạo được);
+- **đã tiêu thụ chưa** → bằng chứng `commit` trên spine, khoá theo **sha** chứ không theo tên
+  nhánh. Quan trọng: lượt adopt chứng thực sha đã adopt dưới nhánh **mới** của chính nó, nên nếu
+  khoá theo tên nhánh thì nhánh nguồn sẽ mãi "còn mới" và mọi lần rework sau đều adopt lại đúng
+  cái vừa bị reject. Sha thì ở đâu cũng là nó.
+
+Mốc neo §8 luôn chụp **ở nơi thực sự push** — cùng quy tắc khiến §10.3 không chụp trong container.
+Lượt adopt không import mốc neo của máy đã chết: vân tay trải cả global/system config, nên mốc của
+máy A sẽ đọc **cấu hình hợp lệ của máy B** thành "agent thao túng" và block oan.
+
 Dispatcher chỉ push khi container **thật sự thành công** (item ở `in_review`, không bị
 block). Một lượt tự-block vẫn để lại nhánh `claim/<id>` — `git worktree add -b` tạo nhánh
 *trước khi* agent chạy và `worktree remove` không xoá nhánh — nên "có nhánh" **không** đồng

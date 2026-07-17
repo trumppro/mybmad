@@ -100,18 +100,25 @@ Pin: `pnpm -C packages/runner test`
 
 Tests first:
 
-- [ ] At claim start the runner pushes an empty baseline commit on `claim/<claimId>`
-      (marker committed, not just worktree-local); a second machine claiming the same
-      item after a crash fetches the branch, reads the in-branch marker, and **adopts**
-      (submits late evidence) instead of re-invoking the agent.
-- [ ] Same-machine adoption (today's local-marker path, `scanOldWorktrees` in
+- [x] The runner PUBLISHES the claim branch as soon as §8 permits (right after the agent,
+      before verification), so an agent run outlives its machine; a second machine claiming
+      the same item after a crash finds that work and **adopts** it (submits late evidence)
+      instead of re-invoking the agent. (Amended: the original "empty baseline commit +
+      in-branch marker" was built and REJECTED in review — a marker in a commit message is
+      agent-authored, i.e. adversary-controlled under §8. Identity/baseline/spent-ness now
+      come from the spine and from `git merge-base`.)
+- [x] Same-machine adoption (today's local-marker path, `scanOldWorktrees` in
       `packages/runner/src/index.ts` ~lines 535–557) still works unchanged.
 
 Implementation:
 
-- [ ] Commit the marker into the claim branch at baseline and push it; make
-      `scanOldWorktrees` fall back to a `git fetch` + in-branch marker read when no local
-      worktree exists; adoption reuses the existing late-evidence path (~lines 662–690).
+- [x] Durability push in `finishRun` (guarded by the SAME §8 conditions as the
+      authoritative push: anchor match + no LFS); `findAdoptableRemoteClaim` resolves
+      candidates from `list_claims({includeReleased})`, rejects any branch the spine's
+      `commit` evidence already certified (this is what keeps a review REJECTION from
+      re-adopting the branch it just rejected), and takes the baseline from `git merge-base`;
+      adoption reuses the existing late-evidence path. The adopt worktree carries a marker so
+      a throw leaves something `scanOldWorktrees` can reclaim.
 
 ## 10.5 Lease reaper and live transcripts
 
