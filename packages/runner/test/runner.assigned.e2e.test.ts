@@ -134,5 +134,14 @@ describe('runner — assigned dispatch under a mutation-only scoped token (§10.
     // In particular: no list_work_items, no claim_task, no get_task_context, no mint.
     expect(seen.length).toBeGreaterThan(0);
     for (const command of seen) expect(ALLOWED.has(command)).toBe(true);
+
+    // §10.3: the container holds NO push credential, so it pushes NOTHING — the
+    // claim branch stays local and the dispatcher pushes it on the host later.
+    const onRemote = git(['ls-remote', join(tmpRoot, 'origin.git'), `refs/heads/claim/${assignment.claim.id}`], repoDir);
+    expect(onRemote).toBe('');
+    // …and it says so honestly, rather than certifying an unpushed revision.
+    const commit = (result.evidence ?? []).find((e) => e.kind === 'commit');
+    expect(commit?.payload['reachableOnRemote']).toBe(false);
+    expect(commit?.payload['pushDeferred']).toBe('dispatcher');
   });
 });

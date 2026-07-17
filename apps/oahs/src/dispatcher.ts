@@ -15,6 +15,7 @@ import { spawn as spawnChild } from 'node:child_process';
 
 import type { OahsClient } from '@oahs/contracts';
 import type { Claim, WorkItem, WorkItemState } from '@oahs/core';
+import { pushClaimBranch, resolvePushAnchor, type PushCredential } from '@oahs/runner';
 
 /** Where the host checkout is mounted inside the container. */
 export const CONTAINER_MOUNT = '/repo';
@@ -79,6 +80,15 @@ export interface DispatchOptions {
   featureId?: string;
   /** Claim lease TTL (ms) — sized to a whole container run. */
   claimTtlMs?: number;
+  /** Git remote the claim branch is pushed to. Default 'origin'. */
+  remote?: string;
+  /**
+   * §10.3 — the CLAIM-SCOPED push credential. It stays on the HOST: the
+   * container is given no push credential at all, and the dispatcher pushes the
+   * claim branch on its behalf once it exits. Absent → the operator's ambient
+   * credential helper does the push (BYO-shaped hosts).
+   */
+  pushCredential?: PushCredential;
   /**
    * Agent env pairs (e.g. model keys) forwarded to the AGENT child INSIDE the
    * container via the inner `oahs work --agent-env`. Deliberately NOT part of
@@ -233,6 +243,18 @@ export async function dispatchOnce(options: DispatchOptions): Promise<DispatchRe
   );
   const assignment = { claim, workItem: context.workItem, entryState: context.entryState };
 
+  // 4.5 — §8/§10.3: take the trusted push-guard anchor NOW, on the HOST, before
+  //       any agent can touch the bind-mounted repo's config. The dispatcher is
+  //       the process that will push, so the anchor must be fingerprinted in the
+  //       environment that pushes; the container never records one.
+  const remote = options.remote ?? 'origin';
+  const trustedPushGuard = await resolvePushAnchor({
+    client,
+    workItemId: picked.id,
+    repoPath: options.repoPath,
+    remote,
+  });
+
   // 5 — one container per claim.
   log(`dispatch ${picked.externalKey} (claim ${claim.id}) → container ${options.image}`);
   const result = await spawn(buildSpawnRequest(options, scopedToken, assignment));
@@ -243,6 +265,48 @@ export async function dispatchOnce(options: DispatchOptions): Promise<DispatchRe
   //     as evidence, block `other`, and release the lease (static token).
   if (result.code === 0) {
     log(`container for ${picked.externalKey} exited 0`);
+    // 6.5 — §10.3: the container held no push credential and pushed nothing, so
+    //       the claim branch is local in the bind-mounted repo. Push it here, on
+    //       the host, under the §8 guard and a claim-scoped credential, and record
+    //       the reachable `commit` the done-gate reads.
+    //
+    //       ONLY for a run that reached in_review. A self-blocked container still
+    //       leaves `claim/<id>` behind — runOnce creates the branch with `worktree
+    //       add -b` BEFORE the agent runs and `worktree remove` does not delete it
+    //       — so "a branch exists" is NOT evidence of success. Pushing on a
+    //       blocked item would certify `reachableOnRemote:true` for work its own
+    //       HALT rejected, and re-blocking would overwrite the container's real
+    //       blockedReason (block_task assigns unconditionally, and downgrading
+    //       e.g. review_non_convergence to `other` loses its unblock privilege).
+    const after = await client.call<WorkItem>('get_work_item', { workItemId: picked.id });
+    if (after.blockedReason !== null || after.state !== 'in_review') {
+      log(`container for ${picked.externalKey} self-reported ${after.blockedReason ?? after.state} — no push`);
+      return { dispatched: true, workItemId: picked.id, claimId: claim.id, outcome: 'container_exited' };
+    }
+    const push = await pushClaimBranch({
+      client,
+      workItemId: picked.id,
+      repoPath: options.repoPath,
+      remote,
+      branch: `claim/${claim.id}`,
+      trustedPushGuard,
+      ...(options.pushCredential !== undefined ? { credential: options.pushCredential } : {}),
+    });
+    if (push.pushed) {
+      log(`pushed claim/${claim.id} for ${picked.externalKey}`);
+    } else if (push.reason !== undefined) {
+      // The work exists but must not be certified as reachable: record it (already
+      // done as `commit{pushRefused}`) and block for a human.
+      log(`push not completed for ${picked.externalKey}: ${push.reason} — blocking (other)`);
+      await client.call('block_task', { workItemId: picked.id, reason: 'other' });
+      return {
+        dispatched: true,
+        workItemId: picked.id,
+        claimId: claim.id,
+        outcome: 'blocked',
+        details: push.reason,
+      };
+    }
     return { dispatched: true, workItemId: picked.id, claimId: claim.id, outcome: 'container_exited' };
   }
   const tail = result.tail.trim().slice(-4000);

@@ -10,7 +10,19 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildAgentEnv } from '../src/index.js';
 
-const SECRETS = ['OAHS_TOKEN', 'OAHS_MODEL_API_KEY', 'OAHS_MODEL_ENDPOINT', 'SSH_AUTH_SOCK'];
+// §10.3: the push credential is the runner's, never the agent's. The per-dispatch
+// GIT_ASKPASS broker and the credential it serves must stay out of the child —
+// the push happens in the runner parent (or, under `oahs dispatch`, on the host)
+// after the agent has already exited.
+const SECRETS = [
+  'OAHS_TOKEN',
+  'OAHS_MODEL_API_KEY',
+  'OAHS_MODEL_ENDPOINT',
+  'SSH_AUTH_SOCK',
+  'GIT_ASKPASS',
+  'OAHS_PUSH_USER',
+  'OAHS_PUSH_PASS',
+];
 
 /** Set env vars for one test, remembering originals so afterEach restores them. */
 const saved: Record<string, string | undefined> = {};
@@ -35,6 +47,9 @@ describe('buildAgentEnv — minimal child env by default (§8)', () => {
       OAHS_MODEL_API_KEY: 'sk-live-abc',
       OAHS_MODEL_ENDPOINT: 'https://models.internal',
       SSH_AUTH_SOCK: '/tmp/ssh-agent.sock',
+      GIT_ASKPASS: '/repo/.oahs/tmp/askpass-deadbeef.sh',
+      OAHS_PUSH_USER: 'x-access-token',
+      OAHS_PUSH_PASS: 'ghs_super_secret_push_token',
       PATH: '/usr/bin:/bin',
     });
 

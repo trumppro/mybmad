@@ -76,22 +76,22 @@ Pin: `pnpm -C packages/runner test`
 
 Tests first (runner suite with a fake git remote):
 
-- [ ] The dispatch push path uses a credential that authorizes only
+- [x] The dispatch push path uses a credential that authorizes only
       `refs/heads/claim/<claimId>` — pushing any other ref is rejected by the (fake)
       askpass/remote helper in the test.
-- [ ] The agent child never sees the push credential (env assertion, building on 8.6):
+- [x] The agent child never sees the push credential (env assertion, building on 8.6):
       no `GIT_ASKPASS` value, no token, no `SSH_AUTH_SOCK` in the child; the push runs in
       the dispatcher/runner parent, not the agent.
 
 Implementation:
 
-- [ ] `packages/runner/src/index.ts` push step (~line 487): set a per-dispatch
+- [x] `packages/runner/src/index.ts` push step (~line 487): set a per-dispatch
       `GIT_ASKPASS` script (written to the worktree-adjacent temp dir, `chmod 700`) that
       emits a short-lived credential; or, preferred, the **dispatcher pushes on behalf**
       after the container exits so the agent container never receives push creds at all —
       pick the dispatcher-push variant when running under `oahs dispatch`, the askpass
       variant for BYO `oahs work`.
-- [ ] Document both credential shapes in `docs/oahs/01-cai-dat-va-van-hanh.md` (BYO vs
+- [x] Document both credential shapes in `docs/oahs/01-cai-dat-va-van-hanh.md` (BYO vs
       dispatcher).
 
 ## 10.4 Dispatch-start branch push and cross-machine adoption

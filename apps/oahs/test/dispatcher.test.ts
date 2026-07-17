@@ -10,7 +10,7 @@
  *    non-zero → it records the tail as evidence, blocks `other`, releases;
  *  - the spine process never references a docker socket (only the dispatcher does).
  */
-import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
@@ -20,6 +20,7 @@ import type { FastifyInstance } from 'fastify';
 import { createMemoryEngine, type Actor, type Feature, type WorkItem, type Claim, type Evidence } from '@oahs/core';
 import { makeClient, type OahsClient } from '@oahs/contracts';
 import { TokenStore, buildServer } from '@oahs/spine-api';
+import { git } from '@oahs/runner';
 
 import { dispatchOnce, withForwardedModelEnv, type SpawnRequest, type SpawnResult } from '../src/dispatcher.js';
 
@@ -37,7 +38,50 @@ let baseUrl: string;
 let devToken: string;
 let host: OahsClient;
 let repoPath: string;
+let originPath: string;
+let tmpRoot: string;
 let itemId: string;
+
+/**
+ * A real checkout + bare origin: §10.3 fingerprints the push target on the host
+ * before spawning, and pushes the claim branch after the container exits.
+ */
+function makeRepo(): void {
+  tmpRoot = mkdtempSync(join(tmpdir(), 'oahs-dispatch-'));
+  repoPath = join(tmpRoot, 'repo');
+  originPath = join(tmpRoot, 'origin.git');
+  mkdirSync(repoPath, { recursive: true });
+  git(['init', '-b', 'main'], repoPath);
+  writeFileSync(join(repoPath, 'README.md'), '# dispatched\n', 'utf8');
+  git(['add', '-A'], repoPath);
+  git(['-c', 'user.name=S', '-c', 'user.email=s@t', 'commit', '-m', 'baseline'], repoPath);
+  git(['clone', '--bare', repoPath, originPath], tmpRoot);
+  git(['remote', 'add', 'origin', originPath], repoPath);
+}
+
+/**
+ * Stand in for an assigned-mode container that SUCCEEDS: commit on the claim
+ * branch (left LOCAL — the container holds no push credential) and self-report
+ * to the spine exactly as runOnce does, i.e. advance to in_review and release.
+ */
+async function containerSucceeds(claim: Claim): Promise<string> {
+  const sha = containerCommits(claim.id);
+  await host.call('advance_state', { workItemId: itemId, to: 'in_progress', fencingToken: claim.fencingToken });
+  await host.call('advance_state', { workItemId: itemId, to: 'in_review', fencingToken: claim.fencingToken });
+  await host.call('release_claim', { claimId: claim.id, reason: 'run finished' });
+  return sha;
+}
+
+/** Just the git half: commit on the claim branch, leaving it LOCAL. */
+function containerCommits(claimId: string): string {
+  git(['checkout', '-b', `claim/${claimId}`], repoPath);
+  writeFileSync(join(repoPath, 'work.txt'), 'agent work\n', 'utf8');
+  git(['add', '-A'], repoPath);
+  git(['-c', 'user.name=A', '-c', 'user.email=a@t', 'commit', '-m', 'agent work'], repoPath);
+  const sha = git(['rev-parse', 'HEAD'], repoPath);
+  git(['checkout', 'main'], repoPath);
+  return sha;
+}
 
 async function setupReadyItem(): Promise<void> {
   const admin = makeClient({ baseUrl, token: ADMIN });
@@ -61,13 +105,13 @@ beforeEach(async () => {
   app = await buildServer({ engine: createMemoryEngine({ wallClock: true }), tokenStore, adminToken: ADMIN });
   await app.listen({ port: 0, host: '127.0.0.1' });
   baseUrl = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
-  repoPath = mkdtempSync(join(tmpdir(), 'oahs-dispatch-'));
+  makeRepo();
   await setupReadyItem();
 });
 
 afterEach(async () => {
   await app.close();
-  rmSync(repoPath, { recursive: true, force: true });
+  rmSync(tmpRoot, { recursive: true, force: true });
 });
 
 /** Static client that records every command it sends. */
@@ -197,6 +241,104 @@ describe('§10.2 dispatcher — orchestration & isolation', () => {
     const result = await dispatchOnce({ ...baseOptions(), client: host, spawn });
     expect(result.dispatched).toBe(false);
     expect(spawned).toBe(false);
+  });
+});
+
+describe('§10.3 dispatcher pushes on the container’s behalf', () => {
+  it('pushes the claim branch the container left local, and records the reachable commit', async () => {
+    let claimId = '';
+    // The fake container: commits on the claim branch, self-reports in_review, and
+    // pushes NOTHING (it holds no push credential) — assigned-mode runOnce exactly.
+    const spawn = async (req: SpawnRequest): Promise<SpawnResult> => {
+      const assignment = JSON.parse(req.env['OAHS_ASSIGNMENT']!) as { claim: Claim };
+      claimId = assignment.claim.id;
+      await containerSucceeds(assignment.claim);
+      return { code: 0, tail: '' };
+    };
+    const result = await dispatchOnce({ ...baseOptions(), client: host, spawn });
+    expect(result.outcome).toBe('container_exited');
+
+    // The branch is now on the remote — pushed by the dispatcher, on the host.
+    const onRemote = git(['ls-remote', originPath, `refs/heads/claim/${claimId}`], repoPath);
+    expect(onRemote).not.toBe('');
+
+    // …and the done-gate's requirement is satisfied by the dispatcher's evidence
+    // (checkReviewEvidence accepts ANY commit evidence that is reachable).
+    const evidence = await host.call<Evidence[]>('list_evidence', { workItemId: itemId });
+    const reachable = evidence.find((e) => e.kind === 'commit' && e.payload['reachableOnRemote'] === true);
+    expect(reachable).toBeDefined();
+    expect(reachable!.payload['pushedBy']).toBe('dispatcher');
+  });
+
+  it('carries §8 push trust with the push: a redirected remote is refused, not followed', async () => {
+    // The fake container commits AND (as a tampering agent would, inside the
+    // bind-mounted repo) redirects the push URL after the dispatcher's anchor.
+    const evilPath = join(tmpRoot, 'evil.git');
+    git(['init', '--bare', evilPath], tmpRoot);
+    const spawn = async (req: SpawnRequest): Promise<SpawnResult> => {
+      const assignment = JSON.parse(req.env['OAHS_ASSIGNMENT']!) as { claim: Claim };
+      await containerSucceeds(assignment.claim);
+      git(['remote', 'set-url', '--push', 'origin', evilPath], repoPath);
+      return { code: 0, tail: '' };
+    };
+    const result = await dispatchOnce({ ...baseOptions(), client: host, spawn });
+
+    expect(result.outcome).toBe('blocked');
+    expect(result.details).toMatch(/push configuration changed/);
+    // Nothing was exfiltrated to the attacker's remote.
+    expect(git(['ls-remote', evilPath], repoPath)).toBe('');
+    // The item is blocked and the refusal is on the record, un-certified.
+    const item = await host.call<WorkItem>('get_work_item', { workItemId: itemId });
+    expect(item.blockedReason).toBe('other');
+    const evidence = await host.call<Evidence[]>('list_evidence', { workItemId: itemId });
+    expect(evidence.some((e) => e.kind === 'commit' && e.payload['reachableOnRemote'] === true)).toBe(false);
+    expect(evidence.some((e) => e.kind === 'commit' && typeof e.payload['pushRefused'] === 'string')).toBe(true);
+  });
+
+  it('does NOT push or certify a self-blocked container’s leftover branch', async () => {
+    // `worktree add -b` creates claim/<id> BEFORE the agent runs and `worktree
+    // remove` leaves it behind, so a BLOCKED run still has a pushable branch —
+    // "a branch exists" is not evidence of success.
+    const spawn = async (req: SpawnRequest): Promise<SpawnResult> => {
+      const assignment = JSON.parse(req.env['OAHS_ASSIGNMENT']!) as { claim: Claim };
+      containerCommits(assignment.claim.id);
+      await host.call('block_task', {
+        workItemId: itemId,
+        reason: 'awaiting_human_input',
+        fencingToken: assignment.claim.fencingToken,
+      });
+      await host.call('release_claim', { claimId: assignment.claim.id, reason: 'run blocked' });
+      return { code: 0, tail: '' };
+    };
+    const result = await dispatchOnce({ ...baseOptions(), client: host, spawn });
+
+    expect(result.outcome).toBe('container_exited');
+    // Nothing pushed, nothing certified — the item's own HALT rejected this work.
+    expect(git(['ls-remote', originPath, 'refs/heads/claim/*'], repoPath)).toBe('');
+    const evidence = await host.call<Evidence[]>('list_evidence', { workItemId: itemId });
+    expect(evidence.some((e) => e.kind === 'commit' && e.payload['reachableOnRemote'] === true)).toBe(false);
+    // …and the container's real blockedReason is preserved, not downgraded to 'other'.
+    const item = await host.call<WorkItem>('get_work_item', { workItemId: itemId });
+    expect(item.blockedReason).toBe('awaiting_human_input');
+  });
+
+  it('never hands the container a push credential', async () => {
+    let req: SpawnRequest | undefined;
+    const spawn = (r: SpawnRequest): Promise<SpawnResult> => {
+      req = r;
+      return Promise.resolve({ code: 0, tail: '' });
+    };
+    await dispatchOnce({
+      ...baseOptions(),
+      client: host,
+      spawn,
+      pushCredential: { username: 'x-access-token', password: 'ghs_push_secret' },
+    });
+    // The credential stays on the host: not in the container env, not in its argv.
+    expect(Object.values(req!.env)).not.toContain('ghs_push_secret');
+    expect(JSON.stringify(req!.env)).not.toContain('ghs_push_secret');
+    expect(req!.argv.join(' ')).not.toContain('ghs_push_secret');
+    expect(Object.keys(req!.env)).not.toContain('GIT_ASKPASS');
   });
 });
 

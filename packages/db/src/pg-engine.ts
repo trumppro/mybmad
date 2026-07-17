@@ -1898,8 +1898,14 @@ export class PgEngine {
       // Non-code deliverables carry no commit requirement (roadmap §1.4):
       // their completion rests on machine-checkable doc evidence plus the
       // permitted actor's decision.
-      const commitOk = rows.some((row) => row.kind === 'commit' && row.payload['reachableOnRemote'] === true);
-      if (!commitOk) {
+      //
+      // The LATEST commit decides, not any historical one (§10.3) — rows are
+      // seq-ordered above. Evidence is append-only and an item can be dispatched
+      // more than once, so `some()` would let a reachable commit from an EARLIER
+      // run certify a later run whose push was refused. Mirrors the memory engine.
+      const commits = rows.filter((row) => row.kind === 'commit');
+      const latestCommit = commits[commits.length - 1];
+      if (latestCommit?.payload['reachableOnRemote'] !== true) {
         throw new GuardFailedError(
           'final revision must be reachable on the remote (push is part of the HALT contract)',
         );

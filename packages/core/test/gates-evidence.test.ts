@@ -268,6 +268,36 @@ describe('review_approval evidence guards (roadmap §1.4, D7)', () => {
     ).toThrow(GuardFailedError);
     expect(ctx.engine.getWorkItem(wi.id).state).toBe('in_review');
   });
+
+  // §10.3: evidence is APPEND-ONLY and an item can be dispatched more than once,
+  // so the LATEST commit is the final revision — a reachable commit from an
+  // earlier run must not certify a later run whose push never landed (config
+  // redirected, LFS, auth failure). The last word wins, as for pinned runs.
+  it('a stale reachable commit does not certify a later unpushed one', () => {
+    const ctx = setup();
+    const { wi, claim } = setupItemInReview(ctx, ['pnpm -r test']);
+    submitTestRun(ctx, wi.id, claim, 'pnpm -r test', 0);
+    submitCommit(ctx, wi.id, claim, true); // run 1 pushed fine
+    submitCommit(ctx, wi.id, claim, false); // run 2's push was refused
+
+    expect(() =>
+      ctx.engine.approveGate({ workItemId: wi.id, gate: 'review_approval', actorId: ctx.reviewer.id }),
+    ).toThrow(GuardFailedError);
+    expect(ctx.engine.getWorkItem(wi.id).state).toBe('in_review');
+  });
+
+  // …and the §10.3 dispatcher flow itself: the container records the revision as
+  // not-yet-reachable, then the host pushes and appends the reachable one.
+  it('the dispatcher’s later reachable commit satisfies the gate after the container’s deferred one', () => {
+    const ctx = setup();
+    const { wi, claim } = setupItemInReview(ctx, ['pnpm -r test']);
+    submitTestRun(ctx, wi.id, claim, 'pnpm -r test', 0);
+    submitCommit(ctx, wi.id, claim, false); // container: pushDeferred
+    submitCommit(ctx, wi.id, claim, true); // dispatcher: pushed on the host
+
+    ctx.engine.approveGate({ workItemId: wi.id, gate: 'review_approval', actorId: ctx.reviewer.id });
+    expect(ctx.engine.getWorkItem(wi.id).state).toBe('done');
+  });
 });
 
 // ---------------------------------------------------------------------------

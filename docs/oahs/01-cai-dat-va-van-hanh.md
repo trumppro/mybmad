@@ -270,6 +270,61 @@ oahs work --agent-cmd '…' --agent-env ANTHROPIC_API_KEY=sk-… --agent-env MY_
 oahs work --agent-cmd '…' --inherit-env
 ```
 
+### Credential push theo claim (§10.3)
+
+Credential push là của **runner/dispatcher**, không bao giờ của agent. Có **hai hình
+dạng**, chọn theo cách bạn chạy — cùng một nguyên tắc: credential nên **ngắn hạn** và chỉ
+uỷ quyền đúng **một ref**, `refs/heads/claim/<claimId>`. Rò rỉ thì kẻ cầm chỉ ghi được
+đúng nhánh của claim đó, không phải cả repo.
+
+**BYO `oahs work` — askpass theo lượt dispatch.** Đặt `OAHS_PUSH_TOKEN` (tuỳ chọn
+`--push-user`, mặc định `x-access-token`). Runner ghi một script GIT_ASKPASS **chmod 700**
+vào `<repo>/.oahs/tmp` (đã nằm trong `info/exclude`) **chỉ cho lượt push đó**, và xoá nó
+trong `finally`. Bí mật **không nằm trên đĩa**: script chỉ `echo` biến env của chính tiến
+trình git. Không đặt `OAHS_PUSH_TOKEN` → dùng credential helper sẵn có của bạn, y như cũ.
+
+> **Hệ quả vận hành:** khi (và chỉ khi) bạn đưa `OAHS_PUSH_TOKEN`, lượt push đó chạy kèm
+> `-c credential.helper=` — **xoá sạch danh sách helper** cho đúng lệnh đó. Bắt buộc, vì
+> credential helper **được hỏi trước** GIT_ASKPASS: trên máy đã có helper (osxkeychain,
+> libsecret, GCM, `store` — git của Apple bật sẵn ở gitconfig hệ thống) thì broker sẽ
+> **không bao giờ được gọi**, push âm thầm dùng credential **toàn-repo** của bạn (mất sạch
+> claim-scoping, không một dòng lỗi), và tệ hơn: sau khi push thành công git chạy
+> `credential approve` → helper **ghi token claim-scoped xuống đĩa/keychain**, sống lâu hơn
+> lease mà nó được cấp cho. Helper của bạn vẫn nguyên vẹn cho mọi lệnh git khác.
+
+```bash
+OAHS_PUSH_TOKEN=ghs_… oahs work --project my-app --agent-cmd '…'
+```
+
+**`oahs dispatch` — dispatcher push hộ.** Container **không hề nhận** credential push:
+nó commit lên `claim/<claimId>` rồi dừng, ghi bằng chứng `commit` trung thực
+(`reachableOnRemote: false`, `pushDeferred: dispatcher`). Sau khi container thoát 0,
+**dispatcher trên host** mới push nhánh đó bằng `OAHS_PUSH_TOKEN` của mình và ghi thêm
+`commit{reachableOnRemote: true}` — thứ mà gate "done" đọc (nó chấp nhận *bất kỳ* bằng
+chứng commit nào reachable, và evidence là log chỉ-thêm).
+
+Điều quan trọng: **bảo đảm §8 đi theo người push**. Dispatcher đối chiếu push-config với
+**mốc neo sớm nhất** trên rails (bằng chứng `push_target` đầu tiên; chỉ khi item chưa có
+neo nào thì mới chụp và ghi mốc mới), rồi kiểm lại sau khi container thoát — một agent viết
+lại `remote.url`/`insteadOf` trong repo bind-mount sẽ bị **từ chối push** và item bị block,
+chứ không bị đẩy sang remote của kẻ tấn công. Hai điểm tinh tế: (1) vân tay phải chụp **trên
+host** vì đó là nơi push chạy — chụp trong container sẽ lẫn config global của container và
+chặn nhầm; (2) phải neo vào **rails**, không phải đọc lại config sống mỗi lượt, vì checkout
+của dispatcher **dùng chung và tồn tại lâu dài** giữa các lượt dispatch — đọc lại config sống
+sẽ âm thầm "phong thánh" đúng cái redirect mà agent lượt trước để lại thành baseline mới.
+
+Dispatcher chỉ push khi container **thật sự thành công** (item ở `in_review`, không bị
+block). Một lượt tự-block vẫn để lại nhánh `claim/<id>` — `git worktree add -b` tạo nhánh
+*trước khi* agent chạy và `worktree remove` không xoá nhánh — nên "có nhánh" **không** đồng
+nghĩa với thành công; push nó sẽ chứng thực `reachableOnRemote: true` cho công việc mà chính
+HALT của nó đã bác bỏ. Push **thất bại** (auth/mạng) cũng được ghi bằng chứng + block chứ
+không im lặng bỏ mặc item ở `in_review`.
+
+```bash
+OAHS_PUSH_TOKEN=ghs_… oahs dispatch --image oahs-runner:local \
+  --repo /abs/host/path/repo --spec-folder delivery/main --agent-cmd '…'
+```
+
 Trong manifest supervisor, mỗi entry mang `agentEnv` (map KEY→VALUE) và `inheritEnv`
 (bool) tương ứng. `--inherit-env` chỉ nên dùng khi bạn hiểu rằng nó trả lại **toàn bộ**
 env của runner cho child, kể cả các bí mật ở trên.

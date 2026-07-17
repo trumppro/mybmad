@@ -44,7 +44,9 @@ export { jobsLoop, runJobsOnce, type JobsOnceResult, type JobsRunnerOptions } fr
 export { GitHubForge, ForgeError, type PullRequest, type FetchImpl } from './forge.js';
 
 import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -157,6 +159,14 @@ export interface RunnerOptions {
     workItem: WorkItem;
     entryState: WorkItemState;
   };
+  /**
+   * §10.3 — a CLAIM-SCOPED push credential for BYO `oahs work`: presented via a
+   * per-dispatch GIT_ASKPASS broker for the claim-branch push only, and never
+   * handed to the agent child. Absent → the operator's ambient credential
+   * helper, unchanged. Under `oahs dispatch` this stays unset: the container is
+   * given NO push credential and the dispatcher pushes on the host instead.
+   */
+  pushCredential?: PushCredential;
 }
 
 export interface RunOnceResult {
@@ -386,12 +396,19 @@ export function buildGitEnv(args: string[]): NodeJS.ProcessEnv {
   return env;
 }
 
-/** Run a git command; throws on non-zero exit; returns trimmed stdout. */
-export function git(args: string[], cwd: string): string {
+/**
+ * Run a git command; throws on non-zero exit; returns trimmed stdout.
+ *
+ * `envExtra` (§10.3) is merged OVER the built env, for values that are
+ * per-CALL rather than operator configuration — the claim-scoped push askpass
+ * and its credential. It is deliberately not sourced from process.env: the
+ * credential exists only for the one push that presents it.
+ */
+export function git(args: string[], cwd: string, envExtra?: NodeJS.ProcessEnv): string {
   const result = spawnSync('git', [...HOOK_ISOLATION, ...args], {
     cwd,
     encoding: 'utf8',
-    env: buildGitEnv(args),
+    env: { ...buildGitEnv(args), ...envExtra },
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -473,6 +490,273 @@ function pushGuardFingerprint(remote: string, cwd: string): string[] {
 /** Two fingerprints equal? Both are pre-sorted by pushGuardFingerprint. */
 function samePushGuard(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((line, i) => line === b[i]);
+}
+
+/**
+ * §10.3 — a claim-scoped push credential. The forge issues it authorizing ONLY
+ * `refs/heads/claim/<claimId>` and only for the life of the lease: a leaked one
+ * can rewrite the claim's own branch and nothing else, which is the whole point
+ * of scoping it per claim rather than handing out a repo-wide token.
+ */
+export interface PushCredential {
+  /** Username git should present (forges usually accept any placeholder with a token). */
+  username?: string;
+  /** The secret. Never written to disk, never logged, never in an event payload. */
+  password: string;
+}
+
+/**
+ * §10.3 — build a PER-DISPATCH GIT_ASKPASS broker for one push.
+ *
+ * git asks for the username and password on stdout of $GIT_ASKPASS, one prompt
+ * per invocation. The script is written 0700 into a caller-chosen dir and reads
+ * the answers from ITS OWN env rather than embedding them, so the secret never
+ * lands on disk — only in the env of the git process that presents it. Returns
+ * the env the push must run with plus a `cleanup()` that removes the script;
+ * callers MUST cleanup in a finally, so the broker dies with the push.
+ *
+ * The agent child never receives any of this: it gets buildAgentEnv's allowlist,
+ * which carries neither GIT_ASKPASS nor the credential vars (pinned in
+ * agent-env.test.ts).
+ */
+export function writePushAskpass(
+  dir: string,
+  credential: PushCredential,
+): { env: NodeJS.ProcessEnv; cleanup: () => void } {
+  mkdirSync(dir, { recursive: true });
+  const scriptPath = join(dir, `askpass-${randomBytes(8).toString('hex')}.sh`);
+  // $1 is git's prompt ("Username for 'https://…': " / "Password for …").
+  const script = [
+    '#!/bin/sh',
+    'case "$1" in',
+    "  Username*) printf '%s\\n' \"$OAHS_PUSH_USER\" ;;",
+    "  *) printf '%s\\n' \"$OAHS_PUSH_PASS\" ;;",
+    'esac',
+    '',
+  ].join('\n');
+  writeFileSync(scriptPath, script, { encoding: 'utf8', mode: 0o700 });
+  chmodSync(scriptPath, 0o700); // explicit: writeFileSync mode is umask-masked
+  return {
+    env: {
+      GIT_ASKPASS: scriptPath,
+      OAHS_PUSH_USER: credential.username ?? 'x-access-token',
+      OAHS_PUSH_PASS: credential.password,
+      // Never let git fall back to an interactive prompt or the operator's
+      // ambient helper if the broker fails — fail loudly instead.
+      GIT_TERMINAL_PROMPT: '0',
+    },
+    cleanup: () => {
+      try {
+        rmSync(scriptPath, { force: true });
+      } catch {
+        /* best effort — a leftover broker is inert without its env */
+      }
+    },
+  };
+}
+
+/**
+ * §10.3 — scrub secrets out of a git failure before it becomes EVIDENCE.
+ *
+ * git names the remote in its errors, and an operator's remote URL may embed a
+ * credential (`https://user:token@host/…`); the claim-scoped secret itself can
+ * also surface. Evidence is a permanent, widely-readable record — a push that
+ * fails must explain itself without publishing the credential that failed.
+ */
+export function redactSecrets(message: string, secret?: string): string {
+  let out = message.replace(/(\w+:\/\/)[^@\s/]*@/g, '$1<redacted>@');
+  if (secret !== undefined && secret !== '') out = out.split(secret).join('<redacted>');
+  return out;
+}
+
+/**
+ * §10.3 — clear the credential-helper list for a broker-authenticated call.
+ *
+ * A credential HELPER outranks GIT_ASKPASS: git asks every configured helper
+ * first and only falls back to askpass if none answers. On any host with an
+ * ambient helper (osxkeychain, libsecret, GCM, `store` — Apple git ships one by
+ * DEFAULT in the system gitconfig) that would mean:
+ *   (a) the push silently authenticates with the operator's REPO-WIDE
+ *       credential and the claim scoping is a no-op, with no error; and
+ *   (b) after a successful push git runs `credential approve`, handing the
+ *       claim-scoped secret to that helper, which PERSISTS it — outliving the
+ *       lease it was scoped to, and contradicting "never written to disk".
+ * An empty `credential.helper` value resets the list, and `-c` is applied last,
+ * so this clears system+global+local: the broker becomes the ONLY source and
+ * nothing is stored. Exported so the test pins the exact shape the push uses.
+ */
+export const CREDENTIAL_HELPER_RESET: readonly string[] = ['-c', 'credential.helper='];
+
+/**
+ * §10.3 — push ONE ref and return the remote's view of it (`git ls-remote`
+ * output), presenting a claim-scoped credential through a per-dispatch
+ * GIT_ASKPASS broker when one is given; without a credential this is the
+ * operator's ambient helper, exactly as before.
+ *
+ * Only the single claim branch is ever pushed: a claim-scoped credential
+ * authorizes exactly `refs/heads/claim/<claimId>`, so anything else is both
+ * unnecessary here and rejected at the forge. The broker is removed in a
+ * `finally` — the credential outlives neither the push nor a throw.
+ *
+ * Shared by BYO `oahs work` (pushes its own claim branch) and the §10.2
+ * dispatcher (pushes on the container's behalf, on the host).
+ */
+export function pushRef(input: {
+  repoPath: string;
+  remote: string;
+  branch: string;
+  credential?: PushCredential;
+  /** Where the broker is written. Default `<repoPath>/.oahs/tmp` (git-excluded). */
+  askpassDir?: string;
+}): string {
+  const broker =
+    input.credential !== undefined
+      ? writePushAskpass(input.askpassDir ?? join(input.repoPath, '.oahs', 'tmp'), input.credential)
+      : undefined;
+  const brokerArgs = broker !== undefined ? [...CREDENTIAL_HELPER_RESET] : [];
+  try {
+    git([...brokerArgs, 'push', input.remote, input.branch], input.repoPath, broker?.env);
+    return git(
+      [...brokerArgs, 'ls-remote', input.remote, `refs/heads/${input.branch}`],
+      input.repoPath,
+      broker?.env,
+    );
+  } finally {
+    broker?.cleanup();
+  }
+}
+
+/**
+ * §10.3 (host, pre-spawn) — resolve the §8 trusted push anchor for a dispatch.
+ *
+ * Under `oahs dispatch` the DISPATCHER owns this: it is the process that will
+ * push, so the anchor must live in the environment that pushes (the host). A
+ * fingerprint taken inside the container would mix in the container's own global
+ * git config and false-block the host's push.
+ *
+ * The anchor is the EARLIEST `push_target` on the rails, not a fresh reading of
+ * the working config. That matters because the dispatcher's checkout is SHARED
+ * and PERSISTENT across dispatches: a redirect a previous container's agent left
+ * in `<repo>/.git/config` is already present when the next dispatch starts, so
+ * re-fingerprinting live config would quietly baptise the tampering as the new
+ * baseline. Anchoring on the first recorded target keeps the pre-tamper truth —
+ * the same reason the BYO crash-adopt path reads it (readTrustedPushGuard).
+ * Only when no anchor exists yet (this item's first dispatch) do we take the
+ * reading and record it.
+ */
+export async function resolvePushAnchor(input: {
+  client: OahsClient;
+  workItemId: string;
+  repoPath: string;
+  remote: string;
+}): Promise<string[]> {
+  const recorded = await readTrustedPushGuard(input.client, input.workItemId, input.remote);
+  if (recorded.length > 0) return recorded;
+  const guard = pushGuardFingerprint(input.remote, input.repoPath);
+  await input.client.call('submit_evidence', {
+    workItemId: input.workItemId,
+    evidence: { kind: 'push_target', payload: { remote: input.remote, guard } },
+  });
+  return guard;
+}
+
+export interface PushOnBehalfResult {
+  pushed: boolean;
+  /** Present when the push was refused or impossible; suitable for a block detail. */
+  reason?: string;
+  sha?: string;
+}
+
+/**
+ * §10.3 (host, post-exit) — push a finished claim branch ON BEHALF of a container
+ * that was deliberately given no push credential, then record the reachable
+ * `commit` the done-gate reads.
+ *
+ * The §8 guarantees travel WITH the push, because this is now the pushing
+ * process: the effective push config is re-fingerprinted and compared to the
+ * pre-agent anchor (an agent that rewrote remote.url/insteadOf inside the
+ * bind-mounted repo is refused, not followed), and an LFS repo is refused rather
+ * than certified with objects the disabled pre-push hook never uploaded.
+ *
+ * Evidence is append-only, so this ADDS `commit{reachableOnRemote:true}` next to
+ * the container's honest `commit{reachableOnRemote:false}` — `checkReviewEvidence`
+ * accepts ANY commit evidence that is reachable. No fencing token is presented:
+ * the container released the claim on its way out, and a stale token would be
+ * rejected, whereas evidence needs none.
+ */
+export async function pushClaimBranch(input: {
+  client: OahsClient;
+  workItemId: string;
+  repoPath: string;
+  remote: string;
+  branch: string;
+  trustedPushGuard: readonly string[];
+  credential?: PushCredential;
+}): Promise<PushOnBehalfResult> {
+  // Nothing to push: the container blocked before committing, or never branched.
+  let sha: string;
+  try {
+    sha = git(['rev-parse', '--verify', `refs/heads/${input.branch}`], input.repoPath);
+  } catch {
+    return { pushed: false, reason: `no ${input.branch} branch to push` };
+  }
+
+  const refuse = async (reason: string, extra: Record<string, unknown>): Promise<PushOnBehalfResult> => {
+    await input.client.call('submit_evidence', {
+      workItemId: input.workItemId,
+      evidence: {
+        kind: 'commit',
+        payload: { sha, branch: input.branch, reachableOnRemote: false, pushRefused: reason, ...extra },
+      },
+    });
+    return { pushed: false, reason, sha };
+  };
+
+  const observed = pushGuardFingerprint(input.remote, input.repoPath);
+  if (input.trustedPushGuard.length === 0) {
+    return refuse('no recorded push target for this item — refusing to trust repo config', {
+      observedPushGuard: observed,
+    });
+  }
+  if (!samePushGuard(observed, input.trustedPushGuard)) {
+    return refuse('push configuration changed since dispatch (redirect or command knob)', {
+      trustedPushGuard: [...input.trustedPushGuard],
+      observedPushGuard: observed,
+    });
+  }
+  if (commitUsesLfs(sha, input.repoPath)) {
+    return refuse(
+      'repository uses git-lfs, which uploads objects from the pre-push hook the runner disables — the pushed ref would be unusable',
+      {},
+    );
+  }
+
+  // A push can FAIL rather than be refused: bad credential, network, a remote
+  // that rejects the ref. Before §10.3 that throw exited the container non-zero
+  // and the dispatcher's crash path blocked the item; now the push runs here, so
+  // an uncaught throw would strand the item at in_review with no reachable
+  // commit, no evidence and no block — invisible to every later poll. Record it
+  // and let the caller block, exactly like a refusal.
+  let lsRemote: string;
+  try {
+    lsRemote = pushRef({
+      repoPath: input.repoPath,
+      remote: input.remote,
+      branch: input.branch,
+      ...(input.credential !== undefined ? { credential: input.credential } : {}),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return refuse(`push failed: ${redactSecrets(message, input.credential?.password)}`, {});
+  }
+  await input.client.call('submit_evidence', {
+    workItemId: input.workItemId,
+    evidence: {
+      kind: 'commit',
+      payload: { sha, branch: input.branch, reachableOnRemote: lsRemote.includes(sha), pushedBy: 'dispatcher' },
+    },
+  });
+  return { pushed: lsRemote.includes(sha), sha };
 }
 
 /**
@@ -828,6 +1112,21 @@ interface FinishArgs {
    * than trusted.
    */
   trustedPushGuard: readonly string[];
+  /**
+   * §10.3 — ASSIGNED (container) run: this process must NOT push. It holds no
+   * push credential by design (the dispatcher never injects one), so the claim
+   * branch is left local in the bind-mounted repo and the DISPATCHER pushes it
+   * on the host after the container exits, under the §8 guard and a claim-scoped
+   * credential. The `commit` evidence recorded here is therefore honestly
+   * `reachableOnRemote: false`; the dispatcher appends the reachable one.
+   */
+  assigned: boolean;
+  /**
+   * §10.3 — BYO push credential: when set, the push presents it through a
+   * per-dispatch GIT_ASKPASS broker instead of the operator's ambient helper.
+   * Absent → ambient credentials, unchanged.
+   */
+  pushCredential?: PushCredential;
   submit: (kind: Evidence['kind'], payload: Record<string, unknown>) => Promise<void>;
 }
 
@@ -874,6 +1173,23 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
     nonEmpty: filesChanged > 0,
     branch: args.branch,
   });
+
+  // 8a0 — §10.3 ASSIGNED (container): this process pushes NOTHING. It was handed
+  // no push credential (that is the isolation: an agent container never receives
+  // one), so it records the revision honestly as not-yet-reachable and leaves the
+  // claim branch local in the bind-mounted repo. The dispatcher pushes it on the
+  // host afterwards — under the SAME §8 guard, against the rails' pre-agent
+  // anchor — and appends the reachable `commit`, which is what the done-gate
+  // reads (it accepts ANY commit evidence with reachableOnRemote true).
+  if (args.assigned) {
+    await args.submit('commit', {
+      sha: final,
+      branch: args.branch,
+      reachableOnRemote: false,
+      pushDeferred: 'dispatcher',
+    });
+    return routeByHalt();
+  }
 
   // 8a — §8 push-config trust. Refuse (block, don't push) if the push-guard
   // fingerprint has diverged from the trusted pre-agent snapshot, or if there is
@@ -931,12 +1247,21 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
   // TTL (default 15 min, renewed right above at the git_diff submit) is blocked
   // `other`. Pathological only (a >15-min single push); the lever is a larger
   // `--claim-ttl`, and §10.5's reaper reclaims the lease either way.
-  git(['push', args.remote, args.branch], args.repoPath);
-  const lsRemote = git(['ls-remote', args.remote, `refs/heads/${args.branch}`], args.repoPath);
+  // §10.3: present a claim-scoped credential through a per-dispatch GIT_ASKPASS
+  // broker when one is configured; otherwise the operator's ambient helper, as
+  // before. The broker lives in the runner parent for the length of the push and
+  // is removed in the finally — the agent already finished, and its child env
+  // never carried any of this.
+  const pushed = pushRef({
+    repoPath: args.repoPath,
+    remote: args.remote,
+    branch: args.branch,
+    ...(args.pushCredential !== undefined ? { credential: args.pushCredential } : {}),
+  });
   await args.submit('commit', {
     sha: final,
     branch: args.branch,
-    reachableOnRemote: lsRemote.includes(final),
+    reachableOnRemote: pushed.includes(final),
   });
 
   // 8.5 — §9.6: open (or find) the PR from the pushed claim branch and record it
@@ -969,34 +1294,41 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
   }
 
   // 9 — routing: the file says what the agent claims; the core decides.
-  const status = normalizeStatus(spec.status);
-  const token = claim.fencingToken;
-  if (status === 'blocked') {
-    await dispatch.call('block_task', {
-      workItemId: workItem.id,
-      reason: mapBlockingCondition(spec.blockingCondition),
-      fencingToken: token,
+  return routeByHalt();
+
+  // Hoisted so the §10.3 assigned path (which returns before the push) routes
+  // through the SAME verdict logic — one HALT contract, one place.
+  // eslint-disable-next-line no-inner-declarations
+  async function routeByHalt(): Promise<'in_review' | 'blocked'> {
+    const status = normalizeStatus(spec.status);
+    const token = claim.fencingToken;
+    if (status === 'blocked') {
+      await dispatch.call('block_task', {
+        workItemId: workItem.id,
+        reason: mapBlockingCondition(spec.blockingCondition),
+        fencingToken: token,
+      });
+      await dispatch.call('release_claim', { claimId: claim.id, reason: 'run blocked' });
+      return 'blocked';
+    }
+    const hasCommit = final !== args.baseline;
+    if (status === 'done' || status === 'in_review' || (status === 'in_progress' && hasCommit)) {
+      await dispatch.call('advance_state', {
+        workItemId: workItem.id,
+        to: 'in_review',
+        fencingToken: token,
+      });
+      await dispatch.call('release_claim', { claimId: claim.id, reason: 'run finished' });
+      return 'in_review';
+    }
+    // Agent exited non-zero with no readable HALT status, or an unknown status.
+    await dispatch.call('block_task', { workItemId: workItem.id, reason: 'other', fencingToken: token });
+    await dispatch.call('release_claim', {
+      claimId: claim.id,
+      reason: 'run failed without a readable HALT',
     });
-    await dispatch.call('release_claim', { claimId: claim.id, reason: 'run blocked' });
     return 'blocked';
   }
-  const hasCommit = final !== args.baseline;
-  if (status === 'done' || status === 'in_review' || (status === 'in_progress' && hasCommit)) {
-    await dispatch.call('advance_state', {
-      workItemId: workItem.id,
-      to: 'in_review',
-      fencingToken: token,
-    });
-    await dispatch.call('release_claim', { claimId: claim.id, reason: 'run finished' });
-    return 'in_review';
-  }
-  // Agent exited non-zero with no readable HALT status, or an unknown status.
-  await dispatch.call('block_task', { workItemId: workItem.id, reason: 'other', fencingToken: token });
-  await dispatch.call('release_claim', {
-    claimId: claim.id,
-    reason: 'run failed without a readable HALT',
-  });
-  return 'blocked';
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,6 +1554,10 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     dispatch,
     workItem,
     claim,
+    // §10.3: an assigned (container) run holds no push credential and pushes
+    // nothing — the dispatcher pushes on the host afterwards.
+    assigned: options.assignment !== undefined,
+    ...(options.pushCredential !== undefined ? { pushCredential: options.pushCredential } : {}),
     specRel,
     branch,
     repoPath,
@@ -1278,12 +1614,17 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     // the trusted push guard comes from the `push_target` the crashed run
     // recorded on the rails. Absent (a legacy item) → empty → finishRun refuses
     // rather than trust the (possibly tampered) repo config.
+    // §10.3: an ASSIGNED (container) run pushes nothing, so it needs no anchor —
+    // and must not ask for one: `readTrustedPushGuard` reads `list_evidence`,
+    // outside the §10.1 scoped allowlist, which would 403 the whole adopt. The
+    // dispatcher reads the anchor on the host when it pushes.
     const outcome = await finishRun({
       ...finishArgs,
       workDir: dir,
       baseline,
       agentExitCode: null,
-      trustedPushGuard: await readTrustedPushGuard(client, workItem.id, remote),
+      trustedPushGuard:
+        options.assignment !== undefined ? [] : await readTrustedPushGuard(client, workItem.id, remote),
     });
     removeWorktree(dir, repoPath);
     log(`${workItem.externalKey} → ${outcome === 'in_review' ? 'adopted_in_review' : outcome} (adopted ${dir})`);
@@ -1313,8 +1654,16 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   // touch repo config, and record it on the rails. finishRun refuses to push if
   // the fingerprint later diverges; the rails copy lets a crash-adopt (which
   // never re-invokes the agent) verify against this same pre-tamper anchor.
-  const trustedPushGuard = pushGuardFingerprint(remote, repoPath);
-  await submit('push_target', { remote, guard: trustedPushGuard });
+  //
+  // §10.3: NOT in an assigned (container) run. This process pushes nothing, so
+  // it needs no anchor — and must not record one: a fingerprint taken here
+  // reflects the CONTAINER's effective git config, while the dispatcher pushes
+  // from the HOST, whose global config differs. That anchor would false-block a
+  // later push. The dispatcher snapshots and records its own, pre-spawn.
+  const trustedPushGuard = options.assignment !== undefined ? [] : pushGuardFingerprint(remote, repoPath);
+  if (options.assignment === undefined) {
+    await submit('push_target', { remote, guard: trustedPushGuard });
+  }
   ensureGitExcludes(repoPath);
   mkdirSync(worktreesRoot, { recursive: true });
   const worktreeDir = join(worktreesRoot, claim.id);

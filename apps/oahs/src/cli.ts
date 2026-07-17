@@ -791,6 +791,10 @@ export function buildProgram(): Command {
       '--inherit-env',
       'pass the runner’s FULL process env to the agent child (default: a minimal allowlist, no OAHS_TOKEN / OAHS_MODEL_* / SSH_AUTH_SOCK; roadmap §8)',
     )
+    .option(
+      '--push-user <username>',
+      'username presented with $OAHS_PUSH_TOKEN when pushing the claim branch (default: x-access-token; roadmap §10.3)',
+    )
     .action(
       async (
         opts: ClientFlags & {
@@ -807,6 +811,7 @@ export function buildProgram(): Command {
           heartbeat?: string;
           agentEnv?: string[];
           inheritEnv?: boolean;
+          pushUser?: string;
         },
       ) => {
         try {
@@ -835,6 +840,16 @@ export function buildProgram(): Command {
             ...(Object.keys(agentEnv).length > 0 ? { agentEnv } : {}),
             ...(opts.inheritEnv === true ? { inheritEnv: true } : {}),
           };
+          // §10.3 (BYO): a claim-scoped push credential, presented for the
+          // claim-branch push through a per-dispatch GIT_ASKPASS broker instead of
+          // the operator's ambient helper. Never reaches the agent child (§8), and
+          // never the jobs loop (reply-only — it touches no git). Unset → ambient
+          // credentials, unchanged.
+          const workPushToken = process.env['OAHS_PUSH_TOKEN'];
+          const pushOpts =
+            workPushToken !== undefined && workPushToken !== ''
+              ? { pushCredential: { username: opts.pushUser ?? 'x-access-token', password: workPushToken } }
+              : {};
           // LAZY import: the runner is a fixed interface that may still be a
           // stub — the rest of the CLI must never pay for (or break on) it.
           const runner = await import('@oahs/runner');
@@ -918,6 +933,7 @@ export function buildProgram(): Command {
             // claim; the static client (above) only polls, claims, heartbeats, mints.
             scopedClientFactory: (token: string) => makeClient({ baseUrl: opts.url, token }),
             ...envOpts,
+            ...pushOpts,
             ...(forge !== undefined ? { forge } : {}),
             ...(project !== undefined ? { projectId: project } : {}),
             ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),
@@ -955,6 +971,11 @@ export function buildProgram(): Command {
       collect,
       [],
     )
+    .option('--remote <name>', 'git remote the claim branch is pushed to (default: origin)')
+    .option(
+      '--push-user <username>',
+      'username presented with $OAHS_PUSH_TOKEN when pushing the claim branch (default: x-access-token)',
+    )
     .action(
       async (
         opts: ClientFlags & {
@@ -968,6 +989,8 @@ export function buildProgram(): Command {
           poll?: string;
           claimTtl?: string;
           agentEnv?: string[];
+          remote?: string;
+          pushUser?: string;
         },
       ) => {
         try {
@@ -1011,6 +1034,15 @@ export function buildProgram(): Command {
           if (repoPath === undefined || specFolder === undefined) {
             throw new Error('dispatch requires --repo and --spec-folder (or a --project whose record binds them)');
           }
+          // §10.3: the CLAIM-SCOPED push credential stays on the HOST — the
+          // dispatcher pushes the claim branch after the container exits, so the
+          // container is never handed a credential at all. Ideally $OAHS_PUSH_TOKEN
+          // is short-lived and authorizes only refs/heads/claim/*.
+          const pushToken = process.env['OAHS_PUSH_TOKEN'];
+          const pushCredential =
+            pushToken !== undefined && pushToken !== ''
+              ? { username: opts.pushUser ?? 'x-access-token', password: pushToken }
+              : undefined;
           const { dispatchLoop } = await import('./dispatcher.js');
           await dispatchLoop({
             client,
@@ -1019,6 +1051,8 @@ export function buildProgram(): Command {
             repoPath: resolve(repoPath),
             specFolder,
             agentCmd: opts.agentCmd,
+            ...(pushCredential !== undefined ? { pushCredential } : {}),
+            ...(opts.remote !== undefined ? { remote: opts.remote } : {}),
             ...(Object.keys(agentEnv).length > 0 ? { agentEnv } : {}),
             ...(project !== undefined ? { projectId: project } : {}),
             ...(opts.feature !== undefined ? { featureId: opts.feature } : {}),
