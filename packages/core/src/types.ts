@@ -460,8 +460,9 @@ export interface Mention {
 export interface Notification {
   id: string;
   actorId: string;
-  source: 'mention' | 'job_completed';
-  refId: string; // messageId for mentions, jobId for completions
+  /** §10.5 `claim_expired`: the reaper telling a holder its lease lapsed. */
+  source: 'mention' | 'job_completed' | 'claim_expired';
+  refId: string; // messageId for mentions, jobId for completions, claimId for expiries
   read: boolean;
 }
 
@@ -643,6 +644,24 @@ export interface SpineEngine {
   releaseClaim(input: { claimId: string; actorId: string; fencingToken?: number; reason?: string }): void;
   /** Privileged ops recovery (roadmap §8): gated on `ops.force_release_claim`. */
   forceReleaseClaim(input: { workItemId: string; actorId: string }): { released: string[] };
+  /**
+   * §10.5 — the lease reaper: record every lapsed lease as a `claim.expired`
+   * event (system actor, caused by the claim's own `work_item.claimed`) and
+   * notify its holder. Returns how many it reaped.
+   *
+   * BOOK-KEEPING, never a decision. Expiry is already true the moment the clock
+   * passes the lease: `liveClaimsOf` excludes lapsed claims, so the item is
+   * claimable and the dead holder's fencing token is already rejected without
+   * anyone running this. What the reaper adds is that somebody SAYS so — an event
+   * a cockpit can show and a notification the holder can act on — instead of the
+   * fact living only in a clock comparison nobody made. That is why it is safe to
+   * run on a timer: it cannot change an outcome, only publish one.
+   *
+   * Idempotent: reaping releases the row, so a second pass appends nothing.
+   * Authority-free by design (the clock decided, not an actor), so the served
+   * spine calls it directly rather than through a command.
+   */
+  reapExpiredClaims(): { reaped: string[] };
   /** test clock — lease expiry is time-based */
   advanceClock(ms: number): void;
 

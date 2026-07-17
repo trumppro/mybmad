@@ -47,6 +47,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
+  createWriteStream,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -55,7 +56,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { OahsClient } from '@oahs/contracts';
 import { INTENT_HASH_ALGO, computeIntentHash, extractIntentRegion } from '@oahs/core';
@@ -1160,29 +1161,82 @@ export function buildAgentEnv(input: {
   return { ...base, ...input.agentEnv, ...input.extra };
 }
 
+/**
+ * Run the agent, streaming its transcript to `logPath` AS IT HAPPENS (§10.5).
+ *
+ * The transcript used to be accumulated in memory and written once the agent
+ * exited, which made it useless exactly when it mattered: an agent can run for
+ * half an hour, and a runner killed at minute 29 left no file at all — the whole
+ * run unobservable while it ran and unexplained afterwards. Streaming means the
+ * cockpit can tail a live run, and a death leaves a PARTIAL transcript instead
+ * of nothing.
+ *
+ * Both streams go to one file in arrival order: a reader wants to see what the
+ * agent did, in the order it did it, not stdout and stderr as separate stories.
+ * Nothing is kept in memory — the HALT report is parsed from the spec FILE, so
+ * the output has no other reader, and a long agent no longer holds its entire
+ * transcript in RAM.
+ */
 function runAgentCommand(
   command: string,
-  opts: { cwd: string; timeoutMs: number; env: NodeJS.ProcessEnv },
-): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  opts: {
+    cwd: string;
+    timeoutMs: number;
+    env: NodeJS.ProcessEnv;
+    logPath: string;
+    header: readonly string[];
+  },
+): Promise<{ status: number | null }> {
   return new Promise((resolvePromise) => {
+    mkdirSync(dirname(opts.logPath), { recursive: true });
+    const sink = createWriteStream(opts.logPath, { flags: 'w' });
+    let settled = false;
+    // A WriteStream's 'error' is fatal to the PROCESS if nobody listens, and a
+    // broken sink never fires end()'s callback — so an unhandled full disk would
+    // either kill the runner or hang the dispatch forever. Losing the transcript
+    // is the one acceptable outcome here: the agent's work is what matters.
+    let sinkBroken = false;
+    const settle = (status: number | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killer);
+      resolvePromise({ status });
+    };
+    sink.on('error', (error: Error) => {
+      if (!sinkBroken) {
+        sinkBroken = true;
+        defaultRunnerLog(`agent transcript unavailable (${opts.logPath}): ${error.message}`);
+      }
+      if (childClosed) settle(lastStatus);
+    });
+    sink.write(`${opts.header.join('\n')}\n`);
     const child = spawn('bash', ['-lc', command], { cwd: opts.cwd, env: opts.env });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf8');
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8');
-    });
+    const keep = (chunk: Buffer): void => {
+      if (!sinkBroken) sink.write(chunk);
+    };
+    child.stdout.on('data', keep);
+    child.stderr.on('data', keep);
     const killer = setTimeout(() => child.kill('SIGKILL'), opts.timeoutMs);
-    child.on('error', () => {
-      clearTimeout(killer);
-      resolvePromise({ status: null, stdout, stderr });
-    });
-    child.on('close', (code) => {
-      clearTimeout(killer);
-      resolvePromise({ status: code, stdout, stderr });
-    });
+    let childClosed = false;
+    let lastStatus: number | null = null;
+    const finish = (status: number | null): void => {
+      // A child can emit BOTH 'error' and 'close'; ending an already-ended stream
+      // throws ERR_STREAM_WRITE_AFTER_END, so the guard belongs here, not only
+      // around the resolve.
+      if (childClosed) return;
+      childClosed = true;
+      lastStatus = status;
+      if (sinkBroken) {
+        settle(status);
+        return;
+      }
+      // Resolve only once the footer is flushed, so a caller that reads the file
+      // immediately (the halt_report evidence points at it) sees a complete one.
+      // 'close' (not 'exit') means every stdout chunk has already been delivered.
+      sink.end(`\n# exit: ${status === null ? 'error' : status}\n`, () => settle(status));
+    };
+    child.on('error', () => finish(null));
+    child.on('close', (code) => finish(code));
   });
 }
 
@@ -1950,6 +2004,12 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
     baseline,
     invocations: 1,
   });
+  // §10.5: the transcript lives OUTSIDE the worktree (which is removed on
+  // success) so a run stays auditable after the fact — and it is opened BEFORE
+  // the agent starts, so it can be tailed WHILE the run happens and a runner that
+  // dies mid-agent still leaves what the agent had said by then. `.oahs/` is
+  // already in the repo's git excludes.
+  const agentLogPath = join(repoPath, '.oahs', 'logs', `${claim.id}.log`);
   const invoked = await runAgentCommand(command, {
     cwd: worktreeDir,
     timeoutMs: options.agentTimeoutMs ?? 30 * 60 * 1000,
@@ -1958,29 +2018,15 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
       inheritEnv: options.inheritEnv,
       extra: { OAHS_SPEC_FILE: specAbs, OAHS_STORY_ID: workItem.externalKey },
     }),
-  });
-  const agentExitCode = invoked.status ?? -1;
-
-  // Tee the agent transcript OUTSIDE the worktree (which is removed on
-  // success) so a run stays auditable after the fact. `.oahs/` is already in
-  // the repo's git excludes.
-  const logsDir = join(repoPath, '.oahs', 'logs');
-  mkdirSync(logsDir, { recursive: true });
-  const agentLogPath = join(logsDir, `${claim.id}.log`);
-  writeFileSync(
-    agentLogPath,
-    [
+    logPath: agentLogPath,
+    header: [
       `# oahs agent transcript — story ${workItem.externalKey}, claim ${claim.id}`,
       `# command: ${command}`,
-      `# exit: ${agentExitCode}`,
-      '--- stdout ---',
-      invoked.stdout ?? '',
-      '--- stderr ---',
-      invoked.stderr ?? '',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
+      '# stdout + stderr, in arrival order; live — the run may still be going',
+      '---',
+    ],
+  });
+  const agentExitCode = invoked.status ?? -1;
   log(`agent exited ${agentExitCode} for ${workItem.externalKey} (transcript: ${agentLogPath})`);
 
   // TEST ONLY: simulate dying after the agent committed, before any report.

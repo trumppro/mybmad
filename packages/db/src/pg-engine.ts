@@ -20,7 +20,7 @@
  *    timestamps, no Date, no undefined array holes) so they cross the
  *    synckit worker boundary intact.
  */
-import { and, asc, eq, gt, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
 
 import {
@@ -1318,6 +1318,87 @@ export class PgEngine {
       .update(claims)
       .set({ leaseExpiresAt: this.currentTime() + row.ttlMs })
       .where(eq(claims.id, row.id));
+  }
+
+  /**
+   * §10.5 — see SpineEngine.reapExpiredClaims. Book-keeping only: a lapsed lease
+   * is already inert to every guard, so this changes nothing about what may
+   * happen next — it just puts the fact on the record and tells the holder.
+   */
+  async reapExpiredClaims(): Promise<{ reaped: string[] }> {
+    const now = this.currentTime();
+    // Read BEFORE the transaction: this.db inside a this.db.transaction callback
+    // deadlocks the single PGlite connection.
+    //
+    // Note the predicate does NOT filter on `released`, and the reaper never sets
+    // it — see the memory engine's claimEventIndex for why (it would turn a timer
+    // into a decision, and `released` means different things here and there: the
+    // sweep in claimOfKind above silently flips it on a lapsed claim). The LOG
+    // answers both questions identically in both engines.
+    const lapsed = await this.db.select().from(claims).where(lte(claims.leaseExpiresAt, now));
+    if (lapsed.length === 0) return { reaped: [] };
+    const { recorded, ended } = await this.claimEventIndex();
+    const due = lapsed.filter((row) => !recorded.has(row.id) && !ended.has(row.id));
+    if (due.length === 0) return { reaped: [] };
+    const causes = new Map<string, string>();
+    for (const row of due) {
+      const seq = await this.claimedEventSeq(row.id);
+      if (seq !== null) causes.set(row.id, String(seq));
+    }
+
+    const reaped: string[] = [];
+    await this.db.transaction(async (tx) => {
+      for (const row of due) {
+        const cause = causes.get(row.id);
+        await this.appendTx(
+          tx,
+          'work_item',
+          row.workItemId,
+          'claim.expired',
+          this.systemActorId,
+          {
+            claimId: row.id,
+            kind: row.kind,
+            heldBy: row.actorId,
+            leaseExpiresAt: row.leaseExpiresAt,
+          },
+          ...(cause !== undefined ? ([{ causationId: cause }] as const) : []),
+        );
+        await this.pushNotificationTx(tx, row.actorId, 'claim_expired', row.id);
+        reaped.push(row.id);
+      }
+    });
+    return { reaped };
+  }
+
+  /** §10.5 — mirrors the memory engine's claimEventIndex; see it for the reasoning. */
+  private async claimEventIndex(): Promise<{ recorded: Set<string>; ended: Set<string> }> {
+    const rows = await this.db
+      .select({ type: events.type, payload: events.payload })
+      .from(events)
+      .where(inArray(events.type, ['claim.expired', 'claim.released', 'claim.force_released']));
+    const recorded = new Set<string>();
+    const ended = new Set<string>();
+    for (const row of rows) {
+      const claimId = (row.payload as Record<string, unknown>)['claimId'];
+      if (typeof claimId !== 'string') continue;
+      if (row.type === 'claim.expired') recorded.add(claimId);
+      else ended.add(claimId);
+    }
+    return { recorded, ended };
+  }
+
+  /** globalSeq of the `work_item.claimed` that took this claim (null if unknown). */
+  private async claimedEventSeq(claimId: string): Promise<number | null> {
+    const row = (
+      await this.db
+        .select({ globalSeq: events.globalSeq })
+        .from(events)
+        .where(and(eq(events.type, 'work_item.claimed'), sql`${events.payload}->>'claimId' = ${claimId}`))
+        .orderBy(asc(events.globalSeq))
+        .limit(1)
+    )[0];
+    return row?.globalSeq ?? null;
   }
 
   async releaseClaim(input: { claimId: string; actorId: string; fencingToken?: number; reason?: string }): Promise<void> {

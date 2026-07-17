@@ -943,6 +943,82 @@ class EngineImpl implements SpineEngine {
     claim.leaseExpiresAt = this.currentTime() + claim.ttlMs;
   }
 
+  /**
+   * §10.5 — see SpineEngine.reapExpiredClaims. Book-keeping only: a lapsed lease
+   * is already inert to every guard, so this changes nothing about what may
+   * happen next — it just puts the fact on the record and tells the holder.
+   */
+  reapExpiredClaims(): { reaped: string[] } {
+    const now = this.currentTime();
+    const reaped: string[] = [];
+    const { recorded, ended } = this.claimEventIndex();
+    for (const claim of this.claims.values()) {
+      if (claim.leaseExpiresAt > now) continue; // still live — nothing happened
+      if (recorded.has(claim.id) || ended.has(claim.id)) continue;
+      this.append(
+        'work_item',
+        claim.workItemId,
+        'claim.expired',
+        this.systemActorId,
+        {
+          claimId: claim.id,
+          kind: claim.kind,
+          heldBy: claim.actorId,
+          leaseExpiresAt: claim.leaseExpiresAt,
+        },
+        // Caused by the claim itself — i.e. the event that took it.
+        ...(this.claimedEventSeq(claim.id) !== null
+          ? ([{ causationId: String(this.claimedEventSeq(claim.id)) }] as const)
+          : []),
+      );
+      // The holder is the one who needs to know: its run is no longer authorised.
+      this.pushNotification(claim.actorId, 'claim_expired', claim.id);
+      reaped.push(claim.id);
+    }
+    return { reaped };
+  }
+
+  /**
+   * §10.5 — which claims are already accounted for, read from the LOG.
+   *
+   * `recorded`: a `claim.expired` is already on the record → reaping again would
+   * duplicate it. This is the idempotency latch, and it is deliberately NOT the
+   * claim's `released` flag: `released` means "somebody ended this", and other
+   * code reads it WITHOUT the clock — `forceReleaseClaim` iterates unreleased
+   * claims, `listClaims` filters on it and computes `expired` from it. Setting it
+   * here would turn a timer into a decision: ops would lose the dead-runner view
+   * the flag exists to give them, and a force-release that worked a second ago
+   * would start failing. The reaper must add a fact, not change one.
+   *
+   * `ended`: the claim was released on purpose (or force-released), so its lease
+   * running out afterwards is not an expiry — nothing died. Reading this from the
+   * log rather than from `released` is also what keeps the two engines in step:
+   * PgEngine's `claimOfKind` silently flips `released` on a lapsed claim when the
+   * slot is re-taken, while the memory engine leaves it alone — so `released`
+   * answers a different question in each. The events do not.
+   */
+  private claimEventIndex(): { recorded: Set<string>; ended: Set<string> } {
+    const recorded = new Set<string>();
+    const ended = new Set<string>();
+    for (const event of this.eventLog) {
+      const claimId = event.payload['claimId'];
+      if (typeof claimId !== 'string') continue;
+      if (event.type === 'claim.expired') recorded.add(claimId);
+      else if (event.type === 'claim.released' || event.type === 'claim.force_released') {
+        ended.add(claimId);
+      }
+    }
+    return { recorded, ended };
+  }
+
+  /** globalSeq of the `work_item.claimed` that took this claim (null if unknown). */
+  private claimedEventSeq(claimId: string): number | null {
+    const event = this.eventLog.find(
+      (e) => e.type === 'work_item.claimed' && e.payload['claimId'] === claimId,
+    );
+    return event?.globalSeq ?? null;
+  }
+
   releaseClaim(input: { claimId: string; actorId: string; fencingToken?: number; reason?: string }): void {
     const claim = this.claims.get(input.claimId);
     if (!claim || claim.released) return;

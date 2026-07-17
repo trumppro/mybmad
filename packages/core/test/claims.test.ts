@@ -455,4 +455,108 @@ describe('§1.3 claim protocol', () => {
       expect(() => engine.releaseClaim({ claimId: claim.id, actorId })).not.toThrow();
     });
   });
+
+  // §10.5 — the lease reaper. A lapsed lease is ALREADY inert to every guard
+  // (R§1.3: "expired lease returns the item at its current state"), so this is
+  // book-keeping, not a decision: it makes somebody SAY the lease died, so a
+  // cockpit can show it and the holder can be told, instead of the fact living
+  // only in a clock comparison nobody made.
+  describe('§10.5 lease reaper', () => {
+    it('appends claim.expired (system actor, caused by the claim) for a lapsed lease and notifies its holder', () => {
+      const { engine, actorId, workItemId } = setup();
+      const claim = engine.claimTask({ workItemId, actorId, ttlMs: 1_000 });
+      const claimed = engine.events(workItemId).find((e) => e.type === 'work_item.claimed');
+      engine.advanceClock(2_000);
+
+      expect(engine.reapExpiredClaims()).toEqual({ reaped: [claim.id] });
+
+      const expired = engine.events(workItemId).find((e) => e.type === 'claim.expired');
+      expect(expired).toBeDefined();
+      // The clock decided, not an actor: the event is attributed to the system.
+      const systemActor = engine.listActors().find((a) => a.type === 'system');
+      expect(systemActor).toBeDefined();
+      expect(expired!.actorId).toBe(systemActor!.id);
+      expect(expired!.payload).toMatchObject({ claimId: claim.id, heldBy: actorId, kind: 'work' });
+      expect(expired!.causationId).toBe(String(claimed!.globalSeq)); // caused by the claim
+      // The holder is the one who needs to know its run is no longer authorised.
+      const notes = engine.listNotifications({ actorId });
+      expect(notes.some((n) => n.source === 'claim_expired' && n.refId === claim.id)).toBe(true);
+    });
+
+    it('is idempotent — a second reap of the same expired claim appends nothing', () => {
+      const { engine, actorId, workItemId } = setup();
+      engine.claimTask({ workItemId, actorId, ttlMs: 1_000 });
+      engine.advanceClock(2_000);
+      engine.reapExpiredClaims();
+      const after = engine.events(workItemId).length;
+
+      expect(engine.reapExpiredClaims()).toEqual({ reaped: [] });
+      expect(engine.events(workItemId).length).toBe(after);
+      expect(engine.listNotifications({ actorId }).filter((n) => n.source === 'claim_expired')).toHaveLength(1);
+    });
+
+    it('leaves a LIVE lease alone', () => {
+      const { engine, actorId, workItemId } = setup();
+      const claim = engine.claimTask({ workItemId, actorId, ttlMs: 10_000 });
+      engine.advanceClock(1_000);
+      expect(engine.reapExpiredClaims()).toEqual({ reaped: [] });
+      expect(engine.listClaims().some((c) => c.id === claim.id)).toBe(true);
+    });
+
+    it('decides nothing: a reaped claim is still force-releasable, and ops still SEE it as expired', () => {
+      // `released` is not a neutral flag — it is read WITHOUT the clock by
+      // forceReleaseClaim and by listClaims (which computes `expired` from it and
+      // filters on it). If the reaper set it, a timer would silently take ops'
+      // dead-runner view away and turn a working force-release into a failure.
+      const { engine, actorId, workItemId } = setup(['ops.force_release_claim']);
+      const claim = engine.claimTask({ workItemId, actorId, ttlMs: 1_000 });
+      engine.advanceClock(2_000);
+      engine.reapExpiredClaims();
+
+      // The dead-runner shape ops must SEE (Wave 2) survives the reaper.
+      const listed = engine.listClaims().find((c) => c.id === claim.id);
+      expect(listed?.expired).toBe(true);
+      // …and the recovery lever still works.
+      expect(engine.forceReleaseClaim({ workItemId, actorId })).toEqual({ released: [claim.id] });
+    });
+
+    it('does not report a claim that was released on purpose, however long ago', () => {
+      // Its lease runs out eventually too, but nothing died — the run ended.
+      const { engine, actorId, workItemId } = setup();
+      const claim = engine.claimTask({ workItemId, actorId, ttlMs: 1_000 });
+      engine.releaseClaim({ claimId: claim.id, actorId });
+      engine.advanceClock(2_000);
+      expect(engine.reapExpiredClaims()).toEqual({ reaped: [] });
+      expect(engine.events(workItemId).some((e) => e.type === 'claim.expired')).toBe(false);
+    });
+
+    it('reports a lapsed claim even after its slot was re-taken', () => {
+      // PgEngine's claimOfKind silently flips `released` on the lapsed claim when
+      // the slot is re-taken; the memory engine leaves it alone. The death is a
+      // fact either way, so both must report it — which is why the reaper reads
+      // the LOG rather than that flag.
+      const { engine, actorId, workItemId } = setup();
+      const dead = engine.claimTask({ workItemId, actorId, ttlMs: 1_000 });
+      engine.advanceClock(2_000);
+      const successor = makeGrantedActor(engine, 'dev-successor');
+      engine.claimTask({ workItemId, actorId: successor });
+
+      expect(engine.reapExpiredClaims()).toEqual({ reaped: [dead.id] });
+    });
+
+    it('decides nothing: reaping cannot change who may claim or which token is valid', () => {
+      // The successor could already claim, and the zombie's token was already
+      // dead, BEFORE anyone reaped — reaping only records it.
+      const { engine, actorId, workItemId, staleClaim } = setupZombie();
+      engine.reapExpiredClaims();
+      expect(() =>
+        engine.advanceState({
+          workItemId,
+          to: 'in_review',
+          actorId,
+          fencingToken: staleClaim.fencingToken,
+        }),
+      ).toThrow(ConflictError); // same verdict as without the reaper
+    });
+  });
 });

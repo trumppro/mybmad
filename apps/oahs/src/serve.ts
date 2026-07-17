@@ -33,6 +33,8 @@ export interface ServeOptions {
   adminToken?: string;
   /** Persistence root: PGlite data under <dataDir>/pg, tokens in <dataDir>/tokens.json. */
   dataDir?: string;
+  /** §10.5 lease-reaper interval (ms). Default 30s; tests pass a short one. */
+  reapMs?: number;
 }
 
 export interface ServeHandle {
@@ -71,6 +73,25 @@ export async function startServe(options: ServeOptions = {}): Promise<ServeHandl
   await app.listen({ port: options.port ?? DEFAULT_PORT, host: options.host ?? '0.0.0.0' });
   const { port } = app.server.address() as AddressInfo;
 
+  // §10.5: the lease reaper. A lapsed lease is already inert to every guard, so
+  // this decides nothing — it publishes what the clock already made true, as a
+  // `claim.expired` event plus a notification to the holder whose run died. It
+  // belongs to the SERVED spine because only a served spine runs wall-clock
+  // leases (D-G above); the conformance default is a logical clock nobody
+  // advances. Unref'd so it never holds the process open, and failures are
+  // logged rather than thrown: a reap that misses a tick costs nothing but a
+  // late notice, while a crash here would take the spine down.
+  const reaper = setInterval(() => {
+    try {
+      const { reaped } = engine.reapExpiredClaims();
+      for (const claimId of reaped) process.stderr.write(`[oahs] lease expired: ${claimId}\n`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[oahs] lease reaper failed: ${message}\n`);
+    }
+  }, options.reapMs ?? 30_000);
+  reaper.unref();
+
   return {
     url: `http://127.0.0.1:${port}`,
     port,
@@ -78,6 +99,7 @@ export async function startServe(options: ServeOptions = {}): Promise<ServeHandl
     adminTokenGenerated,
     engineKind,
     close: async () => {
+      clearInterval(reaper);
       await app.close();
     },
   };

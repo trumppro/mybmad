@@ -126,23 +126,29 @@ Pin: `pnpm -C packages/core test && pnpm -C packages/runner test`
 
 Tests first:
 
-- [ ] Core: a background `reapExpiredClaims()` (invoked by the served spine on an
+- [x] Core: a background `reapExpiredClaims()` (invoked by the served spine on an
       interval, and callable directly in tests) appends `claim.expired` (system actor,
       causation = the claim) for each lease past expiry, once per claim (idempotent — a
       second reap of the same expired claim appends nothing); a `claim.expired` produces a
       `notification` to the last holder.
-- [ ] Runner: agent stdout/stderr is streamed to `.oahs/logs/<claimId>.log` incrementally
+- [x] Runner: agent stdout/stderr is streamed to `.oahs/logs/<claimId>.log` incrementally
       (a fake long-running agent's early lines are on disk before it exits); a killed
       runner leaves a partial log, not an empty file.
 
 Implementation:
 
-- [ ] `packages/core/src/engine.ts` (+ pg-engine): `reapExpiredClaims()` — find live
+- [x] `packages/core/src/engine.ts` (+ pg-engine): `reapExpiredClaims()` — find live
       claims with `leaseExpiresAt < now`, release each, append `claim.expired` +
       notification. `apps/oahs/src/serve.ts` calls it on a timer (wall-clock served spine
       already opts into real time).
-- [ ] `packages/runner/src/index.ts`: replace the in-memory transcript concat (~lines
+- [x] `packages/runner/src/index.ts`: replace the in-memory transcript concat (~lines
       399–417) with a write stream to the log path opened before spawn; tee to memory
       only for the `halt_report` parse.
-- [ ] Dashboard: the item page live-tails the log (reuses SSE plumbing); the cockpit
-      shows `claim.expired` items as re-dispatchable.
+- [ ] Dashboard: the item page live-tails the log; the cockpit shows `claim.expired`
+      items as re-dispatchable. **Deferred, and the live-tail half needs a design first:**
+      the transcript is written to the RUNNER's disk (`<repo>/.oahs/logs/`), which the
+      spine cannot read — under §10.2 the runner is a container on another host, so
+      "reuse the SSE plumbing" has nothing to read from. Shipping it means choosing a
+      transport (the runner streaming the tail to the spine, or an object store), which is
+      its own story. The `claim.expired` half needs no new transport — the events are on
+      the spine already.
