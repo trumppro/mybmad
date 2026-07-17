@@ -13,7 +13,7 @@
 //                     durable engine works from the binary too.
 import { execFileSync } from 'node:child_process';
 import { build } from 'esbuild';
-import { chmodSync, cpSync, existsSync, mkdirSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -48,8 +48,18 @@ const external = [
 const requireShim =
   "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);";
 
+// The single source of truth for the oahs version (packages/contracts/src/version.ts
+// explains why it is a root JSON file and not any package.json). Injected as a
+// literal so every bundle below carries the same one, with no runtime file read —
+// a bundled binary has no reliable path back to the repo it was built from.
+const versionFile = JSON.parse(readFileSync(join(mono, 'oahs-version.json'), 'utf8'));
+
 const shared = {
   bundle: true,
+  define: {
+    __OAHS_VERSION__: JSON.stringify(versionFile.version),
+    __OAHS_SCHEMA_VERSION__: JSON.stringify(versionFile.schemaVersion),
+  },
   platform: 'node',
   format: 'esm',
   target: 'node22',

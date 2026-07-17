@@ -17,7 +17,11 @@ services:
     build:
       context: .
       dockerfile: apps/oahs/Dockerfile
-    image: oahs:local
+      args:
+        # Stamps the OCI version label. The CLI inside reports the real version
+        # regardless (it is compiled into the bundle); this is the outside view.
+        OAHS_VERSION: ${OAHS_VERSION:-dev}
+    image: oahs:${OAHS_VERSION:-local}
     # §10.2: the spine holds NO model keys — OAHS_MODEL_* moved to the `runtime`
     # profile (the dispatcher/agent runtime). §0.1: the spine is not the gateway.
     environment:
@@ -67,7 +71,8 @@ services:
       target: dispatcher
       args:
         AGENT_NPM: ${OAHS_AGENT_NPM:-}
-    image: oahs-dispatcher:local
+        OAHS_VERSION: ${OAHS_VERSION:-dev}
+    image: oahs-dispatcher:${OAHS_VERSION:-local}
     depends_on:
       oahs:
         condition: service_healthy

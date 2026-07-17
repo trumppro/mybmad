@@ -1,3 +1,4 @@
+export * from './version.js';
 /**
  * @oahs/contracts — the single source of truth for every oahs command.
  *

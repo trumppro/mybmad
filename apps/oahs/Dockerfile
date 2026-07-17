@@ -35,6 +35,11 @@ COPY apps/spine-api/package.json apps/spine-api/
 # is .gitignored here (not a committed anchor), so resolve against manifests.
 RUN pnpm install --ignore-scripts --filter "@oahs/cli..."
 
+# The oahs version, read by apps/oahs/scripts/build-cli.mjs at bundle time. It sits
+# with the SOURCES, not the manifests above: a version bump must not invalidate the
+# pnpm-install layer.
+COPY oahs-version.json ./
+
 # Sources, then the one build that produces bin + dist worker + public UI.
 COPY packages/ packages/
 COPY apps/ apps/
@@ -46,6 +51,17 @@ RUN pnpm --filter @oahs/cli deploy --prod /app
 
 # ---------------------------------------------------------------------------
 FROM node:22-slim AS runtime
+
+# Build metadata. Pass --build-arg OAHS_VERSION="$(node -p 'require("./oahs-version.json").version')";
+# the release workflow does. `dev` is the honest answer for an unstamped local build —
+# the CLI *inside* still reports the real version (it is compiled into the bundle).
+ARG OAHS_VERSION=dev
+LABEL org.opencontainers.image.title="oahs" \
+      org.opencontainers.image.description="oahs spine — deterministic rails for agent-run delivery" \
+      org.opencontainers.image.version="$OAHS_VERSION" \
+      org.opencontainers.image.source="https://github.com/trumppro/mybmad" \
+      org.opencontainers.image.licenses="MIT"
+
 ENV NODE_ENV=production
 ENV OAHS_PORT=4521
 WORKDIR /app
@@ -63,7 +79,7 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=5 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.OAHS_PORT||4521)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# The bundle entrypoint IS the executable. Port/flags come from compose (CMD).
-# serve binds 0.0.0.0 by default (serve.ts); compose passes --port.
+# The bundle entrypoint IS the executable. serve binds 0.0.0.0 (serve.ts) and takes
+# its port from $OAHS_PORT above, which is what the HEALTHCHECK probes.
 ENTRYPOINT ["node", "bin/oahs.mjs"]
 CMD ["serve", "--data", "/data"]

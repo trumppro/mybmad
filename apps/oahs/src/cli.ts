@@ -10,7 +10,7 @@
 import { resolve } from 'node:path';
 
 import { Command } from 'commander';
-import { makeClient, type OahsClient } from '@oahs/contracts';
+import { makeClient, type OahsClient , OAHS_VERSION } from '@oahs/contracts';
 // Type-only (erased): @oahs/runner is imported LAZILY at the call sites below.
 import type { RunnerOptions } from '@oahs/runner';
 
@@ -115,17 +115,53 @@ async function emit(fn: () => Promise<string>): Promise<void> {
 
 const collect = (value: string, previous: string[]): string[] => [...previous, value];
 
+/**
+ * The --port default: $OAHS_PORT when set, else the compiled-in 4521.
+ *
+ * Deliberately does NOT validate. This runs while the program is being BUILT, so
+ * throwing here would make a typo'd OAHS_PORT kill `oahs approve` and even
+ * `oahs --version` — commands with nothing to do with ports. Validation belongs
+ * where the value is used; see parsePort.
+ */
+function resolvePortDefault(): string {
+  const raw = process.env.OAHS_PORT?.trim();
+  return raw === undefined || raw === '' ? String(DEFAULT_PORT) : raw;
+}
+
+/**
+ * Validate the port serve is actually about to bind, whatever it came from.
+ *
+ * Checking the FINAL value covers both doors with one guard: `--port abc` used to
+ * reach fastify as Number('abc') === NaN, and $OAHS_PORT is now a second way in.
+ * Refusing beats defaulting — a bad value means the operator INTENDED a port and
+ * mistyped it, so quietly binding 4521 is the same class of lie this fixes.
+ */
+function parsePort(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    const from = process.env.OAHS_PORT?.trim() === raw ? '$OAHS_PORT' : '--port';
+    throw new Error(`${from} is not a valid TCP port: ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
 export function buildProgram(): Command {
   const program = new Command();
   program
     .name('oahs')
+    .version(OAHS_VERSION)
     .description('oahs — Open Agents Harness System CLI (spine server + gate-holder commands)');
 
   // -- serve ------------------------------------------------------------------
   program
     .command('serve')
     .description('start the spine-api (HTTP /rpc/* + MCP /mcp; durable by default)')
-    .option('--port <port>', 'TCP port', String(DEFAULT_PORT))
+    // $OAHS_PORT is the default, not a separate knob. The runtime image sets
+    // ENV OAHS_PORT and its HEALTHCHECK probes that port, but serve read only
+    // --port — so `docker run -e OAHS_PORT=8080` bound 4521 while the healthcheck
+    // polled 8080, and the container was unhealthy forever. Compose escaped it only
+    // by passing --port explicitly. An env var the image advertises must work.
+    .option('--port <port>', 'TCP port (default: $OAHS_PORT, else 4521)', resolvePortDefault())
     .option('--admin-token <token>', 'bootstrap admin token (default: env OAHS_ADMIN_TOKEN, else generated)')
     .option('--data <dir>', 'persistence directory (default: env OAHS_DATA, else ~/.oahs/data)')
     .option('--ephemeral', 'in-memory engine — ALL state is lost on exit')
@@ -134,7 +170,7 @@ export function buildProgram(): Command {
         const adminToken = opts.adminToken ?? process.env['OAHS_ADMIN_TOKEN'];
         const dataDir = resolveDataDir(opts);
         const handle = await startServe({
-          port: Number(opts.port),
+          port: parsePort(opts.port),
           ...(adminToken !== undefined && adminToken.length > 0 ? { adminToken } : {}),
           ...(dataDir !== undefined ? { dataDir } : {}),
         });

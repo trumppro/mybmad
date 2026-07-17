@@ -18,6 +18,8 @@ import {
   HTTP_STATUS,
   type ActorContext,
   type ErrorEnvelope,
+  OAHS_VERSION,
+  OAHS_SCHEMA_VERSION,
 } from '@oahs/contracts';
 
 import type { TokenStore } from './auth.js';
@@ -116,6 +118,20 @@ export async function buildServer(options: BuildServerOptions): Promise<FastifyI
   };
 
   app.get('/healthz', async () => ({ ok: true }));
+
+  // Which binary is this? Unauthenticated, like /healthz: it is build metadata,
+  // not spine state. Separate from /healthz on purpose — the Docker HEALTHCHECK
+  // (apps/oahs/Dockerfile) only tests that response's ok-ness, and a health probe
+  // should not start failing because a version field changed shape.
+  //
+  // schemaVersion is DIAGNOSTIC ONLY — nothing refuses to open a data dir on a
+  // mismatch yet (see packages/contracts/src/version.ts). It is here so an
+  // operator staring at a cross-machine claim can ask each spine what it is
+  // rather than guess.
+  app.get('/version', async () => ({
+    version: OAHS_VERSION,
+    schemaVersion: OAHS_SCHEMA_VERSION,
+  }));
 
   // §9.7: the command manifest for the ⌘K palette — a browser-safe view over the
   // registry (name/description/readonly ONLY, no schemas, no secrets, no

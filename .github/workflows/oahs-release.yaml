@@ -1,0 +1,78 @@
+# Cuts an oahs release from a tag.
+#
+# Deliberately NOT modelled on the publish.yaml this repo deleted: nothing here
+# publishes to npm or to any namespace the repo does not own, so there is no
+# `if: github.repository == ...` guard. That guard solved a problem we do not have
+# (a shared registry); copying it here would be theatre. Every write this workflow
+# makes lands in the repo it runs in, which is exactly right for a fork of us too.
+#
+# Tag namespace is `oahs-v*`, never `v*` — `v*` is upstream BMAD's, and one
+# `git fetch upstream --tags` would make our `v0.1.0` read as a downgrade of 6.10.0.
+
+name: oahs release
+
+on:
+  push:
+    tags: ['oahs-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag is permanent. If it disagrees with the version compiled into the
+      # binaries, the release lies about its own contents forever.
+      - name: The tag must match oahs-version.json
+        run: |
+          declared="$(node -p "require('./oahs-version.json').version")"
+          expected="oahs-v${declared}"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "FAIL: tag is '$GITHUB_REF_NAME' but oahs-version.json says '$declared' (expected '$expected')"
+            exit 1
+          fi
+          echo "version=$declared" >> "$GITHUB_OUTPUT"
+        id: version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.13.0 --activate
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # A release that did not pass its own checks is worth nothing. oahs CI also
+      # runs on this tag push, but it reports beside the release rather than
+      # gating it — so gate it here.
+      - name: make check
+        run: make check
+
+      - name: The images must build at this tag
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          docker build -f apps/oahs/Dockerfile --build-arg "OAHS_VERSION=$v" -t "oahs:$v" .
+          docker build -f apps/oahs/Dockerfile.runner --build-arg "OAHS_VERSION=$v" -t "oahs-runner:$v" .
+
+      - name: The shipped binary must report the tagged version
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          got="$(docker run --rm --entrypoint node "oahs:$v" bin/oahs.mjs --version)"
+          [ "$got" = "$v" ] || { echo "FAIL: image reports '$got', tag says '$v'"; exit 1; }
+
+      - name: End-to-end dispatch through a real container
+        run: ./scripts/e2e-dispatch.sh
+
+      - name: Cut the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "oahs ${{ steps.version.outputs.version }}" \
+            --notes-file CHANGELOG-oahs.md \
+            --verify-tag
