@@ -1,8 +1,9 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "bmad-method",
+  "private": true,
   "version": "6.10.0",
-  "description": "Breakthrough Method of Agile AI-driven Development",
+  "description": "Workspace root of a fork. This tree is BMAD-METHOD (MIT, (c) BMad Code, LLC), carried unmodified; the oahs platform (packages/, apps/, delivery/, docs/oahs/) is net-new here -- see OAHS.md. Private: nothing in this workspace is published to npm.",
   "keywords": [
     "agile",
     "ai",
@@ -14,14 +15,13 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bmad-code-org/BMAD-METHOD.git"
+    "url": "git+https://github.com/trumppro/mybmad.git"
   },
   "license": "MIT",
   "author": "Brian (BMad) Madison",
   "main": "tools/installer/bmad-cli.js",
   "bin": {
-    "bmad": "tools/installer/bmad-cli.js",
-    "bmad-method": "tools/installer/bmad-cli.js"
+    "mybmad": "tools/installer/bmad-cli.js"
   },
   "scripts": {
     "bmad:install": "node tools/installer/bmad-cli.js install",
@@ -113,8 +113,5 @@
   },
   "engines": {
     "node": ">=20.12.0"
-  },
-  "publishConfig": {
-    "access": "public"
   }
 }
