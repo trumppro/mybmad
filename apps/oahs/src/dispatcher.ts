@@ -171,10 +171,15 @@ function defaultLog(line: string): void {
  * the inner `oahs work --agent-env` ARGV instead, so they are in the container, on
  * PID 1's command line, readable via /proc/1/cmdline and `docker inspect`.
  *
- * What keeping them out of the env DOES buy is real and is the whole point: env is
- * inherited by every child automatically, argv is not. An untrusted `npm test` the
- * agent shells out to sees no model key. Only `oahs work` parses them and hands them
- * to the agent child it spawns. What they never reach is the SPINE (§0.1).
+ * Be precise about what keeping them out of the env buys, because it is less than it
+ * looks: a child does not INHERIT them (env is inherited automatically, argv is not),
+ * but any process in the container can still read them from /proc/1/cmdline — verified
+ * by doing it inside this very image. So it narrows ACCIDENTAL exposure (a tool that
+ * dumps its environ into a log leaks nothing) and does nothing at all against a process
+ * that goes looking. Do not sell it as containment.
+ *
+ * The boundary that IS real: the keys never reach the SPINE (§0.1), and the container
+ * is trusted with them because the agent inside cannot work without them.
  */
 function realDockerSpawn(req: SpawnRequest): Promise<SpawnResult> {
   return new Promise((resolvePromise) => {
@@ -235,7 +240,9 @@ function buildSpawnRequest(
       ...(options.network !== undefined ? ['--network', options.network] : []),
       '-v',
       `${options.repoPath}:${CONTAINER_MOUNT}`,
-      // Only these three names cross into the container; model keys never do.
+      // These three are the container's ENVIRONMENT. Model keys are not among them —
+      // but they do reach the container, on the inner argv assembled below. See
+      // realDockerSpawn's comment for why that is a narrower win than it reads.
       '-e',
       'OAHS_URL',
       '-e',

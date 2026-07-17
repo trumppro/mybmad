@@ -31,16 +31,21 @@ that makes the rest worth versioning.
 - **Claim-scoped push credentials, a durability push, and spine-driven adoption**
   of a claim branch across machines.
 - **A lease reaper** that records expiries without deciding anything.
-- **A version surface**: `oahs --version`, `GET /version`, and OCI labels on both
-  images, all sourced from one file.
+- **A version surface**: `oahs --version` and `GET /version`, compiled from one file
+  into the bundle, so they cannot drift. The OCI image labels take a `--build-arg`
+  the release workflow feeds from that same file; an image you build by hand is
+  honestly labelled `dev`.
 
 ### What is NOT in it
 
 Stated plainly, because the absence of a feature is easier to mistake for its
 presence than the reverse:
 
-- **No Postgres.** `serve` offers `memory` and `pglite` only. A `PgEngine` exists
-  and is tested for parity, but nothing wires it to the server.
+- **No Postgres server.** `serve` offers `memory` and `pglite` only, and nothing
+  reads a `DATABASE_URL`. Note what this does NOT mean: `PgEngine` is not shelf-ware
+  waiting to be wired — it IS the durable engine, and `serve --data` (the default,
+  and what compose runs) is `PgEngine` on embedded PGlite. What is missing is a
+  connection to a real Postgres server, not the engine.
 - **No migrations.** Idempotent DDL is re-applied on every open. Nothing stamps or
   checks a schema version — `GET /version` reports `schemaVersion` for diagnosis
   only. Two binaries against one data dir is possible and silent.

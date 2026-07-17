@@ -35,7 +35,7 @@ Phases 0–10 shipped: the spine and its conformance suite, entitlements, collab
 
 **What is *not* in it** — [CHANGELOG-oahs.md](CHANGELOG-oahs.md)'s "What is NOT in it" is authoritative; read it before you believe anything else on this page:
 
-- **No Postgres.** `serve` offers `memory` and `pglite` only. A `PgEngine` exists and passes the conformance suite, but nothing wires it to the server.
+- **No Postgres server.** `serve` offers `memory` and `pglite` only; nothing reads a `DATABASE_URL`. But do not read that as "`PgEngine` is unwired": `PgEngine` IS the durable engine — `serve --data` is `PgEngine` on embedded PGlite, and that is the default and what compose runs. What is absent is a connection to a real Postgres server.
 - **No migrations.** Idempotent DDL is re-applied on every open. Nothing stamps or checks a schema version; `GET /version` reports `schemaVersion` for diagnosis only. Two binaries against one data dir is possible and silent.
 - **No multi-tenancy.** There is no `workspace_id` column on any table.
 - **Grant scopes are stored but not enforced.**
@@ -76,7 +76,8 @@ That `--pin` is the point of the whole system: the verification command is froze
 ```bash
 oahs events wi_00000d        # who did what, on what evidence — a query, not an interview.
                              # `events` takes the STREAM id (wi_…) and does no handle
-                             # resolution: `oahs events 1` prints nothing and exits 0.
+                             # resolution: `oahs events 1` prints `(empty)` and exits 0
+                             # — no error, no hint that the handle was never resolved.
 ```
 
 Then open **http://localhost:4521/ui** and log in with a token: portfolio rollups, gate inbox, live messages over SSE, work-item detail with the evidence trail. Every **spine** command is also an MCP tool (`oahs_*`) at `POST /mcp` on the same bearer token; CLI-local commands (`init`, `work`, `dispatch`, `serve`, `identities`) are not spine commands and have no tool. `make help` lists the real targets; `make bootstrap` seeds a demo into an already-running server.
@@ -144,7 +145,7 @@ Every security-shaped sentence here has a tense and a scope, and this is the sco
 |---|---|
 | `packages/core` | The Rules layer: lifecycle FSM, claims, gates, evidence verdicts, event log, reconciler. Its `test/` suite **is** the spec. No LLM SDK may be imported here. |
 | `packages/contracts` | One zod registry; HTTP routes, MCP tools, and the typed client are generated from it. |
-| `packages/db` | Drizzle schema + `PgEngine`, held to the same suite via PGlite. Races lose by a DB constraint here, not by application logic. Not wired to `serve` — see Status. |
+| `packages/db` | Drizzle schema + `PgEngine`, held to the same suite via PGlite. Races lose by a DB constraint here, not by application logic. This IS what `serve --data` runs — on embedded PGlite, never a Postgres server. |
 | `apps/spine-api` | Fastify: `/rpc/*`, `/mcp`, `/ui`, `/events/stream`, `/healthz`, `/version` — one command bus behind all of them. |
 | `apps/oahs` | The `oahs` binary: `serve`, `init`, gate-holder commands, admin, `work`, `dispatch`. |
 | `packages/runner` | The worker loop: claim → worktree → agent → pinned verification → push → raw evidence. |

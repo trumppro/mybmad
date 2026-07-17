@@ -1,9 +1,15 @@
 /**
  * CLI defaults (Phase 7 Wave 1): one port everywhere, durable by default.
  *
- *  - defaultUrl:    --url flag > env OAHS_URL > http://localhost:4521
+ *  - defaultUrl:    --url flag > env OAHS_URL > the PROFILE's server.url > http://localhost:4521
  *    (4521 unified across serve.ts, Makefile, compose — the 4517/4521 split
  *    had its own apology section in the Vietnamese docs).
+ *
+ *    Every case here pins OAHS_HOME at a temp dir. Without that these tests read
+ *    the developer's REAL ~/.oahs/config.json — profileDir() takes env only for
+ *    OAHS_HOME and falls back to os.homedir() regardless of the env object passed
+ *    in — so they passed on CI and on a clean machine, and failed for anyone who
+ *    had ever run `oahs init`. Green must not depend on whose laptop it is.
  *  - resolveDataDir: `oahs serve` persists by default (losing a workspace to
  *    a forgotten --data flag is not a valid failure mode); in-memory is the
  *    explicit --ephemeral opt-in.
@@ -24,19 +30,44 @@ import {
   setServerUrl,
 } from '../src/cli-config.js';
 
-describe('defaultUrl — flag > env OAHS_URL > localhost:4521', () => {
+describe('defaultUrl — flag > env OAHS_URL > profile server.url > localhost:4521', () => {
+  let home: string;
+  let clean: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'oahs-defaults-'));
+    clean = { OAHS_HOME: home };
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
   it('falls back to the unified default port 4521', () => {
-    expect(defaultUrl({})).toBe('http://localhost:4521');
+    expect(defaultUrl(clean)).toBe('http://localhost:4521');
   });
 
   it('honors env OAHS_URL', () => {
-    expect(defaultUrl({ OAHS_URL: 'http://spine.internal:9000' })).toBe(
+    expect(defaultUrl({ ...clean, OAHS_URL: 'http://spine.internal:9000' })).toBe(
       'http://spine.internal:9000',
     );
   });
 
   it('ignores an empty OAHS_URL', () => {
-    expect(defaultUrl({ OAHS_URL: '' })).toBe('http://localhost:4521');
+    expect(defaultUrl({ ...clean, OAHS_URL: '' })).toBe('http://localhost:4521');
+  });
+
+  it('uses the profile server.url when no env says otherwise', () => {
+    // The layer the old header comment omitted, and the reason the fallback cases
+    // above must isolate: a saved profile legitimately wins over the default.
+    setServerUrl('http://saved.example:9999', clean);
+    expect(defaultUrl(clean)).toBe('http://saved.example:9999');
+  });
+
+  it('env OAHS_URL still outranks the profile', () => {
+    setServerUrl('http://saved.example:9999', clean);
+    expect(defaultUrl({ ...clean, OAHS_URL: 'http://env.example:1234' })).toBe(
+      'http://env.example:1234',
+    );
   });
 });
 

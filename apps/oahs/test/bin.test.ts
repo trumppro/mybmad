@@ -5,12 +5,27 @@
  * surfaces runner errors clearly (lazy import of @oahs/runner).
  */
 import { execFile } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const run = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/oahs.mjs', import.meta.url));
+
+// A profile root of our own. Without it the spawned binary reads the DEVELOPER's
+// real ~/.oahs/config.json, so "no token" is only true on a machine that has never
+// run `oahs init` — i.e. this suite passed on CI and failed for anyone dogfooding
+// the product. Green must not depend on whose laptop it is.
+let profileHome: string;
+beforeAll(() => {
+  profileHome = mkdtempSync(join(tmpdir(), 'oahs-bin-'));
+});
+afterAll(() => {
+  rmSync(profileHome, { recursive: true, force: true });
+});
 
 interface FailedRun {
   code?: number;
@@ -40,7 +55,11 @@ describe('bin/oahs.mjs (esbuild bundle)', () => {
   });
 
   it('a gate-holder command without a token exits 1 with a clear error', async () => {
-    const result = await runExpectingFailure(['inbox'], { ...process.env, OAHS_TOKEN: '' });
+    const result = await runExpectingFailure(['inbox'], {
+      ...process.env,
+      OAHS_TOKEN: '',
+      OAHS_HOME: profileHome,
+    });
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('missing token');
   });
