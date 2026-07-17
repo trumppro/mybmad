@@ -14,12 +14,29 @@ if (process.stdin?.setMaxListeners) {
   process.stdin.setMaxListeners(Math.max(currentLimit, 50));
 }
 
-// Check for updates - do this asynchronously so it doesn't block startup
+// Check for updates. FORK EDIT (oahs): gated on the manifest's `private` flag.
+//
+// This tree is a fork. `packageName` below is hardcoded to UPSTREAM's package,
+// independent of package.json, so the check asks npm "is there a newer bmad-method?"
+// and, the moment upstream ships anything above 6.10.0 (their `next` is already at
+// 6.10.1-next.16), tells whoever ran this to `npx bmad-method@latest install` — i.e.
+// to replace this fork with upstream. README.md states the opposite; this was the one
+// file that still executed it.
+//
+// Gating on `private` rather than deleting the check keeps upstream's code intact and
+// self-restoring: a private tree is not a published package, so "is there a newer me?"
+// has no answer worth asking. Un-set `private` and the check comes back on its own.
+//
+// Not touched deliberately: the "asynchronously" claim above was false — execSync on
+// line ~31 precedes the first await, so this BLOCKS startup for up to the 5s timeout
+// (measured: 5.09s against an unreachable registry). Gating it makes that moot here.
 const packageJson = require('../../package.json');
 const packageName = 'bmad-method';
-checkForUpdate().catch(() => {
-  // Silently ignore errors - version check is best-effort
-});
+if (packageJson.private !== true) {
+  checkForUpdate().catch(() => {
+    // Silently ignore errors - version check is best-effort
+  });
+}
 
 async function checkForUpdate() {
   try {
