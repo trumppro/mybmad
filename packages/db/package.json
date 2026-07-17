@@ -16,10 +16,12 @@
     "@oahs/core": "file:../core",
     "drizzle-orm": "^0.44.0",
     "postgres": "^3.4.5",
+    "proper-lockfile": "4.1.2",
     "synckit": "^0.11.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/proper-lockfile": "^4.1.4",
     "esbuild": "^0.25.0",
     "typescript": "^5.7.2",
     "vitest": "^3.0.0"

@@ -54,12 +54,21 @@ export async function startServe(options: ServeOptions = {}): Promise<ServeHandl
   let engineKind: ServeHandle['engineKind'];
   let engine;
   let tokenStore: TokenStore;
+  // Released on close() and, if the process is killed, by proper-lockfile's own
+  // signal-exit handler. Held in the MAIN process on purpose: the synckit worker is
+  // a thread that gets terminated on parent exit without running cleanup, so a lock
+  // there would survive a clean shutdown and block the restart for a full stale
+  // window. Only the durable path takes a lock — the in-memory engine has no dir.
+  let releaseDataLock: (() => Promise<void>) | undefined;
   // D-G: a SERVED spine always runs wall-clock leases — a crashed runner's
   // claim frees itself after TTL. (The logical clock stays the conformance
   // default; only serve opts in.)
   if (options.dataDir !== undefined) {
     mkdirSync(options.dataDir, { recursive: true });
-    const { createPgSyncEngine } = await import('@oahs/db');
+    const { createPgSyncEngine, acquireDataDirLock } = await import('@oahs/db');
+    // Before opening PGlite: a second `oahs serve` on this dir would let both accept
+    // writes and then destroy it (PGlite does not lock). Refuse instead, loudly.
+    releaseDataLock = await acquireDataDirLock(join(options.dataDir, 'pg'));
     engine = createPgSyncEngine({ dataDir: join(options.dataDir, 'pg'), wallClock: true });
     tokenStore = new TokenStore({ persistPath: join(options.dataDir, 'tokens.json') });
     engineKind = 'pglite';
@@ -70,7 +79,14 @@ export async function startServe(options: ServeOptions = {}): Promise<ServeHandl
   }
 
   const app = await buildServer({ engine, tokenStore, adminToken });
-  await app.listen({ port: options.port ?? DEFAULT_PORT, host: options.host ?? '0.0.0.0' });
+  try {
+    await app.listen({ port: options.port ?? DEFAULT_PORT, host: options.host ?? '0.0.0.0' });
+  } catch (error) {
+    // A failed bind (port already in use, most likely) must not strand the data-dir
+    // lock we just took — the next `oahs serve` would then be refused for a stale window.
+    if (releaseDataLock) await releaseDataLock();
+    throw error;
+  }
   const { port } = app.server.address() as AddressInfo;
 
   // §10.5: the lease reaper. A lapsed lease is already inert to every guard, so
@@ -101,6 +117,8 @@ export async function startServe(options: ServeOptions = {}): Promise<ServeHandl
     close: async () => {
       clearInterval(reaper);
       await app.close();
+      // Release last: the dir must stay locked until the server has stopped touching it.
+      if (releaseDataLock) await releaseDataLock();
     },
   };
 }
