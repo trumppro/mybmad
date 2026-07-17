@@ -212,7 +212,7 @@ class EngineImpl implements SpineEngine {
   private globalSeq = 0;
 
   private readonly actors = new Map<string, Actor>();
-  private readonly grants = new Map<string, Set<string>>(); // actorId -> "permission" (scope ignored until Phase 2)
+  private readonly grants = new Map<string, Set<string>>(); // actorId -> "permission". Unscoped: the API rejects a scope rather than store one it would not honour (bus.ts rejectUnenforcedScope).
   private readonly projects = new Map<string, Project>();
   private readonly projectSlugIndex = new Map<string, string>(); // slug -> projectId
   private readonly features = new Map<string, Feature>();
@@ -476,7 +476,7 @@ class EngineImpl implements SpineEngine {
     });
   }
 
-  grant(input: { actorId: string; permission: Permission; scope?: string }): void {
+  grant(input: { actorId: string; permission: Permission }): void {
     this.checkGrantCeiling(input.actorId, input.permission);
     const set = this.grants.get(input.actorId) ?? new Set<string>();
     set.add(input.permission);
@@ -484,7 +484,7 @@ class EngineImpl implements SpineEngine {
     this.append('actor', input.actorId, 'grant.issued', this.systemActorId, { permission: input.permission });
   }
 
-  revoke(input: { actorId: string; permission: Permission; scope?: string }): void {
+  revoke(input: { actorId: string; permission: Permission }): void {
     this.grants.get(input.actorId)?.delete(input.permission);
     this.append('actor', input.actorId, 'grant.revoked', this.systemActorId, { permission: input.permission });
   }

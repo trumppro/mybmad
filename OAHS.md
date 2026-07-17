@@ -127,7 +127,7 @@ oahs stats reviews                            # review-loop iterations per kind 
 
 ### Model gateway (Phase 6 §2.5)
 
-A multi-provider gateway at the **runtime layer** — between agent runtimes and providers. `@oahs/gateway` speaks the OpenAI-compatible protocol (works with 9router, OpenRouter, or any compatible endpoint), routes friendly names to provider model ids, and meters token usage. **The deterministic spine is never a client of it** — a CI grep (`.github/workflows/oahs-ci.yaml`, mirrored on GitLab) keeps `@oahs/gateway` out of `core`, `db`, `contracts`, and `spine-api` (§0.1). Config comes from env, never hardcoded:
+A multi-provider gateway at the **runtime layer** — between agent runtimes and providers. `@oahs/gateway` speaks the OpenAI-compatible protocol (works with 9router, OpenRouter, or any compatible endpoint), routes friendly names to provider model ids, and exposes a token-metering seam (each completion returns its usage; a durable sink/aggregate is not yet wired — §12.7). **The deterministic spine is never a client of it** — a CI grep (`.github/workflows/oahs-ci.yaml`, mirrored on GitLab) keeps `@oahs/gateway` out of `core`, `db`, `contracts`, and `spine-api` (§0.1). Config comes from env, never hardcoded:
 
 ```bash
 cp .env.example .env    # OAHS_MODEL_BASE_URL, OAHS_MODEL_API_KEY, OAHS_MODEL_DEFAULT

@@ -7,7 +7,7 @@
  * runtime layer, wholly independent of the rails. Keys/URLs come from env via
  * loadGatewayFromEnv, never hardcoded.
  */
-import { InMemoryMeter, loadGatewayFromEnv } from '@oahs/gateway';
+import { loadGatewayFromEnv } from '@oahs/gateway';
 
 /** `oahs models` — list the models the configured gateway can reach. */
 export async function modelsCommand(): Promise<string> {
@@ -32,8 +32,11 @@ export interface PingOptions {
  * without running a full teammate loop.
  */
 export async function pingCommand(opts: PingOptions = {}): Promise<string> {
-  const meter = new InMemoryMeter();
-  const gateway = loadGatewayFromEnv(process.env, { meter });
+  // No meter: `ping` is one shot, and it prints result.usage directly (below). An
+  // InMemoryMeter here recorded a single call nobody read — a dead sink that twice
+  // made a reviewer conclude "metering is wired into the CLI" when it is not. The
+  // Meter seam is real (gateway.ts); persisting/aggregating it is unbuilt (§12.7).
+  const gateway = loadGatewayFromEnv(process.env);
   const message = opts.message ?? 'Reply in one short sentence that the gateway is live.';
   const result = await gateway.complete({
     ...(opts.route !== undefined ? { route: opts.route } : {}),

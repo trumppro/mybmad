@@ -236,3 +236,29 @@ describe('gate policy as data over HTTP (roadmap §3: min_approvals)', () => {
     expect(afterSecond.state).toBe('done');
   });
 });
+
+describe('grant scope is refused, not silently discarded (T1 honesty fix)', () => {
+  it('grant_permission with a scope is rejected with a clear reason', async () => {
+    const target = await createActor('user', 'Scope Target');
+    // A caller who scopes a grant to a project used to get a silent global grant.
+    // Now the API refuses, because the engine cannot confine it — better an error
+    // than a false sense of restriction.
+    const err = await admin
+      .call('grant_permission', {
+        actorId: target.actor.id,
+        permission: 'task.plan',
+        scope: 'project:acme',
+      })
+      .then(() => undefined)
+      .catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/not enforced|refused|global/i);
+  });
+
+  it('the same grant WITHOUT a scope still works', async () => {
+    const target = await createActor('user', 'Unscoped Target');
+    await expect(
+      admin.call('grant_permission', { actorId: target.actor.id, permission: 'task.plan' }),
+    ).resolves.toBeTruthy();
+  });
+});

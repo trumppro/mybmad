@@ -128,6 +128,23 @@ function requireAdmin(ctx: ActorContext, command: string): void {
 }
 
 /**
+ * A `scope` on a grant is NOT enforced (the engine stores the permission unscoped —
+ * see engine.ts). It used to be accepted and silently dropped, so a caller who scoped
+ * a grant to one project believed it was confined when it was global. Refuse it instead:
+ * a lie by omission becomes an explicit "not supported yet". Removing the field from the
+ * schema would not help — zod strips unknown keys silently, reproducing the discard.
+ */
+function rejectUnenforcedScope(scope: string | undefined, actorId: string): void {
+  if (scope !== undefined) {
+    throw new PermissionDeniedError(
+      `grant scopes are not enforced yet; a scoped grant would be stored and applied ` +
+        `GLOBALLY, so it is refused rather than silently widened (scope=${JSON.stringify(scope)})` as Permission,
+      actorId,
+    );
+  }
+}
+
+/**
  * §10.1: the ONLY commands a job-bound (claim-scoped) token may call — the
  * dispatch mutations. `mint_claim_token` is deliberately NOT here: a scoped
  * token can never mint another (no self-minting escalation chains).
@@ -200,21 +217,15 @@ export function createCommandBus(
       case 'grant_permission': {
         requireAdmin(ctx, command);
         const p = parsed as GrantIn;
-        engine.grant({
-          actorId: p.actorId,
-          permission: p.permission as Permission,
-          ...(p.scope !== undefined ? { scope: p.scope } : {}),
-        });
+        rejectUnenforcedScope(p.scope, ctx.actorId);
+        engine.grant({ actorId: p.actorId, permission: p.permission as Permission });
         return { granted: true };
       }
       case 'revoke_permission': {
         requireAdmin(ctx, command);
         const p = parsed as GrantIn;
-        engine.revoke({
-          actorId: p.actorId,
-          permission: p.permission as Permission,
-          ...(p.scope !== undefined ? { scope: p.scope } : {}),
-        });
+        rejectUnenforcedScope(p.scope, ctx.actorId);
+        engine.revoke({ actorId: p.actorId, permission: p.permission as Permission });
         return { revoked: true };
       }
       // -- projects (Phase 7 Wave 2, D-E) ------------------------------------

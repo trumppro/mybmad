@@ -81,6 +81,8 @@ export const COMMANDS = [
     z.object({
       actorId: z.string().min(1),
       permission: z.string().min(1),
+      // NOT enforced yet: sending a scope is REJECTED, not stored — grants apply globally,
+      // so a scoped grant would be a silent lie. See bus.ts rejectUnenforcedScope.
       scope: z.string().optional(),
     }),
   ),
@@ -90,6 +92,7 @@ export const COMMANDS = [
     z.object({
       actorId: z.string().min(1),
       permission: z.string().min(1),
+      // NOT enforced (see grant_permission): a scope here is rejected, not applied.
       scope: z.string().optional(),
     }),
   ),
