@@ -1347,6 +1347,82 @@ interface FinishArgs {
   submit: (kind: Evidence['kind'], payload: Record<string, unknown>) => Promise<void>;
 }
 
+type NormalizeResult = 'normalized' | 'failed';
+
+/**
+ * Normalize a claim worktree to its committed HEAD so pinned verification measures exactly the
+ * revision `commit` will certify.
+ *
+ * WHY: finishRun runs pinned verification in the worktree (step 7) but records `commit` evidence
+ * as HEAD (step 8). Without this, an agent that leaves code UNCOMMITTED gets a passing test that
+ * certifies a revision the commit does not contain. We ELIMINATE the divergence rather than
+ * DETECT it — a dirty-tree heuristic both false-positives on scratch (`.DS_Store`, `.pytest_cache`)
+ * and misses cases.
+ *
+ * `git reset --hard HEAD` reverts tracked content to the committed revision; `git clean -ffd`
+ * removes untracked-new files AND untracked-new directories, including nested git repos — the
+ * DOUBLE `-f` is load-bearing: single `-f` refuses to delete an untracked dir that is itself a git
+ * repo (a `git init`'d or `git clone`'d subdir). Neither reset nor clean (no `-x`) touches
+ * gitignored files, so installed deps (node_modules — even when it contains a nested `.git`) and
+ * runner scratch (`.oahs/`, git-excluded) survive — verification runs against the committed code
+ * with its real dependencies. There is NO false-positive path: we do not block on scratch, we
+ * reset/clean it away and run.
+ *
+ * We do NOT restore the agent's uncommitted work afterward: finishRun's caller force-removes the
+ * worktree the moment it returns (removeWorktree), and uncommitted work is never certified or
+ * pushed. Discarding it here is therefore free, and it avoids the shared-`refs/stash` hazard a
+ * stash-based approach has under concurrent same-repo runners.
+ *
+ * Returns `'failed'` when HEAD cannot be isolated (a git error — a stray index.lock, an unmerged
+ * index). The caller must NOT verify a tree it could not isolate; it blocks.
+ *
+ * THREAT MODEL — honest-operator (OAHS.md "Trust boundary"). This closes the HONEST partial-commit
+ * mistake: an agent that forgets to commit a file (untracked-new, or a modified tracked file — the
+ * skip-worktree / assume-unchanged clear above also un-hides a tracked mod). It does NOT make the
+ * gate sound against a MALICIOUS agent that actively engineers a working-tree ≠ commit divergence,
+ * because an agent with arbitrary git control has many ways to do so and no local normalization
+ * can catch them all — for example:
+ *   - hiding the tested file behind an ignore rule (a committed OR an agent-written untracked
+ *     `.gitignore`, or `.git/info/exclude`): an ignored path is indistinguishable from a legitimate
+ *     gitignored dependency, so we cannot delete it without deleting deps;
+ *   - a committed `.gitattributes` binding a smudge filter the agent sets in repo-local
+ *     `.git/config`, so `reset --hard` re-materialises tracked files through a transform a
+ *     downstream checkout (without that config) will not reproduce;
+ *   - a populated submodule the agent `git submodule update`s itself (a fresh `git worktree add`
+ *     does not populate submodules, and `--recurse-submodules` is NOT used — it ERRORS on the
+ *     common unpopulated submodule and would block every submodule-repo run).
+ * Defending those is the honest→platform-verified step (roadmap §4.3), not this. Stated plainly so
+ * the guarantee is not mistaken for more than it is — the previous attempt's sin was overclaiming.
+ */
+function normalizeWorktreeToHead(workDir: string): NormalizeResult {
+  try {
+    // Clear skip-worktree / assume-unchanged FIRST — reset --hard will not touch a file whose
+    // skip-worktree bit is set. `git ls-files -v` tags skip-worktree 'S' and assume-unchanged a
+    // lowercase letter; core.quotePath=false emits non-ASCII paths raw so slice(2) is the real path.
+    const flagged = git(['-c', 'core.quotePath=false', 'ls-files', '-v'], workDir)
+      .split('\n')
+      .filter((line) => line.startsWith('S') || /^[a-z]/.test(line))
+      .map((line) => line.slice(2))
+      .filter((path) => path.length > 0);
+    if (flagged.length > 0) {
+      // TWO separate calls, NOT one combined `--no-skip-worktree --no-assume-unchanged`: git
+      // processes the assume-unchanged mode first per path and silently drops the skip-worktree
+      // mode when both are requested together, leaving the skip-worktree bit SET (verified on git
+      // 2.50). A combined call is an inert defense.
+      git(['update-index', '--no-skip-worktree', '--', ...flagged], workDir);
+      git(['update-index', '--no-assume-unchanged', '--', ...flagged], workDir);
+    }
+    git(['reset', '--hard', 'HEAD'], workDir);
+    git(['clean', '-ffd'], workDir);
+    return 'normalized';
+  } catch (error) {
+    defaultRunnerLog(
+      `could not isolate the committed revision for verification: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return 'failed';
+  }
+}
+
 async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
   const { client, dispatch, workItem, claim } = args;
 
@@ -1388,7 +1464,28 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
     }
   }
 
-  // 7 — pinned verification only; the allowlist gates what ever gets executed.
+  // 6.7 — bind verification to the COMMITTED revision on EVERY path that verifies a worktree, not
+  // just the fresh run: the LOCAL re-adopt reuses a crashed run's leftover worktree, which is DIRTY
+  // (uncommitted work still on disk), so it needs normalizing too. The cross-machine adopt does a
+  // fresh `git worktree add` of a committed branch, so this is a no-op there.
+  if (normalizeWorktreeToHead(args.workDir) === 'failed') {
+    // Could not isolate HEAD (a git error, or a residual dirty path reset/clean could not reach —
+    // an uninitialised submodule). Verifying the dirty tree would let a test pass on code the
+    // commit lacks, and an agent could force this, so refuse to certify: block for a look / retry.
+    await dispatch.call('block_task', {
+      workItemId: workItem.id,
+      reason: 'dirty_tree',
+      fencingToken: claim.fencingToken,
+    });
+    await dispatch.call('release_claim', {
+      claimId: claim.id,
+      reason: 'could not isolate the committed revision for pinned verification',
+    });
+    return 'blocked';
+  }
+
+  // 7 — pinned verification only; the allowlist gates what ever gets executed. It now runs against
+  // HEAD's tracked content (normalized above), so a passing test_run measures the certified commit.
   for (const command of workItem.pinnedVerification ?? []) {
     const binary = command.trim().split(/\s+/)[0] ?? '';
     if (!args.allowlist.includes(binary)) {
