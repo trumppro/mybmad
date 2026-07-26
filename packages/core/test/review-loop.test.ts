@@ -61,6 +61,7 @@ function setup(): Ctx {
   engine.grant({ actorId: po.id, permission: 'task.advance' });
   engine.grant({ actorId: po.id, permission: 'gate.spec.approve' });
   engine.grant({ actorId: dev.id, permission: 'task.claim' });
+  engine.grant({ actorId: dev.id, permission: 'evidence.submit' });
   engine.grant({ actorId: dev.id, permission: 'task.advance' });
   engine.grant({ actorId: dev.id, permission: 'task.block' });
   engine.grant({ actorId: reviewer.id, permission: 'gate.review.approve' });

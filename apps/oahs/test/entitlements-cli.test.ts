@@ -104,7 +104,9 @@ beforeAll(async () => {
 
   for (const [actorId, permission] of [
     [poId, 'task.plan'],
+    [poId, 'feature.init'],
     [devBoot.id, 'task.claim'],
+    [devBoot.id, 'evidence.submit'],
     [devBoot.id, 'task.advance'],
   ] as const) {
     await grantCommand(admin, { actorId, permission });

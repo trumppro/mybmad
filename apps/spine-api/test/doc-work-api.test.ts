@@ -69,6 +69,8 @@ beforeAll(async () => {
   reviewerActor = reviewerCreated.actor;
   reviewerAgent = reviewerCreated.client;
   await admin.call('grant_permission', { actorId: reviewerActor.id, permission: 'gate.review.reject' });
+  // 0.2a: writing the report is its own authority, separate from the loopback.
+  await admin.call('grant_permission', { actorId: reviewerActor.id, permission: 'evidence.submit' });
 
   feature = await po.call<Feature>('create_feature');
 });

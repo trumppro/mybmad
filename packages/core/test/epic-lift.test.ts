@@ -44,9 +44,11 @@ function makeRig(): Rig {
   const reviewer = engine.createActor({ type: 'user', displayName: 'Reviewer' });
   engine.grant({ actorId: planner.id, permission: 'feature.init' });
   engine.grant({ actorId: planner.id, permission: 'task.claim' });
+  engine.grant({ actorId: planner.id, permission: 'evidence.submit' });
   engine.grant({ actorId: planner.id, permission: 'task.plan' });
   engine.grant({ actorId: approver.id, permission: 'gate.spec.approve' });
   engine.grant({ actorId: dev.id, permission: 'task.claim' });
+  engine.grant({ actorId: dev.id, permission: 'evidence.submit' });
   engine.grant({ actorId: dev.id, permission: 'task.advance' });
   engine.grant({ actorId: reviewer.id, permission: 'gate.review.approve' });
   const feature = engine.createFeature({ actorId: planner.id });

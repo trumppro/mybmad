@@ -168,8 +168,11 @@ function enforceScope(ctx: ActorContext, command: string, parsed: unknown): void
   }
   // Confine on BOTH addressing shapes: heartbeat/release_claim name a claimId;
   // submit_evidence/advance_state/block_task name a workItemId. Without the
-  // workItemId check a scoped token could write evidence to ANY item (a real
-  // cross-claim reach, since submit_evidence needs no fencing token).
+  // workItemId check a scoped token could write evidence to ANY item — a real
+  // cross-claim reach. (0.2a since narrowed the engine side too: verdict-bearing
+  // evidence on a live-claimed item must present that claim's fencing token,
+  // which this token's holder has. This check remains the first line, and the
+  // only one for items that carry no live claim.)
   const bodyClaimId = (parsed as { claimId?: unknown }).claimId;
   if (typeof bodyClaimId === 'string' && bodyClaimId !== ctx.scope.claimId) {
     throw new PermissionDeniedError('scope:claim' as Permission, ctx.actorId);
@@ -843,8 +846,14 @@ export function createCommandBus(
       }
     }
 
-    // Unreachable while the switch covers the registry; keeps the compiler honest.
-    throw new GuardFailedError(`command not wired to the bus: ${command}`);
+    // 0.2d: make "keeps the compiler honest" literally true. The comment claimed it,
+    // but nothing enforced it: `switch (command as CommandName)` with no exhaustiveness
+    // assertion meant a new registry entry compiled fine and failed at RUNTIME here —
+    // and no test exercised this line. Assigning to `never` turns a registry entry with
+    // no bus case into a compile error, which is the whole point of one write surface
+    // generated from one registry.
+    const unwired: never = command as never;
+    throw new GuardFailedError(`command not wired to the bus: ${String(unwired)}`);
   }
 
   return { execute, engine };

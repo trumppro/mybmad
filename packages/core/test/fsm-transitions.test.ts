@@ -46,9 +46,11 @@ function makeRig(): Rig {
   const reviewer = engine.createActor({ type: 'user', displayName: 'Reviewer' });
   engine.grant({ actorId: planner.id, permission: 'feature.init' });
   engine.grant({ actorId: planner.id, permission: 'task.claim' });
+  engine.grant({ actorId: planner.id, permission: 'evidence.submit' });
   engine.grant({ actorId: planner.id, permission: 'task.plan' });
   engine.grant({ actorId: approver.id, permission: 'gate.spec.approve' });
   engine.grant({ actorId: dev.id, permission: 'task.claim' });
+  engine.grant({ actorId: dev.id, permission: 'evidence.submit' });
   engine.grant({ actorId: dev.id, permission: 'task.advance' });
   engine.grant({ actorId: reviewer.id, permission: 'gate.review.approve' });
   const feature = engine.createFeature({ actorId: planner.id });
@@ -380,6 +382,7 @@ describe('grant decides, not actor type (ROADMAP §0.2, §3)', () => {
     const item = newItem(rig, '1-1');
     const noPlan = rig.engine.createActor({ type: 'user', displayName: 'Claimer without plan grant' });
     rig.engine.grant({ actorId: noPlan.id, permission: 'task.claim' });
+    rig.engine.grant({ actorId: noPlan.id, permission: 'evidence.submit' });
     const claim = rig.engine.claimTask({ workItemId: item.id, actorId: noPlan.id });
     expect(() =>
       rig.engine.advanceState({
@@ -399,6 +402,7 @@ describe('grant decides, not actor type (ROADMAP §0.2, §3)', () => {
     // ready task through the same deterministic check a human passes."
     const agent = rig.engine.createActor({ type: 'agent', displayName: 'Planning agent' });
     rig.engine.grant({ actorId: agent.id, permission: 'task.claim' });
+    rig.engine.grant({ actorId: agent.id, permission: 'evidence.submit' });
     rig.engine.grant({ actorId: agent.id, permission: 'task.plan' });
     const claim = rig.engine.claimTask({ workItemId: item.id, actorId: agent.id });
     const wi = rig.engine.advanceState({

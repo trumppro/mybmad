@@ -10,7 +10,7 @@ COMPOSE   := docker compose
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install build build-ui serve dev test typecheck lint check clean \
+.PHONY: help install build build-ui serve dev test typecheck lint lint-oahs check clean \
         docker-build up down restart logs ps sh pg-up bootstrap
 
 help: ## Show this help
@@ -43,8 +43,20 @@ typecheck: ## Typecheck all @oahs/* packages (the TypeScript gate)
 lint: ## Lint the repo (eslint flat config — JS/mjs/yaml)
 	pnpm exec eslint .
 
-check: typecheck test ## Typecheck + test everything
+# Separate from `lint` because the two are separate ecosystems: `lint` is upstream
+# BMAD's JS config, which globally ignores packages/ and apps/. Before this target
+# existed, ~49k LOC of net-new TypeScript had `tsc --noEmit` as its only static gate.
+lint-oahs: ## Lint the oahs TypeScript workspaces (type-aware; enforces the §0.1 spine boundary)
+	pnpm exec eslint --config eslint.oahs.config.mjs \
+	  'packages/*/src/**/*.ts' 'apps/*/src/**/*.ts' 'apps/spine-api/ui-src/**/*.ts' \
+	  'packages/*/test/**/*.ts' 'apps/*/test/**/*.ts'
 
+check: typecheck lint-oahs test ## Typecheck + lint + test everything
+
+# NOTE: this removes the CLI bundle and the UI, so the README's `oahs` alias stops
+# working until the next `make build`. It also removes `.oahs`, which on a repo-local
+# runner holds LIVE worktrees and every agent transcript — see clean-state below if that
+# is what you actually meant.
 clean: ## Remove build artifacts + local data
 	rm -rf apps/oahs/bin apps/oahs/dist apps/oahs/public apps/spine-api/public \
 	  packages/*/dist .oahs coverage

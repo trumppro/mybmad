@@ -1,5 +1,37 @@
 # Security Policy
 
+> ## oahs platform (`packages/`, `apps/`) — read this part first
+>
+> **Everything below this box is upstream BMAD-METHOD's policy, carried with the fork.**
+> It points at BMAD's advisory page and Discord, promises a 48h/30d response, and scopes
+> itself to "BMad Method core framework code". None of that covers the oahs spine, API,
+> runner or dispatcher — and a researcher who followed it would disclose an unfixed oahs
+> vulnerability to an unrelated organisation that cannot patch it, while the maintainer
+> who can never hears about it.
+>
+> **In scope for oahs:** `packages/*`, `apps/*`, `scripts/`, `tools/oahs-bootstrap.sh`,
+> `tools/team-seed.sh`, and the Dockerfiles under `apps/oahs/`.
+>
+> **How to report:** open a private vulnerability report through this repository's
+> GitHub Security tab (Security → Report a vulnerability). If that is not enabled, open a
+> normal issue saying only that you have a security report and asking for a contact — do
+> not put details in a public issue.
+>
+> **Supported versions:** `main`, and only `main`. Nothing is published to npm or a
+> container registry, so there is no released artifact to backport to. See
+> [CHANGELOG-oahs.md](CHANGELOG-oahs.md).
+>
+> **Known posture, stated so you don't have to find it:** evidence collected on a
+> developer machine is only as strong as the honest-operator assumption behind it, and
+> the trust boundary is written up in [OAHS.md](OAHS.md) under "Trust boundary". Reports
+> that the honest-operator floor is not a cryptographic guarantee are already known;
+> reports that something defeats a guard the docs claim to have are very welcome.
+>
+> **No bounty.** There is no budget. Credit in the changelog, gladly.
+
+---
+
+
 ## Supported Versions
 
 We release security patches for the following versions:

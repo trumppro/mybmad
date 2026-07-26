@@ -7,7 +7,17 @@
  * module never reads the environment (env handling lives in index.ts start()).
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  copyFileSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
 
 export interface ResolvedToken {
@@ -54,14 +64,42 @@ export class TokenStore {
 
   constructor(options?: { persistPath?: string }) {
     this.persistPath = options?.persistPath;
-    if (this.persistPath !== undefined && existsSync(this.persistPath)) {
-      const raw = JSON.parse(readFileSync(this.persistPath, 'utf8')) as PersistShape;
-      for (const [hash, record] of Object.entries(raw.tokens)) {
-        // §10.1: carry the scope fields too (claimId/allowedCommands/expiresAt)
-        // so a `--data` restart honours a still-live job-bound token.
-        this.byHash.set(hash, { ...record });
+    if (this.persistPath === undefined) return;
+    // 0.3: NEVER refuse to boot on a damaged store. The old constructor did a bare
+    // JSON.parse in no try/catch, and startServe calls it before app.listen — so a
+    // torn write (a `docker stop`, OOM-kill or power loss landing inside save())
+    // left truncated JSON and the spine would not start AT ALL, while the PGlite
+    // database beside it was perfectly fine. The operator saw a parse error and had
+    // no documented recovery. Losing tokens is recoverable (`oahs token reissue`);
+    // refusing to boot is not, because the recovery command needs a running spine.
+    const loaded = this.tryLoad(this.persistPath) ?? this.tryLoad(`${this.persistPath}.bak`);
+    if (loaded === null) {
+      if (existsSync(this.persistPath)) {
+        process.stderr.write(
+          `oahs: WARNING — token store at ${this.persistPath} is unreadable and no usable .bak exists. ` +
+            `Starting with NO issued tokens: the admin token still works, and every other actor needs ` +
+            `\`oahs token reissue <actorId>\`. The damaged file is left in place for inspection.\n`,
+        );
       }
-      this.adminActorId = raw.adminActorId;
+      return;
+    }
+    for (const [hash, record] of Object.entries(loaded.tokens)) {
+      // §10.1: carry the scope fields too (claimId/allowedCommands/expiresAt)
+      // so a `--data` restart honours a still-live job-bound token.
+      this.byHash.set(hash, { ...record });
+    }
+    this.adminActorId = loaded.adminActorId;
+  }
+
+  /** Read + parse one candidate store file; null if absent, unreadable or malformed. */
+  private tryLoad(path: string): PersistShape | null {
+    if (!existsSync(path)) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as PersistShape;
+      if (typeof parsed !== 'object' || parsed === null || typeof parsed.tokens !== 'object') return null;
+      return parsed;
+    } catch {
+      return null;
     }
   }
 
@@ -193,6 +231,28 @@ export class TokenStore {
       shape.tokens[hash] = { ...record };
     }
     mkdirSync(dirname(this.persistPath), { recursive: true });
-    writeFileSync(this.persistPath, JSON.stringify(shape, null, 2), 'utf8');
+    // 0.3: atomic replace. This file is rewritten on EVERY token mutation, so the
+    // window for a torn write is per-issuance, not per-admin-action. tmp + fsync +
+    // rename makes the swap atomic on the filesystem; the previous good copy is kept
+    // as .bak so a damaged primary has somewhere to fall back to (see tryLoad).
+    // mode 0600 because this file is the credential store — the CLI's profile store
+    // already did this (cli-config.ts) while the spine's did not.
+    const tmp = `${this.persistPath}.tmp`;
+    const body = JSON.stringify(shape, null, 2);
+    const fd = openSync(tmp, 'w', 0o600);
+    try {
+      writeFileSync(fd, body, 'utf8');
+      fsyncSync(fd); // the bytes, before the rename that publishes them
+    } finally {
+      closeSync(fd);
+    }
+    if (existsSync(this.persistPath)) {
+      try {
+        copyFileSync(this.persistPath, `${this.persistPath}.bak`);
+      } catch {
+        // A missing .bak is not worth failing a token issuance over.
+      }
+    }
+    renameSync(tmp, this.persistPath);
   }
 }

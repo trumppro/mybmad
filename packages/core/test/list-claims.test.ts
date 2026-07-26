@@ -24,6 +24,7 @@ function makeRig(): Rig {
   engine.grant({ actorId: planner.id, permission: 'feature.init' });
   engine.grant({ actorId: planner.id, permission: 'task.plan' });
   engine.grant({ actorId: dev.id, permission: 'task.claim' });
+  engine.grant({ actorId: dev.id, permission: 'evidence.submit' });
   const feature = engine.createFeature({ actorId: planner.id });
   const a = engine.createWorkItem({
     featureId: feature.id,

@@ -101,7 +101,7 @@ async function setup(app: App): Promise<{ runnerToken: string; scoped: string; c
     type: 'agent',
     displayName: 'Runner',
   });
-  for (const permission of ['task.plan', 'task.claim', 'task.advance']) {
+  for (const permission of ['task.plan', 'task.claim', 'task.advance', 'evidence.submit']) {
     await call(app, ADMIN, 'grant_permission', { actorId: dev.actor.id, permission });
   }
   const feature = await call<Feature>(app, ADMIN, 'create_feature', {});
@@ -168,7 +168,7 @@ describe('scoped-token bus enforcement (§10.1)', () => {
 
   it('a scoped token cannot submit_evidence / block_task to a DIFFERENT work item (scope:work_item)', async () => {
     const app = await makeApp();
-    const { scoped, workItemId } = await setup(app);
+    const { scoped, workItemId, claim } = await setup(app);
     // A second, unrelated work item the scoped token must NOT be able to touch.
     const feature = await call<Feature>(app, ADMIN, 'create_feature', {});
     const victim = await call<WorkItem>(app, ADMIN, 'create_work_item', {
@@ -185,9 +185,14 @@ describe('scoped-token bus enforcement (§10.1)', () => {
     ).toBe(403);
     // Cross-item block is 403 too.
     expect(await status(app, scoped, 'block_task', { workItemId: victim.id, reason: 'other' })).toBe(403);
-    // ...but submit_evidence to its OWN item is allowed.
+    // ...but submit_evidence to its OWN item is allowed — presenting the claim's
+    // fencing token, which is what the real runner does for every verdict-bearing
+    // measurement (packages/runner/src/index.ts `submit`). 0.2a requires it while
+    // the claim is live: without it a verdict-bearing row is indistinguishable
+    // from one written by anyone who learned the workItemId.
     await call(app, scoped, 'submit_evidence', {
       workItemId,
+      fencingToken: claim.fencingToken,
       evidence: { kind: 'git_diff', payload: { baseline: 'a', final: 'b', filesChanged: 1, nonEmpty: true, branch: 'claim/x' } },
     });
   });

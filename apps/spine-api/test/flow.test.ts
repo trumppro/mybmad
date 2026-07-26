@@ -75,9 +75,11 @@ describe('spine-api end-to-end flow (HTTP only)', () => {
     // Permission codes exactly as in packages/core/src/types.ts
     for (const grant of [
       { actorId: createdPo.actor.id, permission: 'task.plan' },
+      { actorId: createdPo.actor.id, permission: 'feature.init' }, // 0.2b
       { actorId: createdPo.actor.id, permission: 'gate.spec.approve' },
       { actorId: createdDev.actor.id, permission: 'task.claim' },
       { actorId: createdDev.actor.id, permission: 'task.advance' },
+      { actorId: createdDev.actor.id, permission: 'evidence.submit' },
       { actorId: createdReviewer.actor.id, permission: 'gate.review.approve' },
     ]) {
       expect(await admin.call('grant_permission', grant)).toEqual({ granted: true });

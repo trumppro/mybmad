@@ -11,6 +11,7 @@ import { resolve } from 'node:path';
 
 import { Command } from 'commander';
 import { makeClient, type OahsClient , OAHS_VERSION } from '@oahs/contracts';
+import { backupCommand, restoreCommand } from './backup.js';
 // Type-only (erased): @oahs/runner is imported LAZILY at the call sites below.
 import type { RunnerOptions } from '@oahs/runner';
 
@@ -138,7 +139,11 @@ function resolvePortDefault(): string {
  */
 function parsePort(raw: string): number {
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+  // 0 is the ephemeral-port idiom: the OS picks a free port and `serve` prints the
+  // one it actually bound. startServe already supported it; only this validator did
+  // not, which forced anything driving the real binary to hardcode a port and race
+  // whatever else was listening.
+  if (!Number.isInteger(n) || n < 0 || n > 65535) {
     const from = process.env.OAHS_PORT?.trim() === raw ? '$OAHS_PORT' : '--port';
     throw new Error(`${from} is not a valid TCP port: ${JSON.stringify(raw)}`);
   }
@@ -165,12 +170,19 @@ export function buildProgram(): Command {
     .option('--admin-token <token>', 'bootstrap admin token (default: env OAHS_ADMIN_TOKEN, else generated)')
     .option('--data <dir>', 'persistence directory (default: env OAHS_DATA, else ~/.oahs/data)')
     .option('--ephemeral', 'in-memory engine — ALL state is lost on exit')
-    .action(async (opts: { port: string; adminToken?: string; data?: string; ephemeral?: boolean }) => {
+    // 0.3: `serve` hardcoded 0.0.0.0 and the CLI exposed no way to change it, so the
+    // from-source path published an admin-token-guarded spine to the whole LAN. The
+    // ServeOptions.host field existed but was unreachable from the binary. Default is
+    // loopback: compose does its own publishing (and passes 0.0.0.0 explicitly), so
+    // the safe default costs the container path nothing.
+    .option('--host <addr>', 'bind address (default: $OAHS_HOST, else 127.0.0.1; use 0.0.0.0 to publish)')
+    .action(async (opts: { port: string; adminToken?: string; data?: string; ephemeral?: boolean; host?: string }) => {
       try {
         const adminToken = opts.adminToken ?? process.env['OAHS_ADMIN_TOKEN'];
         const dataDir = resolveDataDir(opts);
         const handle = await startServe({
           port: parsePort(opts.port),
+          host: opts.host ?? process.env['OAHS_HOST'] ?? '127.0.0.1',
           ...(adminToken !== undefined && adminToken.length > 0 ? { adminToken } : {}),
           ...(dataDir !== undefined ? { dataDir } : {}),
         });
@@ -182,12 +194,57 @@ export function buildProgram(): Command {
         if (handle.adminTokenGenerated) {
           process.stdout.write(`admin token (generated): ${handle.adminToken}\n`);
         }
+        // 0.3: every `docker stop`, `compose restart`, systemd restart and Ctrl-C was
+        // an UNCLEAN shutdown — nothing anywhere registered SIGTERM, so in-flight
+        // writes were never drained and the embedded database was left to recover by
+        // WAL replay on a path no test exercised. `handle.close()` drains Fastify,
+        // stops the reaper, closes PGlite and releases the data-dir lock.
+        let closing = false;
+        const shutdown = (signal: string): void => {
+          if (closing) return; // a second Ctrl-C must not race the first
+          closing = true;
+          process.stdout.write(`\noahs: ${signal} — draining and closing the data dir…\n`);
+          void handle
+            .close()
+            .then(() => process.exit(0))
+            .catch((error: unknown) => {
+              process.stderr.write(`oahs: shutdown failed: ${String(error)}\n`);
+              process.exit(1);
+            });
+        };
+        process.on('SIGTERM', () => shutdown('SIGTERM'));
+        process.on('SIGINT', () => shutdown('SIGINT'));
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         process.stderr.write(`${err.name}: ${err.message}\n`);
         process.exitCode = 1;
       }
     });
+
+  program
+    .command('backup')
+    .description('archive a durable data dir (refuses while a spine is serving it)')
+    .option('--data <dir>', 'data directory to archive (default: env OAHS_DATA, else ~/.oahs/data)')
+    .requiredOption('--out <file>', 'destination .tar.gz')
+    .action(async (opts: { data?: string; out: string }) =>
+      emit(async () =>
+        backupCommand({
+          // resolveDataDir returns undefined only for --ephemeral, which has no
+          // durable dir to archive and is not an option here.
+          dataDir: resolveDataDir(opts.data !== undefined ? { data: opts.data } : {}) ?? '',
+          out: opts.out,
+          oahsVersion: OAHS_VERSION,
+        }),
+      ),
+    );
+
+  program
+    .command('restore <archive>')
+    .description('restore a backup into an EMPTY data dir')
+    .requiredOption('--data <dir>', 'target data directory (must be empty)')
+    .action(async (archive: string, opts: { data: string }) =>
+      emit(async () => restoreCommand({ archive, dataDir: opts.data })),
+    );
 
   // -- gate-holder ---------------------------------------------------------------
   withClientFlags(program.command('inbox'))

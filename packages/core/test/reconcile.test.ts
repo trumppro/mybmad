@@ -33,6 +33,7 @@ const PERMS: Permission[] = [
   'task.block',
   'gate.review.approve',
   'feature.init',
+  'evidence.submit',
 ];
 
 function setup(): { engine: SpineEngine; actorId: string; featureId: string } {

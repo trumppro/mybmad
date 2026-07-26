@@ -101,3 +101,18 @@ apps/*/dist/
 *.tsbuildinfo
 .oahs/
 .playwright-mcp/
+
+# A third party's product manual and architecture reference were tracked here (2.1 MB
+# of someone else's copyrighted documentation, in a public repo). The ANALYSIS derived
+# from them is ours and stays — docs/oahs/05-actorium-portal-parity.md, and the §11/§12
+# roadmap sections that cite them. The source documents are not ours to redistribute.
+docs/ref/*.pdf
+
+# Build artifacts. These were TRACKED, which had two costs: every source change produced
+# a 12,000-line generated diff that made the real change unreviewable, and nothing ever
+# verified the committed bundle matched the source it claimed to be — so a stale bundle
+# could ship silently (`make clean` also deleted these tracked files, dirtying the tree).
+# The quickstart builds before it runs (`make serve` depends on `build`) and both
+# Dockerfiles build, so nothing depended on them being in git.
+apps/oahs/bin/
+apps/spine-api/public/

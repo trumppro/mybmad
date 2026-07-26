@@ -116,6 +116,7 @@ beforeAll(async () => {
     { actorId: createdPo.actor.id, permission: 'gate.spec.approve' },
     { actorId: createdPo.actor.id, permission: 'feature.init' },
     { actorId: createdDev.actor.id, permission: 'task.claim' },
+    { actorId: createdDev.actor.id, permission: 'evidence.submit' },
     { actorId: createdDev.actor.id, permission: 'task.advance' },
     { actorId: createdDev.actor.id, permission: 'task.block' },
   ]) {

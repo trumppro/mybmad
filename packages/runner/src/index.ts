@@ -59,7 +59,13 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { OahsClient } from '@oahs/contracts';
-import { INTENT_HASH_ALGO, computeIntentHash, extractIntentRegion } from '@oahs/core';
+import {
+  INTENT_HASH_ALGO,
+  VERIFICATION_ALLOWLIST,
+  computeIntentHash,
+  extractIntentRegion,
+  pinnedCommandRejection,
+} from '@oahs/core';
 import type { BlockedReason, Claim, Evidence, WorkItem, WorkItemState } from '@oahs/core';
 import { GitHubForge, type FetchImpl } from './forge.js';
 
@@ -182,18 +188,52 @@ export interface RunOnceResult {
   evidence?: Evidence[];
 }
 
-/** Binaries a pinned verification command may start with (first token). */
-export const DEFAULT_VERIFICATION_ALLOWLIST: readonly string[] = [
-  'node',
-  'npm',
-  'pnpm',
-  'npx',
-  'pytest',
-  'python3',
-  'sh',
-  'bash',
-  'git',
-];
+/**
+ * Binaries a pinned verification command may start with.
+ *
+ * 0.2c: this is now the SHARED constant from @oahs/core, not a private copy — the
+ * old copy contained `sh` and `bash`, which made the check decorative (an allowlist
+ * admitting a shell admits everything). The engine validates a pin against the same
+ * list when it is written, so the wire and the executor cannot disagree.
+ */
+export const DEFAULT_VERIFICATION_ALLOWLIST: readonly string[] = VERIFICATION_ALLOWLIST;
+
+/**
+ * Split a validated pinned command into argv (0.2c).
+ *
+ * Only quoting and whitespace need handling: `pinnedCommandRejection` has already
+ * refused every shell metacharacter, so there is no substitution, redirection or
+ * chaining left to interpret. Quotes group a spaced argument (`pytest -k "not
+ * slow"`) and are stripped, exactly as a shell would — the difference is that the
+ * result is passed as argv, so nothing in it can become a second command.
+ */
+export function splitVerificationArgv(command: string): string[] {
+  const argv: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let started = false;
+  for (const char of command.trim()) {
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      started = true; // `--flag=""` is a real, empty argument
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current !== '' || started) argv.push(current);
+      current = '';
+      started = false;
+      continue;
+    }
+    current += char;
+  }
+  if (current !== '' || started) argv.push(current);
+  return argv;
+}
 
 /** Marker dropped in every claim worktree so a later claim can map it back. */
 const MARKER_FILE = '.oahs-work-item';
@@ -1424,7 +1464,9 @@ function normalizeWorktreeToHead(workDir: string): NormalizeResult {
 }
 
 async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
-  const { client, dispatch, workItem, claim } = args;
+  // NB: `args.client` is deliberately not destructured here — finishRun mutates
+  // through `dispatch`, the claim-scoped client (§10.1), never the static one.
+  const { dispatch, workItem, claim } = args;
 
   // 6 — parse HALT: frontmatter status + verbatim Auto Run Result.
   const spec = readSpecReport(join(args.workDir, args.specRel));
@@ -1486,19 +1528,33 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
 
   // 7 — pinned verification only; the allowlist gates what ever gets executed. It now runs against
   // HEAD's tracked content (normalized above), so a passing test_run measures the certified commit.
+  //
+  // 0.2d: RECORD which revision that was. Normalizing to HEAD makes the claim true;
+  // stamping the sha makes it CHECKABLE — the core can then refuse a done gate whose
+  // passing test_run measured a different commit than the one being certified.
+  const verifiedRevision = git(['rev-parse', 'HEAD'], args.workDir);
   for (const command of workItem.pinnedVerification ?? []) {
-    const binary = command.trim().split(/\s+/)[0] ?? '';
-    if (!args.allowlist.includes(binary)) {
-      await args.submit('test_run', { command, exitCode: -1, refused: true });
+    // 0.2c: refuse on the SAME rule the engine applied when the pin was written
+    // (metacharacters + allowlist), so an item pinned before that rule existed is
+    // refused here rather than executed as a script.
+    const rejection = pinnedCommandRejection(command);
+    if (rejection !== null) {
+      await args.submit('test_run', { command, exitCode: -1, refused: true, reason: rejection });
       continue;
     }
-    const run = spawnSync('bash', ['-c', command], {
+    // No shell. `bash -c <string>` was the execution half of the injection: the
+    // allowlist inspected the first token and bash then interpreted the rest.
+    // argv has no such gap — the command cannot spawn a second one.
+    const argv = splitVerificationArgv(command);
+    const binary = argv[0] ?? '';
+    const run = spawnSync(binary, argv.slice(1), {
       cwd: args.workDir,
       encoding: 'utf8',
       timeout: 10 * 60 * 1000,
       env: args.verifyEnv,
+      shell: false,
     });
-    await args.submit('test_run', { command, exitCode: run.status ?? -1 });
+    await args.submit('test_run', { command, exitCode: run.status ?? -1, revision: verifiedRevision });
   }
 
   // 8 — diff + push + commit evidence (measured, never judged here).
@@ -1511,6 +1567,7 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
   await args.submit('git_diff', {
     baseline: args.baseline,
     final,
+    revision: final, // 0.2d: same stamp as test_run, so the pair is comparable
     filesChanged,
     nonEmpty: filesChanged > 0,
     branch: args.branch,
@@ -1624,7 +1681,6 @@ async function finishRun(args: FinishArgs): Promise<'in_review' | 'blocked'> {
 
   // Hoisted so the §10.3 assigned path (which returns before the push) routes
   // through the SAME verdict logic — one HALT contract, one place.
-  // eslint-disable-next-line no-inner-declarations
   async function routeByHalt(): Promise<'in_review' | 'blocked'> {
     const status = normalizeStatus(spec.status);
     const token = claim.fencingToken;
@@ -1839,8 +1895,6 @@ export async function runOnce(options: RunnerOptions): Promise<RunOnceResult> {
   } finally {
     clearInterval(heartbeatTimer);
   }
-
-  // eslint-disable-next-line no-inner-declarations
   async function runClaimed(): Promise<RunOnceResult> {
 
   // §10.2: in ASSIGNED mode the context is pre-supplied by the dispatcher (the

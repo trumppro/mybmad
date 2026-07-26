@@ -17,6 +17,9 @@ Every feature proposal must pass the thesis self-check:
 3. Does it agentify something *inside* a task? → almost always accept.
 4. Does it let an actor pass a gate by *interpretation* rather than *granted permission*? → reject. This includes the subtle forms: an LLM "deciding" a retry, an LLM grading a gate, a mention auto-advancing state, an LLM-authored command being trusted as evidence.
 5. Does the copy say "autonomous"? → rewrite. (The thesis itself uses "autonomous, learning agents" once, in quotes, as a differentiator line — quote it, never paraphrase it into positioning.)
+6. **Who is blocked today without this, and what observation proves it?** → name the actor and the evidence (an event in the log, a support message, a sharp edge in the README, an operator who asked). **A competitor's screenshot is not an observation.** → if there is no answer, the item is a hypothesis and belongs in a parked list, not a phase.
+
+   *Added 2026-07-26.* Gates 1–5 are all architectural-purity questions — they are good ones, and they are why the invariant survived ten phases. But none of them asks whether anyone needs the thing, and the thesis names no user. Into that vacuum, one competitor supplied the plan: §8–§12 were derived from three Actorium inputs, three of the fifteen closed decisions cite it as their source, and "portal parity" then drove concrete scope (per-phase model policy UI, chat channels/DMs/saved, a ⌘K palette, board vocabulary). The same review concluded that competitor's gate and dispatch actions were still `PLACEHOLDER` stubs and that oahs was ahead where it mattered. Building a feature list from a product you judge to be behind you is the most expensive kind of misallocation available, because it *feels* like market research. This gate exists to make that failure loud. Re-score §11 and §12 against it before funding either.
 
 Two §0.1 invariants anchor the spine; they are enforced by DIFFERENT means, and the difference matters:
 
@@ -227,7 +230,16 @@ The worker deepens (thesis): teammates on [Hermes](https://github.com/nousresear
 
 ---
 
-## §7 Enterprise — DEFERRED INDEFINITELY (superseded by "Cockpit")
+## §7 Enterprise — MOSTLY DEFERRED (superseded by "Cockpit")
+
+> **Contradiction resolved 2026-07-26.** This section was titled "DEFERRED INDEFINITELY"
+> while listing OIDC and the Usage view — both of which Phase 12 schedules outright, and
+> OIDC is a Phase 12 *exit criterion*. §12's own closing bullet then said "OIDC and
+> workspace_id/RLS tenancy remain §7 items". A contributor (or an agent) resolving §7 got a
+> deferral and resolving §12 got a commitment, from one file that D1 makes the referent for
+> every §-reference. **OIDC and the Usage view belong to §12 and are scheduled there.**
+> What stays deferred here, and is NOT sequenced: SCIM, audit export with signatures,
+> `workspace_id`/RLS multi-tenancy, and licensing.
 
 > **2026-07 reposition:** the operator's priority is parallel projects for ONE
 > person on one spine — not procurement. Phase 7 is now **Cockpit** (project
@@ -249,6 +261,14 @@ What makes procurement say yes, none of it retrofit if §1 is built right:
 > **§8–§12 (added 2026-07):** the sections below come from a review against three Actorium inputs — the architecture reference (`docs/ref/ai_workflow_and_architecture.pdf`, a 4-layer design deployed as three stacks), the operations manual (`docs/ref/actorium-user-manual.pdf`, the daily PO/Tech-Lead workflow), and the live operations portal (app.actorium.ai, studied 2026-07-16). The review confirmed the spine already exceeds the reference at the orchestrator layer (fencing tokens, evidence-gated done, entitlements as data — all things to preserve, not revisit; the portal's own gate/dispatch actions are still `PLACEHOLDER` stubs) and found four real gaps: no knowledge layer anywhere in the plan-of-record, no credential-isolated execution runtime, a single-container topology, and an unclosed feature-layer handoff. It also found defects that outrank all of them, collected in §8. The portal added operational detail folded into the sections below (portal-parity notes in §2.5 per-phase model policy, §5.5 chat surfaces, §7 org→workspace + OIDC + Usage, §9 board vocabulary/In-TDD/command palette/repo registry, §10 conflict-resolution, §11 self-review). Each section respects the closed decisions above; where a section adopts an Actorium idea it says which one, and where oahs deliberately diverges it says why. A screen-by-screen comparison lives in `docs/oahs/05-actorium-portal-parity.md`.
 
 ## §8 Hardening & the trust floor
+
+> **Tense note (2026-07-26):** this section was written as a present-tense defect
+> inventory and never rewritten after Phase 8 shipped, so it still reads as if
+> `force_release_claim` were open to any authenticated actor (it is gated —
+> `packages/core/src/engine.ts` `forceReleaseClaim`), and similarly for the other items.
+> A security reader's first stop is the plan of record, and this section was publishing a
+> false negative about the project's own posture three phases after the fix. Read the
+> bullets below as **what was done**, not what is outstanding.
 
 Before any new layer is built, the claims the docs already make must be true, and the wire surface must stop trusting politeness. Everything here is a defect fix or the enforcement of an existing promise — no new concepts.
 

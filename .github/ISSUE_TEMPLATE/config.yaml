@@ -1,8 +1,10 @@
-blank_issues_enabled: false
+# Blank issues are ENABLED for this fork. Previously they were off and the only two
+# contact links pointed at upstream BMAD's docs site and Discord — while README.md says
+# "Please do not send oahs issues to the upstream tracker." So an operator who hit a real
+# defect had every affordance route them to a project that would (correctly) close it, and
+# no route here at all.
+blank_issues_enabled: true
 contact_links:
-  - name: 📚 Documentation
+  - name: 📚 BMAD-METHOD docs (the upstream project this forks)
     url: https://docs.bmad-method.org
-    about: Check the docs first — tutorials, guides, and reference
-  - name: 💬 Discord Community
-    url: https://discord.gg/gk8jAdXWmj
-    about: Join for questions, discussion, and help before opening an issue
+    about: For the BMAD playbooks in src/ — NOT for the oahs platform in packages/ and apps/

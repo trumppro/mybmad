@@ -38,10 +38,11 @@ function makeRig(): Rig {
   const dev = engine.createActor({ type: 'user', displayName: 'Dev' });
   const editor = engine.createActor({ type: 'user', displayName: 'Editor' });
   const outsider = engine.createActor({ type: 'user', displayName: 'Outsider' });
-  for (const p of ['task.plan', 'gate.spec.approve', 'task.claim', 'task.advance'] as const) {
+  for (const p of ['task.plan', 'gate.spec.approve', 'task.claim', 'task.advance', 'evidence.submit', 'feature.init'] as const) {
     engine.grant({ actorId: po.id, permission: p });
   }
   engine.grant({ actorId: dev.id, permission: 'task.claim' });
+  engine.grant({ actorId: dev.id, permission: 'evidence.submit' });
   engine.grant({ actorId: dev.id, permission: 'task.advance' });
   engine.grant({ actorId: editor.id, permission: 'intent.edit' });
   const feature = engine.createFeature({ actorId: po.id });

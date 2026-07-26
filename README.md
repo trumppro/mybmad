@@ -1,5 +1,14 @@
 # oahs — Open Agents Harness System
 
+**Your auditor asked how AI-written changes get reviewed.** oahs is the answer you can
+hand them: the test that proves an agent's work was **frozen by a named human before the
+agent started**, and an engine — not a model — that judged the result. Work items move
+through a deterministic state machine; gates are held by actors with explicit grants;
+evidence is measured by a runner and judged by rules.
+
+For teams already running coding agents against GitHub/Linear/Jira who now have to show
+their work. Not a tracker replacement — the approval and evidence layer behind one.
+
 [![oahs CI](https://github.com/trumppro/mybmad/actions/workflows/oahs-ci.yaml/badge.svg)](https://github.com/trumppro/mybmad/actions/workflows/oahs-ci.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](.nvmrc)
@@ -29,7 +38,7 @@ oahs is built inside a fork of BMAD-METHOD — see [License and upstream](#licen
 
 [`oahs-ci.yaml`](.github/workflows/oahs-ci.yaml) is the only pipeline on every push and PR (`oahs-release.yaml` runs on `oahs-v*` tags). The GitLab mirror `.gitlab-ci.yml` carries `spine-purity` and `check` — but **not** `dispatch-e2e`.
 
-## Status — 0.1.0
+## Status — 0.2.0
 
 Phases 0–10 shipped: the spine and its conformance suite, entitlements, collaboration, non-coding teammates, agent memory, the model gateway (part 1 — see [OAHS.md](OAHS.md)), the cockpit, hardening, the feature-layer contract, execution isolation. Phases 11–12 (knowledge layer, service topology) have roadmap sections and backlogs committed, and **no implementation**.
 
@@ -37,7 +46,8 @@ Phases 0–10 shipped: the spine and its conformance suite, entitlements, collab
 
 - **No Postgres server.** `serve` offers `memory` and `pglite` only; nothing reads a `DATABASE_URL`. But do not read that as "`PgEngine` is unwired": `PgEngine` IS the durable engine — `serve --data` is `PgEngine` on embedded PGlite, and that is the default and what compose runs. What is absent is a connection to a real Postgres server.
 - **No migrations**, but the schema is versioned. Idempotent, additive DDL is re-applied on every open; there is no down-migration. Instead `oahs serve` refuses to open a data dir written by a *newer* binary than itself (an old binary cannot know what a newer schema changed), so it cannot corrupt one. `GET /version` reports the `schemaVersion`.
-- **⚠ Nothing locks the data dir, and a second `oahs serve` on it destroys it.** No flags needed to hit this: `--data` defaults to `~/.oahs/data`, so two bare `oahs serve` — two terminals, or a service restart racing a manual start — target the same directory. Both accept writes and report success; the loss surfaces at the *next* start as `RuntimeError: Aborted()`, and the directory is not recoverable. Run one spine per data dir until this is fixed, and back the directory up while the server is stopped.
+- **One spine per data dir is ENFORCED** (0.1.1) by a cross-process lock: a second `oahs serve` refuses with a clear message instead of silently destroying the directory. An abandoned lock (after a `kill -9`) clears itself within ~20s — which means a killed server crash-loops for that window before it comes back up. Both properties are pinned by [`apps/oahs/test/durability-kill.test.ts`](apps/oahs/test/durability-kill.test.ts), which also proves a committed write survives `SIGKILL`.
+- **Backups exist** (0.2.0): `oahs backup --out snap.tar.gz` archives `pg/` + `tokens.json` + the schema version as one artifact, and **refuses while a spine is serving** — so a torn copy is unreachable, not merely discouraged. `oahs restore` refuses a non-empty target and an archive from a newer schema.
 - **No multi-tenancy.** There is no `workspace_id` column on any table.
 - **Grant scopes are stored but not enforced.**
 - **No metering, billing, quotas, SSO/OIDC, SCIM, or audit signing.** Deferred indefinitely.
@@ -116,7 +126,7 @@ The dispatcher claims on the host with its static token, mints a **job-scoped, m
 ## Sharp edges
 
 - **`oahs` is not on your PATH, and cannot be.** Nothing is published; the binary is `apps/oahs/bin/oahs.mjs` after `make build`. Alias it. The compose path gives you the *server* — it does not build that bin.
-- **`serve` binds `0.0.0.0` and there is no `--host` flag.** The from-source path publishes an admin-token-guarded spine to your LAN. Compose publishes to `127.0.0.1` for exactly that reason.
+- ~~`serve` binds `0.0.0.0` and there is no `--host` flag.~~ **Fixed in 0.2.0:** `serve` defaults to `127.0.0.1` and takes `--host` (or `$OAHS_HOST`). The container passes `--host 0.0.0.0` explicitly, since docker does the publishing.
 - **The generated admin token is new on every restart** unless you set `OAHS_ADMIN_TOKEN`. Actor tokens persist; the admin token does not.
 - **`OAHS_TOKEN` silently outranks your saved default identity.** Precedence: `--token` > `--as` > `$OAHS_TOKEN` > profile default. If commands act as the wrong actor, `unset OAHS_TOKEN`.
 - **No coding agent is baked into the runner image by default.** `AGENT_NPM` is empty and `.env.example` ships `OAHS_AGENT_CMD=echo no-agent`, so an out-of-the-box dispatch runs `echo no-agent` and the item blocks. Bake one (`--build-arg AGENT_NPM=@anthropic-ai/claude-code`) or point `--agent-cmd` at something that exists in the image. BYO fails the same way if `claude` is not on your PATH.
@@ -136,7 +146,7 @@ Every security-shaped sentence here has a tense and a scope, and this is the sco
 | The plan of record — §0.1 invariants, phases, D-numbered decisions | [product-roadmap.md](product-roadmap.md) |
 | The technical map and per-phase quick reference | [OAHS.md](OAHS.md) |
 | The specification, as an executable suite | [packages/core/test/CONFORMANCE.md](packages/core/test/CONFORMANCE.md) |
-| What 0.1.0 is, and precisely what it is not | [CHANGELOG-oahs.md](CHANGELOG-oahs.md) |
+| What 0.2.0 is, and precisely what it is not | [CHANGELOG-oahs.md](CHANGELOG-oahs.md) |
 | **Install, operate, use it — in Vietnamese** (6 docs: overview, install/ops, usage, reference, role handbook, portal parity) | [docs/oahs/](docs/oahs/README.md) |
 | The platform's own backlog, run through its own spine | [delivery/](delivery/) |
 

@@ -36,9 +36,12 @@ import {
   InvalidTransitionError,
   PermissionDeniedError,
   PERSONAS,
+  pickVerdictFields,
+  pinnedCommandRejection,
   PLAN_CEILINGS,
   REVIEW_LOOP_LIMIT,
   StoriesValidationError,
+  VERDICT_EVIDENCE_KINDS,
   WORK_ITEM_STATES,
   parseStories,
   type Actor,
@@ -963,6 +966,8 @@ export class PgEngine {
     forgeOwner?: string;
     forgeRepo?: string;
   }): Promise<Project> {
+    // 0.2b — port of the memory engine's gate; see project.test.ts.
+    await this.requirePermission(input.actorId, 'feature.init');
     const slug = input.slug ?? PgEngine.slugify(input.name);
     if (slug === '') throw new GuardFailedError('project slug must not be empty');
     const id = this.nextId('proj');
@@ -1063,6 +1068,7 @@ export class PgEngine {
     projectId?: string;
     name?: string;
   }): Promise<Feature> {
+    await this.requirePermission(input.actorId, 'feature.init'); // 0.2b
     const project =
       input.projectId !== undefined
         ? await this.mustGetProjectRow(input.projectId)
@@ -1136,10 +1142,13 @@ export class PgEngine {
   }
 
   async createWorkItem(input: CreateWorkItemInput & { actorId: string }): Promise<WorkItem> {
+    // 0.2b: `task.plan` — this is where `invokeDevWith` enters the system.
+    await this.requirePermission(input.actorId, 'task.plan');
     return this.db.transaction(async (tx) => this.createWorkItemTx(tx, input));
   }
 
   async importStories(input: { featureId: string; yaml: string; actorId: string }): Promise<StoriesImportResult> {
+    await this.requirePermission(input.actorId, 'task.plan'); // 0.2b — createWorkItem in bulk
     const entries = parseStories(input.yaml);
     const feature = await this.getFeatureRow(input.featureId);
     if (!feature) {
@@ -1825,6 +1834,13 @@ export class PgEngine {
 
   // -- gates & evidence (roadmap §1.4) ------------------------------------------
 
+  /**
+   * Port of the memory engine's rule (0.2a) — see EngineImpl.submitEvidence for
+   * the reasoning. `evidence.submit` always; a fencing token additionally for a
+   * VERDICT_EVIDENCE_KINDS row while a claim is live. Both engines read the same
+   * exported constants and the same `pickVerdictFields`, so the two cannot drift
+   * on which kinds are guards or which fields reach the log.
+   */
   async submitEvidence(input: {
     workItemId: string;
     evidence: Evidence;
@@ -1832,6 +1848,16 @@ export class PgEngine {
     fencingToken?: number;
   }): Promise<void> {
     const item = await this.mustGetItem(input.workItemId);
+    await this.requirePermission(input.actorId, 'evidence.submit');
+    if (
+      input.fencingToken === undefined &&
+      VERDICT_EVIDENCE_KINDS.includes(input.evidence.kind) &&
+      (await this.liveClaimsOf(item.id)).length > 0
+    ) {
+      throw new ConflictError(
+        `work item ${item.id} is under a live claim: ${input.evidence.kind} evidence must present its fencing token`,
+      );
+    }
     await this.validatePresentedToken(item, input.fencingToken, input.actorId);
     await this.db.transaction(async (tx) => {
       await tx.insert(evidenceTable).values({
@@ -1841,6 +1867,7 @@ export class PgEngine {
       });
       await this.appendTx(tx, 'work_item', item.id, 'evidence.submitted', input.actorId, {
         kind: input.evidence.kind,
+        ...pickVerdictFields(input.evidence.payload),
       });
     });
   }
@@ -1861,6 +1888,12 @@ export class PgEngine {
       // §9.3: read the submitted frozen-region hash BEFORE the tx opens
       // (single-connection PGlite). Pinned only when the gate actually fires.
       const submittedHash = quorumMet ? await this.latestIntentHash(item.id) : undefined;
+      // 0.2c — port of the memory engine's D7 pin validation. BEFORE the tx opens,
+      // so a rejected pin never starts one (and never rolls one back).
+      for (const command of input.pinnedVerification ?? []) {
+        const rejection = pinnedCommandRejection(command);
+        if (rejection !== null) throw new GuardFailedError(rejection);
+      }
       return this.db.transaction(async (tx) => {
         let pinned = item.pinnedVerification;
         if (input.pinnedVerification !== undefined) {
@@ -1973,6 +2006,22 @@ export class PgEngine {
       const latest = runs[runs.length - 1];
       if (!latest || latest.payload['exitCode'] !== 0) {
         throw new GuardFailedError(`pinned verification did not pass: ${command}`);
+      }
+    }
+    // 0.2d — port of the memory engine's revision binding; see gates-evidence.test.ts.
+    // Applied only when both sides state a revision, so pre-0.2d evidence keeps its
+    // former meaning (evidence is append-only and data dirs outlive binaries).
+    const commitRowsForRevision = rows.filter((row) => row.kind === 'commit');
+    const certifiedSha = commitRowsForRevision[commitRowsForRevision.length - 1]?.payload['sha'];
+    if (typeof certifiedSha === 'string') {
+      for (const command of item.pinnedVerification ?? []) {
+        const runs = rows.filter((row) => row.kind === 'test_run' && row.payload['command'] === command);
+        const measured = runs[runs.length - 1]?.payload['revision'];
+        if (typeof measured === 'string' && measured !== certifiedSha) {
+          throw new GuardFailedError(
+            `pinned verification measured revision ${measured}, but the certified commit is ${certifiedSha}: ${command}`,
+          );
+        }
       }
     }
     if (item.kind === 'code') {

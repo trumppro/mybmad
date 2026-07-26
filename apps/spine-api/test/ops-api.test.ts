@@ -45,7 +45,7 @@ beforeAll(async () => {
   });
   devActor = createdDev.actor;
   devToken = createdDev.token;
-  for (const permission of ['task.claim', 'task.plan', 'feature.init']) {
+  for (const permission of ['task.claim', 'task.plan', 'feature.init', 'evidence.submit']) {
     await admin.call('grant_permission', { actorId: devActor.id, permission });
   }
   dev = makeClient({ baseUrl, token: devToken });

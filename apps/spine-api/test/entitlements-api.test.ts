@@ -101,8 +101,10 @@ beforeAll(async () => {
 
   for (const grant of [
     { actorId: poActor.id, permission: 'task.plan' },
+    { actorId: poActor.id, permission: 'feature.init' }, // 0.2b
     { actorId: devCreated.actor.id, permission: 'task.claim' },
     { actorId: devCreated.actor.id, permission: 'task.advance' },
+    { actorId: devCreated.actor.id, permission: 'evidence.submit' }, // 0.2a: measuring is its own authority
     { actorId: rejectorActor.id, permission: 'gate.review.reject' }, // the exit-criterion grant
     { actorId: secondReviewerActor.id, permission: 'gate.review.approve' },
   ]) {

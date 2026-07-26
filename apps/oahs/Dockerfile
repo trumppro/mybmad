@@ -77,9 +77,15 @@ VOLUME ["/data"]
 
 # Liveness: the same /healthz every client can hit (honours $OAHS_PORT).
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=5 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.OAHS_PORT||4521)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.OAHS_PORT||4521)+'/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# The bundle entrypoint IS the executable. serve binds 0.0.0.0 (serve.ts) and takes
-# its port from $OAHS_PORT above, which is what the HEALTHCHECK probes.
+# 0.3: the probe is /readyz, not /healthz. /healthz returns a hardcoded ok and never
+# touches the engine, so a spine whose PGlite worker had died still reported healthy
+# and this HEALTHCHECK never noticed. /readyz does one trivial engine read.
+#
+# The bundle entrypoint IS the executable. Inside the container serve MUST bind
+# 0.0.0.0 (docker does the publishing, and compose maps it to 127.0.0.1 on the host);
+# the from-source default is loopback, so it is passed explicitly here.
+# Its port comes from $OAHS_PORT above, which is what the HEALTHCHECK probes.
 ENTRYPOINT ["node", "bin/oahs.mjs"]
-CMD ["serve", "--data", "/data"]
+CMD ["serve", "--data", "/data", "--host", "0.0.0.0"]

@@ -132,6 +132,7 @@ export type Permission =
   | 'feature.init'
   | 'feature.advance'
   | 'feature.cancel' // Phase 9 §9: privileged cancel — a product decision, from any non-terminal state
+  | 'evidence.submit' // 0.2a: authority to AUTHOR machine evidence — see submitEvidence
   | 'dispatch.release_hold'
   | 'intent.edit'
   | 'state.downgrade'
@@ -184,10 +185,15 @@ export const AGENT_GATE_APPROVE_PERMISSIONS: readonly Permission[] = [
  * Rules layer. An assignment grants the bundle; revocation removes it.
  */
 export const DELIVERY_ROLES: Record<string, readonly Permission[]> = {
-  product_owner: ['task.plan', 'feature.init', 'feature.advance', 'gate.spec.approve', 'gate.handoff.approve', 'feature.cancel', 'dispatch.release_hold'],
-  tech_lead: ['task.plan', 'gate.review.approve', 'gate.review.reject', 'gate.design.approve', 'state.downgrade', 'ops.force_release_claim'],
-  reviewer: ['gate.review.approve', 'gate.review.reject'],
-  developer: ['task.claim', 'task.advance', 'task.block'],
+  // `evidence.submit` rides with the roles that MEASURE (0.2a): the developer's
+  // runner writes test_run/git_diff/commit, the PO submits the §9.3 intent hash
+  // at spec approval, and the review-gate holders measure the §9.6 merge fact.
+  // It is deliberately absent from `contributor` and `qa` — the persona floor
+  // state must not be able to author a verdict.
+  product_owner: ['task.plan', 'feature.init', 'feature.advance', 'gate.spec.approve', 'gate.handoff.approve', 'feature.cancel', 'dispatch.release_hold', 'evidence.submit'],
+  tech_lead: ['task.plan', 'gate.review.approve', 'gate.review.reject', 'gate.design.approve', 'state.downgrade', 'ops.force_release_claim', 'evidence.submit'],
+  reviewer: ['gate.review.approve', 'gate.review.reject', 'evidence.submit'],
+  developer: ['task.claim', 'task.advance', 'task.block', 'evidence.submit'],
   qa: ['task.block'],
   contributor: [],
 };
@@ -267,6 +273,150 @@ export type EvidenceKind =
 export interface Evidence {
   kind: EvidenceKind;
   payload: Record<string, unknown>;
+}
+
+/**
+ * The evidence payload fields a gate verdict is actually computed from
+ * (checkReviewEvidence, the nonempty_diff guard, the §9.6 merged-PR policy).
+ *
+ * `submitEvidence` copies these into the `evidence.submitted` event so the
+ * append-only log answers "on what evidence" by itself — an event carrying only
+ * `{kind}` cannot say WHICH command or WHAT exit code won the latest-wins
+ * comparison, which is precisely what an audit of a passed gate needs.
+ *
+ * A whitelist rather than the whole payload, for two reasons: evidence payloads
+ * are `Record<string, unknown>` and agent-adjacent ones carry transcript tails
+ * and free-form text that must not land in the event log, and pinning the list
+ * here keeps both engines emitting the identical event (they share this
+ * function, so the two implementations cannot drift on it).
+ */
+export const VERDICT_EVIDENCE_FIELDS: readonly string[] = [
+  'command', // test_run — WHICH pinned command
+  'exitCode', // test_run — the fact D7 turns into a guard
+  'nonEmpty', // git_diff — the fake-done check
+  'filesChanged', // git_diff — the measurement behind nonEmpty
+  'reachableOnRemote', // commit — "push is part of the HALT contract"
+  'sha', // commit — the revision certified
+  'revision', // test_run/git_diff — which revision was measured (0.2d)
+  'action', // pr — merged_into_default, for the §9.6 gate policy
+  'schemaValid', // doc_lint — the non-code done condition (§1.4 kinds)
+  'algo', // intent_hash — which canonicalization (§9.3)
+  'hash', // intent_hash — the frozen intent contract
+];
+
+/**
+ * Binaries a pinned verification command may start with (0.2c, D7).
+ *
+ * `sh` and `bash` are deliberately ABSENT: an allowlist that admits a shell admits
+ * everything, which is what made the runner's earlier list decorative. The runner
+ * imports this same constant, so the wire check and the execution check cannot
+ * disagree about what is runnable.
+ */
+export const VERIFICATION_ALLOWLIST: readonly string[] = [
+  'node',
+  'npm',
+  'pnpm',
+  'npx',
+  'pytest',
+  'python3',
+  'make',
+  'go',
+  'cargo',
+  'git',
+];
+
+/**
+ * Shell operators that turn ONE command into several, plus the expansions that let
+ * one command fetch another. A pinned command is a command, not a script.
+ *
+ * The primary defence is that the runner executes argv with `shell: false`, so
+ * nothing here is interpreted at all. This check is the second layer, applied to
+ * the DATA at write time: a pin is stored Rules-layer data that outlives the
+ * runner that wrote it, and any future consumer that does reach for a shell
+ * inherits a value that cannot chain or substitute.
+ *
+ * Deliberately EXCLUDED:
+ *  - Quotes: `pytest -k "not slow"` is one command with a spaced argument.
+ *  - Parentheses: inert under argv, and required by the pins the repo's own suite
+ *    uses (`node -e "process.exit(require('fs').existsSync('out.txt')?0:1)"`).
+ *    Excluding them costs nothing, because `$` and backtick ARE refused — so
+ *    `$(…)` and `` `…` `` cannot form, and substitution is the escalation vector
+ *    that parentheses alone do not provide.
+ */
+const SHELL_METACHARACTERS = /[;&|`$><\n\r]/;
+
+/**
+ * Validate one pinned verification command. Returns null when acceptable, else a
+ * human-readable reason. Shared by both engines (so the durable and in-memory
+ * paths cannot drift) and by the contract layer (so a bad pin is a 422, not a
+ * silent acceptance that fails later on a runner).
+ */
+export function pinnedCommandRejection(command: string): string | null {
+  const trimmed = command.trim();
+  if (trimmed === '') return 'a pinned verification command must not be empty';
+  const meta = SHELL_METACHARACTERS.exec(trimmed);
+  if (meta !== null) {
+    return `pinned verification command may not contain the shell metacharacter ${JSON.stringify(meta[0])} (${JSON.stringify(command)}); pin each command as its own array entry`;
+  }
+  const binary = trimmed.split(/\s+/)[0] ?? '';
+  if (!VERIFICATION_ALLOWLIST.includes(binary)) {
+    return `pinned verification command must start with one of ${VERIFICATION_ALLOWLIST.join(', ')} (got ${JSON.stringify(binary)})`;
+  }
+  return null;
+}
+
+/**
+ * Characters permitted in spine-supplied strings that the RUNNER interpolates
+ * into the agent command template it executes (`invokeDevWith`, `externalKey`).
+ *
+ * These are the untrusted inputs in that template: they are written through
+ * `create_work_item` / `import_stories`, whereas the template itself is the
+ * operator's own argv. Constraining the data is what closes the injection; the
+ * operator's `--agent-cmd` keeps ordinary shell quoting, which the documented
+ * form in README depends on.
+ *
+ * `stories.ts` already enforced exactly this shape for a story `id` while the
+ * contract accepted any string for the same field — two validators disagreeing
+ * on one value. This is now the single definition both use.
+ */
+export const SAFE_SPINE_STRING = /^[A-Za-z0-9 ._/:@#,-]*$/;
+
+/**
+ * The evidence kinds a gate verdict is computed FROM — as opposed to the kinds
+ * the engine never consults (`review_report`, `halt_report`, `push_target`,
+ * each documented "never a guard" on EvidenceKind above).
+ *
+ * The distinction carries a rule (0.2a): only verdict-bearing evidence must be
+ * fenced to the live claim. Context evidence is exempt, because a reviewer
+ * legitimately posts a `review_report` while the WORKER's claim is still live
+ * (the runner advances to in_review and only then releases — Phase 4's exit
+ * criterion does exactly this), and demanding the worker's fencing token from
+ * the reviewer would push that reviewer off the rails to say something the
+ * engine was never going to read.
+ *
+ * `evidence.submit` is still required for every kind: the evidence table is an
+ * audit surface whether or not a given row feeds a verdict.
+ *
+ * If a kind is ever PROMOTED to a guard, it must be added here in the same
+ * change — that is the whole point of the list being one named constant the
+ * guard logic and the authz rule both read.
+ */
+export const VERDICT_EVIDENCE_KINDS: readonly EvidenceKind[] = [
+  'test_run',
+  'git_diff',
+  'commit',
+  'doc_lint',
+  'intent_hash',
+  'pr',
+];
+
+/** Copy only the verdict-relevant fields out of an evidence payload. */
+export function pickVerdictFields(payload: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const field of VERDICT_EVIDENCE_FIELDS) {
+    if (payload[field] !== undefined) out[field] = payload[field];
+  }
+  return out;
 }
 
 /** Review loop: exactly this many loopbacks allowed; the next one blocks. */

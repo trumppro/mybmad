@@ -63,10 +63,10 @@ function makeRig(): Rig {
   const po = engine.createActor({ type: 'user', displayName: 'PO' });
   const dev = engine.createActor({ type: 'user', displayName: 'Dev' });
   const reviewer = engine.createActor({ type: 'user', displayName: 'Reviewer' });
-  for (const p of ['task.plan', 'task.claim', 'feature.init', 'gate.spec.approve'] as const) {
+  for (const p of ['task.plan', 'task.claim', 'feature.init', 'gate.spec.approve', 'evidence.submit'] as const) {
     engine.grant({ actorId: po.id, permission: p });
   }
-  for (const p of ['task.claim', 'task.advance', 'task.block'] as const) {
+  for (const p of ['task.claim', 'task.advance', 'task.block', 'evidence.submit'] as const) {
     engine.grant({ actorId: dev.id, permission: p });
   }
   engine.grant({ actorId: reviewer.id, permission: 'gate.review.approve' });
@@ -474,6 +474,7 @@ describe('agentSelfDispatch policy key (roadmap §3/§5.4 seam)', () => {
     const rig = makeRig();
     const agent = rig.engine.createActor({ type: 'agent', displayName: 'W' });
     rig.engine.grant({ actorId: agent.id, permission: 'task.claim' });
+    rig.engine.grant({ actorId: agent.id, permission: 'evidence.submit' });
     rig.engine.setWorkspacePolicy({ policy: { agentSelfDispatch: false }, byActorId: rig.admin.id });
 
     const { wi } = itemInReview(rig); // any claimable item would do; use a fresh backlog one

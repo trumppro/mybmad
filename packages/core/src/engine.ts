@@ -20,9 +20,12 @@ import {
   InvalidTransitionError,
   PermissionDeniedError,
   PERSONAS,
+  pickVerdictFields,
+  pinnedCommandRejection,
   PLAN_CEILINGS,
   REVIEW_LOOP_LIMIT,
   StoriesValidationError,
+  VERDICT_EVIDENCE_KINDS,
   WORK_ITEM_STATES,
   type Actor,
   type ActorType,
@@ -60,7 +63,6 @@ import {
   type SpineEvent,
   type StoriesImportResult,
   type WorkItem,
-  type WorkItemKind,
   type WorkItemState,
   type WorkspacePolicy,
 } from './types.js';
@@ -662,6 +664,10 @@ class EngineImpl implements SpineEngine {
     forgeOwner?: string;
     forgeRepo?: string;
   }): Project {
+    // 0.2b: containers are permissioned. An earlier pin called this deliberately
+    // ungated "symmetric with createFeature (enforced at the ops layer)"; nothing
+    // at any layer enforced it — see the project.test.ts cluster.
+    this.requirePermission(input.actorId, 'feature.init');
     const slug = input.slug ?? EngineImpl.slugify(input.name);
     if (slug === '') throw new GuardFailedError('project slug must not be empty');
     if (this.projectSlugIndex.has(slug)) {
@@ -757,6 +763,7 @@ class EngineImpl implements SpineEngine {
   }
 
   createFeature(input: { actorId: string; projectId?: string; name?: string }): Feature {
+    this.requirePermission(input.actorId, 'feature.init'); // 0.2b
     const project =
       input.projectId !== undefined
         ? this.mustGetProject(input.projectId)
@@ -780,6 +787,9 @@ class EngineImpl implements SpineEngine {
   }
 
   createWorkItem(input: CreateWorkItemInput & { actorId: string }): WorkItem {
+    // 0.2b: `task.plan` — the same authority that governs backlog→draft, because
+    // this is where `invokeDevWith` enters the system and the runner executes it.
+    this.requirePermission(input.actorId, 'task.plan');
     const slug = input.title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
@@ -815,6 +825,7 @@ class EngineImpl implements SpineEngine {
   }
 
   importStories(input: { featureId: string; yaml: string; actorId: string }): StoriesImportResult {
+    this.requirePermission(input.actorId, 'task.plan'); // 0.2b — createWorkItem in bulk
     const entries = parseStories(input.yaml);
     if (!this.features.has(input.featureId)) {
       throw new StoriesValidationError(`unknown feature: ${input.featureId}`);
@@ -1317,6 +1328,33 @@ class EngineImpl implements SpineEngine {
 
   // -- gates & evidence (roadmap §1.4) ------------------------------------------
 
+  /**
+   * Author machine evidence for an item (conformance pin: gates-evidence.test.ts,
+   * "who may author machine evidence").
+   *
+   * Two conditions, and the split is deliberate:
+   *  1. `evidence.submit` is ALWAYS required. Measuring is an authority. Without
+   *     this, any actor holding any token could append `test_run{exitCode:0}` and
+   *     `commit{reachableOnRemote:true}` to any item — and because both evidence
+   *     guards take the LATEST row of each kind, appending after the real (failing)
+   *     measurement is enough to turn the done gate green on facts nobody measured.
+   *     That is the fake-done the thesis exists to refuse, and it needed only a token.
+   *  2. For a VERDICT-BEARING kind (VERDICT_EVIDENCE_KINDS) on an item under a LIVE
+   *     claim, the caller must present that claim's fencing token. Facts about work
+   *     in flight come only from the worker executing it — the §1.3 capability rule
+   *     for transitions, extended to the facts transitions are judged on.
+   *
+   * Condition 2 is narrowed twice, and both narrowings are load-bearing:
+   *  - Only when a claim is LIVE, because two legitimate submissions happen when
+   *    none exists: the `intent_hash` the CLI submits at spec approval (§9.3, before
+   *    any claim) and the `pr` merge fact measured at review approval (§9.6 — the
+   *    runner advances to in_review and THEN releases, so the reviewer never holds
+   *    a claim).
+   *  - Only for verdict-bearing kinds, because a reviewer posts a `review_report`
+   *    while the worker's claim is still live (Phase 4's exit criterion does exactly
+   *    that). Fencing context evidence would push the reviewer off the rails to say
+   *    something the engine never reads.
+   */
   submitEvidence(input: {
     workItemId: string;
     evidence: Evidence;
@@ -1324,10 +1362,29 @@ class EngineImpl implements SpineEngine {
     fencingToken?: number;
   }): void {
     const item = this.mustGetItem(input.workItemId);
+    this.requirePermission(input.actorId, 'evidence.submit');
+    // A presented token is always validated (claims.test.ts pin). Beyond that: for
+    // evidence a verdict is computed from, a token is not optional while a claim is
+    // live — absent one, we cannot tell the worker from anyone who learned the
+    // workItemId.
+    if (
+      input.fencingToken === undefined &&
+      VERDICT_EVIDENCE_KINDS.includes(input.evidence.kind) &&
+      this.liveClaimsOf(item.id).length > 0
+    ) {
+      throw new ConflictError(
+        `work item ${item.id} is under a live claim: ${input.evidence.kind} evidence must present its fencing token`,
+      );
+    }
     this.validatePresentedToken(item, input.fencingToken, input.actorId);
     this.evidenceRows.push({ workItemId: item.id, evidence: input.evidence, seq: this.evidenceRows.length + 1 });
     this.append('work_item', item.id, 'evidence.submitted', input.actorId, {
       kind: input.evidence.kind,
+      // The verdict-relevant fields, so `oahs events` can answer "on what
+      // evidence" without a second query — the log is the audit artifact. A
+      // WHITELIST, not the whole payload: agent-authored payloads carry
+      // transcripts and free-form text that have no business in the event log.
+      ...pickVerdictFields(input.evidence.payload),
     });
   }
 
@@ -1344,6 +1401,14 @@ class EngineImpl implements SpineEngine {
         throw new GuardFailedError(`spec_approval applies to draft items, not ${item.state}`);
       }
       if (input.pinnedVerification !== undefined) {
+        // 0.2c: D7 says the runner executes only pinned, ALLOWLISTED commands.
+        // Validate here — the only place a pin can be written — so every surface
+        // inherits it and a rejected pin leaves the spec unapproved rather than
+        // half-approved (permission precedes any effect, so this must too).
+        for (const command of input.pinnedVerification) {
+          const rejection = pinnedCommandRejection(command);
+          if (rejection !== null) throw new GuardFailedError(rejection);
+        }
         item.pinnedVerification = [...input.pinnedVerification];
       }
       if (!this.quorumWouldBeMet(item, 'spec_approval', input.actorId)) {
@@ -1446,6 +1511,30 @@ class EngineImpl implements SpineEngine {
         throw new GuardFailedError(`pinned verification did not pass: ${command}`);
       }
     }
+    // 0.2d: a passing test_run must have measured the revision being certified.
+    // The runner normalizes the worktree to HEAD before verifying (§6.7), which makes
+    // the claim TRUE; this makes it CHECKABLE. Without it the engine certifies "the
+    // final revision" while never comparing a revision, so a green run on commit A
+    // could certify commit B. Applied only when BOTH sides state a revision:
+    // evidence is append-only and data dirs outlive binaries, so pre-0.2d evidence
+    // (no `revision` on the test_run) keeps its former meaning.
+    const commitRows = rows.filter((row) => row.evidence.kind === 'commit');
+    const latestCommit = commitRows[commitRows.length - 1];
+    const certifiedSha = latestCommit?.evidence.payload['sha'];
+    if (typeof certifiedSha === 'string') {
+      for (const command of item.pinnedVerification ?? []) {
+        const runs = rows.filter(
+          (row) => row.evidence.kind === 'test_run' && row.evidence.payload['command'] === command,
+        );
+        const measured = runs[runs.length - 1]?.evidence.payload['revision'];
+        if (typeof measured === 'string' && measured !== certifiedSha) {
+          throw new GuardFailedError(
+            `pinned verification measured revision ${measured}, but the certified commit is ${certifiedSha}: ${command}`,
+          );
+        }
+      }
+    }
+
     if (item.kind === 'code') {
       // Non-code deliverables carry no commit requirement (roadmap §1.4):
       // their completion rests on machine-checkable doc evidence plus the

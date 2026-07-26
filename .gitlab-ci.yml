@@ -1,14 +1,19 @@
 # oahs platform CI — the GitLab MIRROR pipeline (roadmap §8 / decision D15).
 # The repo's primary origin is GitHub; the authoritative pipeline is the GitHub
-# Actions workflow .github/workflows/oahs-ci.yaml. This file runs the identical
-# checks on the GitLab mirror, so a pipeline exists wherever the code is looked at
-# (it does nothing if pipelines are disabled on the mirror). Keep the two in sync.
+# Actions workflow .github/workflows/oahs-ci.yaml.
+#
+# It runs a SUBSET, and the difference is stated rather than implied (this header
+# used to claim "the identical checks"): the mirror has `spine-purity` and `check`.
+# It does NOT run `style` (eslint/prettier/markdownlint), `tools` (upstream's six
+# suites + the fork gate + shellcheck), or `dispatch-e2e` (a real Docker daemon —
+# the ONE job that proves the container path against something other than a stub).
+# Treat GitHub as authoritative; a green mirror is a weaker statement.
 #
 # It enforces, on every branch push and merge request:
 #   1. spine purity — two greps that machine-check §0.1 (no LLM-provider SDK) and
 #      §2.5 (no @oahs/gateway import) inside packages/{core,db,contracts} + apps/spine-api;
 #   2. no unfinished-work markers in the platform docs (delivery/ + docs/oahs/);
-#   3. make check — typecheck + every @oahs/* test suite (incl. the pg-engine parity
+#   3. make check — typecheck + lint-oahs + every @oahs/* test suite (incl. the pg-engine parity
 #      run: packages/db re-executes the core conformance suite against PGlite).
 #
 # pnpm-workspace.yaml is gitignored by design (see docs/oahs/); CI regenerates it.

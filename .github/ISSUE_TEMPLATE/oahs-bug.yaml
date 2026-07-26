@@ -1,0 +1,57 @@
+name: oahs platform bug
+description: A defect in the oahs platform (packages/, apps/) — not the carried BMAD playbooks
+labels: ["oahs", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For the **oahs platform** (the spine, runner, dispatcher, CLI, cockpit).
+        For the BMAD playbook content under `src/`, use the upstream project instead.
+
+        Nothing is published yet, so "version" means what `oahs --version` prints from
+        your build — please run it rather than guessing.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, and what it did instead of what you expected.
+      placeholder: |
+        $ oahs approve 1 --gate spec_approval --pin 'pnpm test'
+        GuardFailedError: ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `oahs --version`, or `GET /version` from the running spine.
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      description: Which persistence path — the two behave differently under concurrency.
+      options:
+        - pglite (serve --data, the default)
+        - memory (serve --ephemeral)
+        - not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Audit trail
+      description: |
+        If a work item is involved, `oahs events <wi_...>` is usually the fastest way to
+        show what the spine actually recorded. Redact tokens.
+      render: shell
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before filing
+      options:
+        - label: I built from source with `make build` (nothing is published)
+          required: true
+        - label: I checked CHANGELOG-oahs.md's "Still NOT in it" — the gap may be deliberate
+          required: true

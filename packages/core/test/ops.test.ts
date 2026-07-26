@@ -33,6 +33,7 @@ function setup(): {
 
   const holder = engine.createActor({ type: 'agent', displayName: 'Holder' }).id;
   engine.grant({ actorId: holder, permission: 'task.claim' });
+  engine.grant({ actorId: holder, permission: 'evidence.submit' });
   engine.grant({ actorId: holder, permission: 'task.advance' });
 
   const ops = engine.createActor({ type: 'user', displayName: 'Ops' }).id;

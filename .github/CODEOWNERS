@@ -1,0 +1,13 @@
+# The conformance suite IS the specification (packages/core/test/CONFORMANCE.md:
+# "a test change is a spec change and needs the same review as a roadmap edit").
+#
+# Nothing enforced that. There was no CODEOWNERS, no CI step referencing CONFORMANCE.md,
+# and no count or hash assertion — so an agent or a hurried human could delete a pin
+# during a refactor and the build stayed green. The claim "the suite is the spec" is only
+# as strong as the thing that stops the suite being edited to fit the code.
+#
+# Replace @OWNER with the real owner (a GitHub handle or team) for this to take effect.
+/packages/core/test/            @OWNER
+/packages/core/test/CONFORMANCE.md  @OWNER
+/product-thesis.md              @OWNER
+/product-roadmap.md             @OWNER

