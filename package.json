@@ -113,7 +113,6 @@
     "yaml-eslint-parser": "^1.2.3",
     "yaml-lint": "^1.7.0"
   },
-  "packageManager": "pnpm@11.13.0",
   "engines": {
     "node": ">=22"
   }

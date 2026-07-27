@@ -13,17 +13,6 @@
 FROM node:22-slim AS builder
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
-# COREPACK_ENABLE_STRICT=0 (0.2.0): the root package.json now carries
-# "packageManager": "pnpm@11.13.0", and corepack's shim reads that field in
-# preference to whatever `corepack prepare` activated — so without this the pin
-# below is silently ignored and the image builds with pnpm 11. That is exactly
-# what the comment below says must not happen: pnpm 11's default
-# minimum-release-age supply-chain policy rejects freshly published lockfile
-# entries, and this install is deliberately NOT --frozen-lockfile. The field is
-# correct for the repo (contributors and CI use 11.13.0); this stage is the one
-# documented place that deviates, so it opts out explicitly rather than the repo
-# dropping a true statement about itself.
-ENV COREPACK_ENABLE_STRICT=0
 # Pin pnpm to the version the lockfile was generated with. Without a pin,
 # corepack pulls the latest pnpm (11.x), whose default minimum-release-age
 # supply-chain policy rejects freshly published lockfile entries.
