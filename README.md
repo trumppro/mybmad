@@ -57,7 +57,7 @@ If you are evaluating the *idea*, that list is part of the pitch. The thesis is 
 
 ## Quickstart
 
-Needs **Node 22** ([`.nvmrc`](.nvmrc) — the root `package.json`'s `>=20.12` is upstream BMAD's floor, not oahs's), **pnpm** via `corepack enable && corepack prepare pnpm@11.13.0 --activate` (CI's pin; there is no `packageManager` field), and **git**. Docker is only for compose and the container dispatcher.
+Needs **Node 22** ([`.nvmrc`](.nvmrc); the root `package.json`'s `engines` now says `>=22` too, so the three no longer disagree), **pnpm** via `corepack enable && corepack prepare pnpm@11.13.0 --activate` (CI's pin — deliberately NOT a `packageManager` field, because corepack's shim would prefer that field over the pnpm 9.15.0 the container images pin on purpose, and pnpm 11's minimum-release-age policy breaks their non-frozen resolve), and **git**. Docker is only for compose and the container dispatcher.
 
 ```bash
 make install                 # pnpm install (whole workspace; the lockfile is committed)
