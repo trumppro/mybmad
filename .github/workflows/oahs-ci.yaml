@@ -192,11 +192,16 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build the CLI (the e2e drives the real bin)
         run: make build
-      - name: Build the images — both of them, for the first time in CI
-        run: |
-          docker build -f apps/oahs/Dockerfile -t oahs:local .
-          docker build -f apps/oahs/Dockerfile.runner -t oahs-runner:local .
-          docker build -f apps/oahs/Dockerfile.runner --target dispatcher -t oahs-dispatcher:local .
+      # Split into one step per image (it said "both of them" while building THREE).
+      # A single step meant a failure told you only "exit code 1" with no way to know
+      # WHICH image broke without the log — and the log needs auth, so a contributor
+      # reading the public API sees nothing actionable. Per-step conclusions are public.
+      - name: Build the spine image
+        run: docker build -f apps/oahs/Dockerfile -t oahs:local .
+      - name: Build the agent-runtime image
+        run: docker build -f apps/oahs/Dockerfile.runner -t oahs-runner:local .
+      - name: Build the dispatcher image
+        run: docker build -f apps/oahs/Dockerfile.runner --target dispatcher -t oahs-dispatcher:local .
       - name: The dispatcher must have a docker client; the AGENT image must not
         run: |
           docker run --rm oahs-dispatcher:local docker --version
