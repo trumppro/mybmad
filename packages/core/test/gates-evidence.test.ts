@@ -24,6 +24,7 @@
  * loopback transition itself.
  */
 import {
+  ConflictError,
   createEngine,
   GuardFailedError,
   PermissionDeniedError,
@@ -62,6 +63,12 @@ function setup(): Ctx {
   engine.grant({ actorId: dev.id, permission: 'task.advance' });
   engine.grant({ actorId: dev.id, permission: 'task.block' });
   engine.grant({ actorId: reviewer.id, permission: 'gate.review.approve' });
+  // Measuring is its own authority: the worker writes machine evidence, the PO
+  // submits the intent hash at spec approval (§9.3), the reviewer measures the
+  // merge fact at review approval (§9.6). The `outsider` deliberately gets none.
+  engine.grant({ actorId: dev.id, permission: 'evidence.submit' });
+  engine.grant({ actorId: po.id, permission: 'evidence.submit' });
+  engine.grant({ actorId: reviewer.id, permission: 'evidence.submit' });
   const feature = engine.createFeature({ actorId: po.id });
   return { engine, po, dev, reviewer, outsider, feature };
 }
@@ -433,5 +440,245 @@ describe('gate authority is the grant, not the actor type (roadmap §3)', () => 
       ctx.engine.approveGate({ workItemId: wi.id, gate: 'review_approval', actorId: ctx.outsider.id }),
     ).toThrow(PermissionDeniedError);
     expect(ctx.engine.getWorkItem(wi.id).state).toBe('in_review');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §1.4 condition 3, WRITE SIDE — who may author the facts the engine judges.
+//
+// The conditions above pin what evidence must SAY. This cluster pins who may
+// SAY it, which the suite had never asserted: before it, `submitEvidence`
+// required no permission, no claim and no fencing token, so any actor holding
+// any token could append `test_run{exitCode:0}` + `commit{reachableOnRemote:true}`
+// to any item and the done gate's evidence condition would pass on facts nobody
+// measured. That contradicts the thesis directly ("Evidence is MEASURED; authored
+// evidence never passes a guard") and it defeats §1.4 condition 3 without ever
+// touching condition 1 — the reviewer still holds the grant, they just approve a
+// forgery. It is also strictly worse than the documented trust floor, which
+// assumes an honest OPERATOR: this needed only a token.
+//
+// Two rules, and the split matters:
+//  - `evidence.submit` is required always. Measuring is an authority, like any other.
+//  - When the item has a LIVE claim, the submitter must present that claim's
+//    fencing token. Measurements about work in flight may come only from the
+//    worker executing it — the same capability rule §1.3 already applies to
+//    state transitions, extended to the facts those transitions are judged on.
+//
+// The second rule is deliberately conditioned on a live claim rather than made
+// absolute, because two legitimate submissions happen with no claim in
+// existence: the `intent_hash` the CLI submits at spec approval (§9.3, before
+// any claim), and the `pr` merge fact measured at review approval (§9.6 — the
+// runner advances to in_review and THEN releases, so the reviewer who runs
+// `oahs approve --check-merge` never holds a claim). An absolute fencing rule
+// would break both and push callers back outside the rails.
+// ---------------------------------------------------------------------------
+describe('submit_evidence — who may author machine evidence (roadmap §1.4 cond. 3; thesis "evidence is measured")', () => {
+  it('denies submitEvidence to an actor holding no evidence.submit grant', () => {
+    const ctx = setup();
+    const { wi } = setupItemInReview(ctx, PINNED);
+
+    // The whole fake-done attack in one call: a zero-grant actor asserting the verdict.
+    expect(() =>
+      ctx.engine.submitEvidence({
+        workItemId: wi.id,
+        actorId: ctx.outsider.id,
+        evidence: { kind: 'test_run', payload: { command: PINNED[0], exitCode: 0 } },
+      }),
+    ).toThrow(PermissionDeniedError);
+    expect(ctx.engine.listEvidence(wi.id).some((e) => e.kind === 'test_run')).toBe(false);
+  });
+
+  it('denies it to the six provisioned personas, which hold contributor (zero permissions)', () => {
+    const ctx = setup();
+    const { wi } = setupItemInReview(ctx, PINNED);
+    // provision_personas creates agent actors whose floor-state role is
+    // `contributor`, and DELIVERY_ROLES.contributor is literally [] — so the
+    // persona floor state is permission-identical to a bare actor, which is why
+    // this fixture needs no role assignment to model it. Before this rule, each
+    // of the six could forge any item's verdict.
+    const persona = ctx.engine.createActor({ type: 'agent', displayName: 'Amelia' });
+
+    expect(() =>
+      ctx.engine.submitEvidence({
+        workItemId: wi.id,
+        actorId: persona.id,
+        evidence: { kind: 'commit', payload: { sha: 'forged00', reachableOnRemote: true } },
+      }),
+    ).toThrow(PermissionDeniedError);
+  });
+
+  it('refuses evidence on a live-claimed item when no fencing token is presented', () => {
+    const ctx = setup();
+    const { wi } = setupItemInReview(ctx, PINNED); // claim is still live at in_review
+
+    // The dev HOLDS the grant and HOLDS the claim — but a measurement submitted
+    // without the capability is indistinguishable from one submitted by anyone
+    // who learned the workItemId.
+    expect(() =>
+      ctx.engine.submitEvidence({
+        workItemId: wi.id,
+        actorId: ctx.dev.id,
+        evidence: { kind: 'test_run', payload: { command: PINNED[0], exitCode: 0 } },
+      }),
+    ).toThrow(ConflictError);
+  });
+
+  it('refuses evidence on a live-claimed item from a permitted actor who does not hold the claim', () => {
+    const ctx = setup();
+    const { wi } = setupItemInReview(ctx, PINNED);
+    const other = ctx.engine.createActor({ type: 'agent', displayName: 'Another worker' });
+    ctx.engine.grant({ actorId: other.id, permission: 'evidence.submit' });
+
+    // Holding the authority is not holding the work. No fencing token it can
+    // present belongs to this item's live claim.
+    expect(() =>
+      ctx.engine.submitEvidence({
+        workItemId: wi.id,
+        actorId: other.id,
+        evidence: { kind: 'test_run', payload: { command: PINNED[0], exitCode: 0 } },
+      }),
+    ).toThrow(ConflictError);
+  });
+
+  it('accepts evidence with no fencing token when the item has NO live claim (§9.3 intent_hash at spec approval)', () => {
+    const ctx = setup();
+    const draft = createDraftItem(ctx); // draft: nothing has been claimed yet
+
+    // This is the CLI's `oahs approve --spec-file` path. It must keep working:
+    // the measuring side computes the hash where the file is, before any claim exists.
+    ctx.engine.submitEvidence({
+      workItemId: draft.id,
+      actorId: ctx.po.id,
+      evidence: { kind: 'intent_hash', payload: { algo: 'v1', hash: 'abc123' } },
+    });
+    expect(ctx.engine.listEvidence(draft.id).map((e) => e.kind)).toContain('intent_hash');
+  });
+
+  it('accepts evidence with no fencing token once the claim is released (§9.6 pr merge at review approval)', () => {
+    const ctx = setup();
+    const { wi, claim } = setupItemInReview(ctx, PINNED);
+    ctx.engine.releaseClaim({ claimId: claim.id, actorId: ctx.dev.id, reason: 'run finished' });
+
+    // The reviewer measures the merge fact and never held the claim — the exact
+    // shape of `oahs approve --check-merge`.
+    ctx.engine.submitEvidence({
+      workItemId: wi.id,
+      actorId: ctx.reviewer.id,
+      evidence: { kind: 'pr', payload: { action: 'merged_into_default', number: 7 } },
+    });
+    expect(ctx.engine.listEvidence(wi.id).map((e) => e.kind)).toContain('pr');
+  });
+
+  it('exempts context evidence from fencing — a reviewer reports while the worker holds the claim', () => {
+    const ctx = setup();
+    const { wi } = setupItemInReview(ctx, PINNED); // the DEV's claim is still live
+
+    // `review_report` is documented "NEVER a guard, context only" and
+    // checkReviewEvidence says "review_report is never consulted". Phase 4's exit
+    // criterion has the reviewer agent post one at exactly this moment. Fencing it
+    // would demand the WORKER's token from the REVIEWER to say something the engine
+    // does not read — so the fencing rule covers verdict-bearing kinds only.
+    ctx.engine.submitEvidence({
+      workItemId: wi.id,
+      actorId: ctx.reviewer.id,
+      evidence: { kind: 'review_report', payload: { verdict: 'needs a rollout section' } },
+    });
+    expect(ctx.engine.listEvidence(wi.id).map((e) => e.kind)).toContain('review_report');
+
+    // …but the authority is still required: context is not a free-for-all.
+    expect(() =>
+      ctx.engine.submitEvidence({
+        workItemId: wi.id,
+        actorId: ctx.outsider.id,
+        evidence: { kind: 'review_report', payload: { verdict: 'looks fine to me' } },
+      }),
+    ).toThrow(PermissionDeniedError);
+  });
+
+  it('refuses a done gate whose passing test_run measured a DIFFERENT revision (0.2d)', () => {
+    const ctx = setup();
+    const { wi, claim } = setupItemInReview(ctx, PINNED);
+
+    // Every pinned command passed — but against an older revision than the commit
+    // now being certified. Normalizing the worktree to HEAD (runner §6.7) makes the
+    // honest runner measure the right tree; it cannot make the CORE verify that it
+    // did. Without this comparison the engine certifies "the final revision" while
+    // never comparing a revision, so a green run on commit A certifies commit B.
+    for (const command of PINNED) {
+      ctx.engine.submitEvidence({
+        workItemId: wi.id,
+        actorId: ctx.dev.id,
+        fencingToken: claim.fencingToken,
+        evidence: { kind: 'test_run', payload: { command, exitCode: 0, revision: 'aaaaaaa' } },
+      });
+    }
+    ctx.engine.submitEvidence({
+      workItemId: wi.id,
+      actorId: ctx.dev.id,
+      fencingToken: claim.fencingToken,
+      evidence: { kind: 'commit', payload: { sha: 'bbbbbbb', reachableOnRemote: true } },
+    });
+
+    expect(() =>
+      ctx.engine.approveGate({ workItemId: wi.id, gate: 'review_approval', actorId: ctx.reviewer.id }),
+    ).toThrow(GuardFailedError);
+    expect(ctx.engine.getWorkItem(wi.id).state).toBe('in_review');
+  });
+
+  it('accepts a done gate when the passing test_run and the commit name the same revision', () => {
+    const ctx = setup();
+    const { wi, claim } = setupItemInReview(ctx, PINNED);
+    for (const command of PINNED) {
+      ctx.engine.submitEvidence({
+        workItemId: wi.id,
+        actorId: ctx.dev.id,
+        fencingToken: claim.fencingToken,
+        evidence: { kind: 'test_run', payload: { command, exitCode: 0, revision: 'cafe123' } },
+      });
+    }
+    ctx.engine.submitEvidence({
+      workItemId: wi.id,
+      actorId: ctx.dev.id,
+      fencingToken: claim.fencingToken,
+      evidence: { kind: 'commit', payload: { sha: 'cafe123', reachableOnRemote: true } },
+    });
+    const done = ctx.engine.approveGate({
+      workItemId: wi.id,
+      gate: 'review_approval',
+      actorId: ctx.reviewer.id,
+    });
+    expect(done.state).toBe('done');
+  });
+
+  it('back-compat: a test_run carrying NO revision is judged as before (pre-0.2d evidence)', () => {
+    const ctx = setup();
+    const { wi, claim } = setupItemInReview(ctx, PINNED);
+    // Evidence is append-only and data dirs outlive binaries, so an item verified by
+    // a pre-0.2d runner must still be approvable — the comparison applies only when
+    // the measuring side actually stated which revision it measured.
+    submitAllPassingEvidence(ctx, wi.id, claim, PINNED);
+    const done = ctx.engine.approveGate({
+      workItemId: wi.id,
+      gate: 'review_approval',
+      actorId: ctx.reviewer.id,
+    });
+    expect(done.state).toBe('done');
+  });
+
+  it('records the submitter and the verdict-relevant payload in the append-only log', () => {
+    const ctx = setup();
+    const { wi, claim } = setupItemInReview(ctx, PINNED);
+    submitTestRun(ctx, wi.id, claim, PINNED[0]!, 0);
+
+    // `oahs events <id>` is sold as "who did what, on what evidence — a query,
+    // not an interview" (OAHS.md). An event carrying only {kind} cannot answer
+    // the second half: it does not say WHICH command or WHAT exit code won the
+    // latest-wins comparison, so the log is not self-sufficient for an audit.
+    const event = ctx.engine
+      .events(wi.id)
+      .filter((e) => e.type === 'evidence.submitted')
+      .at(-1);
+    expect(event?.actorId).toBe(ctx.dev.id);
+    expect(event?.payload).toMatchObject({ kind: 'test_run', command: PINNED[0], exitCode: 0 });
   });
 });

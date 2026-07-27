@@ -51,6 +51,9 @@ function makeRig(): Rig {
   engine.grant({ actorId: po.id, permission: 'gate.review.approve' });
   const reviewerAgent = engine.createActor({ type: 'agent', displayName: 'Adversarial reviewer' });
   engine.grant({ actorId: reviewerAgent.id, permission: 'gate.review.reject' });
+  // Authority is assigned, not assumed: writing its report is its own grant,
+  // separate from the rejection loopback it also holds (0.2a).
+  engine.grant({ actorId: reviewerAgent.id, permission: 'evidence.submit' });
   const feature = engine.createFeature({ actorId: po.id });
   return { engine, admin, po, reviewerAgent, feature };
 }

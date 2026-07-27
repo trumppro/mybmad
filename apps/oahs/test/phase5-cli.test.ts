@@ -66,6 +66,7 @@ beforeAll(async () => {
     { actorId: created.po.id, permission: 'task.plan' },
     { actorId: created.po.id, permission: 'task.advance' },
     { actorId: created.worker.id, permission: 'task.claim' },
+    { actorId: created.worker.id, permission: 'evidence.submit' },
     { actorId: created.worker.id, permission: 'task.advance' },
     { actorId: created.reviewer.id, permission: 'gate.review.approve' },
   ]) {

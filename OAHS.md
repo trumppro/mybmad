@@ -171,4 +171,18 @@ Phases 0–5 ✅, **Phase 6 model gateway ✅ (part 1)**, **Phase 7 "Cockpit" �
 
 **Shipped since — Phases 8, 9, 10 ✅** (§8 hardening & the trust floor, §9 the feature-layer contract, §10 execution isolation: job-bound scoped tokens, a container per claim, claim-scoped push credentials, durability push + spine-driven cross-machine adoption, and a lease reaper — proven against a real Docker daemon in CI, not a stub). **Next — Phases 11–12** (roadmap §11–§12, added 2026-07 from the Actorium architecture review, `docs/ref/ai_workflow_and_architecture.pdf`): §11 the knowledge layer (pgvector search, spec read surface, `impact_report` evidence — D12/D14), §12 service topology (three compose stacks, `@oahs/auth`). Backlogs: [delivery/phase-8](delivery/phase-8-hardening/stories.yaml) through [phase-12](delivery/phase-12-topology/stories.yaml). Day-to-day operations for the two live roles (PO, Tech Lead) are written up in the Vietnamese ops handbook [docs/oahs/04](docs/oahs/04-so-tay-van-hanh.md), adapted from the [operations manual](docs/ref/actorium-user-manual.pdf); `tools/team-seed.sh` seeds the role setup it describes. A screen-by-screen comparison against the live Actorium portal (studied 2026-07-16) and the resulting roadmap uptake is in [docs/oahs/05](docs/oahs/05-actorium-portal-parity.md) — per-phase model policy (§2.5), the In-TDD stage / command palette / repo registry (§9), agent self-review + conflict-resolution (§10/§11), and org→workspace + OIDC + chat channels/DMs + Usage (§7/§12).
 
+**0.2.0 (2026-07-26) — a security and survivability release, not a phase.** Four holes
+meant the thesis's central sentence was prose rather than behaviour: `submit_evidence`
+required no permission/claim/fencing token (any token could forge a done gate's evidence),
+the entire planning surface was ungated (and `create_work_item` is the write path for the
+string the runner executes), the pinned-command "allowlist" checked one token and then ran
+the whole string through `bash -c`, and a passing test could certify a commit it never
+measured. All four are now conformance pins on both engines — see
+[CONFORMANCE.md](packages/core/test/CONFORMANCE.md) §0.2a–§0.2d. Plus the survivability
+floor: `oahs backup`/`restore` (there was none), atomic credential-store writes, JSON
+request logs with an actor, a `/readyz` that touches the engine, `SIGTERM` draining,
+`serve --host` defaulting to loopback, and type-aware lint enforcing the §0.1 import
+boundary as a rule rather than a grep. Phases 11–12 remain unimplemented and are now gated
+on the §0.1 review-gate #6 demand filter.
+
 **Truth notes** (docs must match code): the schema today is single-workspace — there is **no `workspace_id` column** on any table (multi-project lands as a first-class `project` entity in Wave 2); the append-only event log is real, and since Wave 1 each event carries `occurred_at`. Grants store a `scope` column that is **not yet enforced**. The one remaining operational habit is dogfood discipline: keep running platform stories through the spine and enforce *no platform work outside the spine*.

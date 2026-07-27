@@ -28,11 +28,12 @@ const STORIES_YAML = `
   description: the agent takes longer than the claim TTL
 `;
 
-// Sleeps ~900ms before finishing — longer than the 500ms claim TTL below.
+// Sleeps ~2500ms before finishing — longer than the 1500ms claim TTL below,
+// so the run only completes if the heartbeats genuinely renewed the lease.
 const SLOW_AGENT = `
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-await new Promise((r) => setTimeout(r, 900));
+await new Promise((r) => setTimeout(r, 2500));
 const specFile = process.env.OAHS_SPEC_FILE;
 mkdirSync('src', { recursive: true });
 writeFileSync('src/out.txt', 'slow work\\n');
@@ -79,6 +80,7 @@ beforeAll(async () => {
     { actorId: createdPo.actor.id, permission: 'gate.spec.approve' },
     { actorId: createdPo.actor.id, permission: 'feature.init' },
     { actorId: createdDev.actor.id, permission: 'task.claim' },
+    { actorId: createdDev.actor.id, permission: 'evidence.submit' },
     { actorId: createdDev.actor.id, permission: 'task.advance' },
     { actorId: createdDev.actor.id, permission: 'task.block' },
   ]) {
@@ -143,12 +145,18 @@ describe('runner heartbeat under wall-clock leases', () => {
     const lines: string[] = [];
     const result = await runOnce(
       runnerOptions({
-        // Agent sleeps 900ms — without heartbeats this lease dies mid-run. The TTL
-        // must also outlast finishRun's tail of synchronous git calls (diff, the
-        // §8 push-guard fingerprint, push, ls-remote), which block the heartbeat
-        // timer; 500ms keeps that margin under parallel-CI load while staying well
-        // under the agent's 900ms.
-        claimTtlMs: 500,
+        // Agent sleeps 2500ms — without heartbeats this 1500ms lease dies mid-run,
+        // so the heartbeat is still what the test proves.
+        //
+        // The TTL must ALSO outlast finishRun's tail of synchronous git calls (diff,
+        // the §8 push-guard fingerprint, push, ls-remote), because those block the
+        // heartbeat timer: while they run, no renewal can be sent. At 500ms that
+        // margin did not survive parallel-suite load — the git tail overran the TTL,
+        // the lease expired mid-run, and the run died on a stale fencing token. It
+        // failed under the full suite and passed in isolation, which made it look
+        // like a lock bug rather than a budget. 1500ms is ~3x the observed tail while
+        // still comfortably under the agent's sleep, so both properties hold.
+        claimTtlMs: 1_500,
         heartbeatMs: 100,
         log: (line) => lines.push(line),
       }),

@@ -25,6 +25,10 @@ export default [
       // Gitignored patterns
       'z*/**', // z-samples, z1, z2, etc.
       '.claude/**',
+      // Browser-automation scratch output (already .gitignored, and .dockerignored):
+      // it lands in the repo root as .yml snapshots, which trip the kebab-case and
+      // .yaml-extension rules on a file no human wrote.
+      '.playwright-mcp/**',
       '.codex/**',
       '.github/chatmodes/**',
       '.agent/**',

@@ -76,6 +76,7 @@ beforeAll(async () => {
     await admin.call('grant_permission', { actorId: createdPo.actor.id, permission });
   }
   await admin.call('grant_permission', { actorId: createdDev.actor.id, permission: 'task.claim' });
+  await admin.call('grant_permission', { actorId: createdDev.actor.id, permission: 'evidence.submit' });
   po = makeClient({ baseUrl, token: createdPo.token });
   dev = makeClient({ baseUrl, token: createdDev.token });
 });

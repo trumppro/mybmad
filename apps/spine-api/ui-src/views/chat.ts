@@ -7,7 +7,7 @@
  * the composer's mentions are STRUCTURED actor ids (a separate multi-select),
  * the body textarea is opaque text the server never parses.
  */
-import type { Message, Thread } from '@oahs/core';
+import type { Thread } from '@oahs/core';
 
 import { byId, clear, el, run } from '../core/dom.js';
 import { loadMessages, loadThreads, refreshAll } from '../core/loaders.js';

@@ -36,6 +36,7 @@ const ALL_PERMS: Permission[] = [
   'gate.review.approve',
   'feature.init',
   'feature.advance',
+  'evidence.submit',
   'dispatch.release_hold',
 ];
 

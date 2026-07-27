@@ -55,6 +55,7 @@ function makeRig(): Rig {
     'task.plan',
     'task.claim',
     'task.advance',
+    'evidence.submit',
   ] as const) {
     engine.grant({ actorId: po.id, permission });
   }

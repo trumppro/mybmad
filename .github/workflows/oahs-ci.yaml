@@ -6,7 +6,8 @@
 #   * spine purity — grep 1: no LLM-provider SDK inside packages/{core,db,contracts}
 #     + apps/spine-api (§0.1); grep 2: no @oahs/gateway import in the same trees (§2.5);
 #     grep 3: no TODO/FIXME/TBD/LOREM markers in delivery/ or docs/oahs/;
-#   * make check — typecheck + every @oahs/* suite (incl. the packages/db pg-engine
+#   * make check — typecheck + lint-oahs (type-aware TS lint, incl. the §0.1 import
+#     boundary as a RULE rather than a grep) + every @oahs/* suite (incl. the packages/db pg-engine
 #     parity run that re-executes the core conformance suite against PGlite);
 #   * tools — the CARRIED BMAD tree, which had no CI at all until 2026-07-17;
 #   * style — eslint + prettier + markdownlint, repo-wide.
@@ -43,6 +44,13 @@ jobs:
           if grep -rn '@oahs/gateway' packages/core/src packages/db/src packages/contracts/src apps/spine-api/src; then
             echo "FAIL (§2.5): @oahs/gateway is imported inside the spine"; exit 1
           fi
+      # 0.2d: the two greps above are kept as a cheap, dependency-free first line, but
+      # they are NO LONGER the enforcement. `make lint-oahs` (in the `check` job) runs
+      # no-restricted-imports over the same four spine trees PLUS apps/spine-api/ui-src,
+      # against the compiler's real module graph — so it also catches a vendor the six
+      # literals above do not name, and a transitive reach the greps cannot see. What
+      # neither can catch is a bare `fetch()` to a provider URL; that remains a review
+      # concern, and saying so is more useful than implying the greps are complete.
       - name: "grep 3/3 — no unfinished-work markers in delivery/ or docs/oahs/"
         run: |
           if grep -rnE '\b(TODO|FIXME|TBD|LOREM IPSUM)\b' delivery/ docs/oahs/; then
@@ -62,6 +70,11 @@ jobs:
           corepack prepare pnpm@11.13.0 --activate
       - name: Install
         run: pnpm install --frozen-lockfile
+      # The CLI bundle and the UI are no longer committed to git (they were, and every
+      # source change produced an unreviewable 12k-line generated diff). Building here
+      # means `check` fails on a broken bundle rather than leaving it to dispatch-e2e.
+      - name: make build
+        run: make build
       - name: make check
         run: make check
 
@@ -179,11 +192,16 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build the CLI (the e2e drives the real bin)
         run: make build
-      - name: Build the images — both of them, for the first time in CI
-        run: |
-          docker build -f apps/oahs/Dockerfile -t oahs:local .
-          docker build -f apps/oahs/Dockerfile.runner -t oahs-runner:local .
-          docker build -f apps/oahs/Dockerfile.runner --target dispatcher -t oahs-dispatcher:local .
+      # Split into one step per image (it said "both of them" while building THREE).
+      # A single step meant a failure told you only "exit code 1" with no way to know
+      # WHICH image broke without the log — and the log needs auth, so a contributor
+      # reading the public API sees nothing actionable. Per-step conclusions are public.
+      - name: Build the spine image
+        run: docker build -f apps/oahs/Dockerfile -t oahs:local .
+      - name: Build the agent-runtime image
+        run: docker build -f apps/oahs/Dockerfile.runner -t oahs-runner:local .
+      - name: Build the dispatcher image
+        run: docker build -f apps/oahs/Dockerfile.runner --target dispatcher -t oahs-dispatcher:local .
       - name: The dispatcher must have a docker client; the AGENT image must not
         run: |
           docker run --rm oahs-dispatcher:local docker --version

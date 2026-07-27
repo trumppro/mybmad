@@ -208,11 +208,13 @@ beforeAll(async () => {
   for (const grant of [
     { actorId: createdPo.actor.id, permission: 'task.plan' },
     { actorId: createdPo.actor.id, permission: 'task.claim' },
+    { actorId: createdPo.actor.id, permission: 'evidence.submit' },
     { actorId: createdPo.actor.id, permission: 'task.advance' },
     { actorId: createdPo.actor.id, permission: 'gate.spec.approve' },
     { actorId: createdPo.actor.id, permission: 'feature.init' },
     { actorId: createdPo.actor.id, permission: 'ops.force_release_claim' },
     { actorId: createdDev.actor.id, permission: 'task.claim' },
+    { actorId: createdDev.actor.id, permission: 'evidence.submit' },
     { actorId: createdDev.actor.id, permission: 'task.advance' },
     { actorId: createdDev.actor.id, permission: 'task.block' },
   ]) {

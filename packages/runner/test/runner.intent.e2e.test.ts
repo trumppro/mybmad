@@ -95,7 +95,10 @@ beforeAll(async () => {
     { actorId: createdPo.actor.id, permission: 'feature.init' },
     { actorId: createdPo.actor.id, permission: 'intent.edit' },
     { actorId: createdPo.actor.id, permission: 'task.block' },
+    // 0.2a: the PO submits the §9.3 intent hash at spec approval — an evidence write.
+    { actorId: createdPo.actor.id, permission: 'evidence.submit' },
     { actorId: createdDev.actor.id, permission: 'task.claim' },
+    { actorId: createdDev.actor.id, permission: 'evidence.submit' },
     { actorId: createdDev.actor.id, permission: 'task.advance' },
     { actorId: createdDev.actor.id, permission: 'task.block' },
   ]) {

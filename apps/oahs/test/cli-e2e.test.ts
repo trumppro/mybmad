@@ -106,9 +106,11 @@ describe('oahs CLI command functions against a live spine-api', () => {
 
     for (const [actorId, permission] of [
       [poId, 'task.plan'],
+      [poId, 'feature.init'],
       [poId, 'gate.spec.approve'],
       [poId, 'ops.force_release_claim'],
       [devId, 'task.claim'],
+      [devId, 'evidence.submit'],
       [devId, 'task.advance'],
       [reviewerId, 'gate.review.approve'],
     ] as const) {

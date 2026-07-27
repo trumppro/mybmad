@@ -3,6 +3,7 @@
  * command bus. Every rejection crosses the wire as the contracts envelope,
  * status-mapped by HTTP_STATUS so error semantics survive the transport.
  */
+import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import {
   ConflictError,
@@ -81,6 +82,17 @@ function ensureBootstrapAdminActor(engine: SpineEngine, tokenStore: TokenStore):
     displayName: 'Workspace Admin',
     governanceRole: 'admin',
   });
+  // 0.2b: the planning surface is now permissioned, and governance role is NOT a
+  // delivery superuser (§3 keeps plan × governance × delivery orthogonal, and
+  // requirePermission deliberately does not consult governanceRole). So seed the
+  // bootstrap actor with the two delivery grants an operator needs to put work
+  // into a fresh workspace. This costs no security: a governance admin can grant
+  // itself any permission at will, so refusing it here would be friction, not a
+  // boundary — the attack 0.2b closes is a ZERO-GRANT actor token, not this one.
+  // `tools/oahs-bootstrap.sh` already performed exactly these two grants by hand;
+  // this makes the intended state the default rather than a ritual to remember.
+  engine.grant({ actorId: actor.id, permission: 'feature.init' });
+  engine.grant({ actorId: actor.id, permission: 'task.plan' });
   tokenStore.setAdminActorId(actor.id);
   return actor.id;
 }
@@ -90,7 +102,27 @@ export async function buildServer(options: BuildServerOptions): Promise<FastifyI
   tokenStore.bootstrapAdmin(adminToken, ensureBootstrapAdminActor(engine, tokenStore));
   const bus = createCommandBus(engine, tokenStore);
 
-  const app = Fastify({ logger: false });
+  // 0.3: the spine used to run `logger: false` with 24 free-text `process.stderr.write`
+  // calls as its entire diagnostic surface — no level, no timestamp, no request id, no
+  // actor. An operator debugging a stuck claim at 2am had `oahs claim ls`, `oahs events`,
+  // and text no aggregator can parse without a bespoke reader. JSON lines cost nothing
+  // and can be shipped anywhere.
+  //
+  // Opt-out rather than opt-in: `OAHS_LOG=silent` restores the old behaviour for the
+  // hundreds of in-process test servers, which must not each print a request log.
+  const logging = (process.env['OAHS_LOG'] ?? 'info').toLowerCase();
+  const app = Fastify({
+    logger: logging === 'silent' ? false : { level: logging },
+    // Do not trust client-supplied request ids — they end up in the log an operator
+    // reads as if the server said them.
+    genReqId: () => randomUUID(),
+  });
+
+  // Fastify already logs a request/response pair carrying reqId, method, url, status
+  // and responseTime. What it cannot know is WHO — so `authenticate` binds the
+  // resolved actorId onto this request's logger and the framework's own completion
+  // line carries it. Using the framework rather than adding a third line per request
+  // keeps the volume honest and needs no deprecated options.
 
   const authenticate = (request: FastifyRequest): ActorContext | null => {
     const header = request.headers.authorization;
@@ -98,7 +130,18 @@ export async function buildServer(options: BuildServerOptions): Promise<FastifyI
     // Wall-clock now: the served spine runs wall-clock leases (D-G), so a scoped
     // token's engine-clock expiry is comparable to Date.now().
     const resolved = tokenStore.resolve(header.slice('Bearer '.length).trim());
-    if (resolved === null) return null;
+    if (resolved === null) {
+      // A failed bearer check used to be recorded NOWHERE — not in a log (there was
+      // none) and not in the event log. `oahs events` is sold as "who did what"; a
+      // rejected credential is part of that answer.
+      request.log.warn({ ip: request.ip }, 'auth rejected');
+      return null;
+    }
+    // The TOKEN is never logged — only the actor it resolved to. `setBindings` is a
+    // pino method that FastifyBaseLogger's interface does not surface; narrowing here
+    // rather than widening the interface keeps the cast local and obvious.
+    const logger = request.log as { setBindings?: (bindings: Record<string, unknown>) => void };
+    logger.setBindings?.({ actorId: resolved.actorId });
     return {
       actorId: resolved.actorId,
       isAdmin: resolved.isAdmin,
@@ -117,7 +160,24 @@ export async function buildServer(options: BuildServerOptions): Promise<FastifyI
     };
   };
 
+  // Liveness: the process is up and answering. Deliberately does NOT touch the engine —
+  // a liveness probe that fails on a slow query gets the container killed mid-work.
   app.get('/healthz', async () => ({ ok: true }));
+
+  // 0.3 — READINESS: can this spine actually serve? /healthz returned a hardcoded
+  // `{ ok: true }` and never touched the engine, so it lied in both directions: a spine
+  // whose PGlite worker had died still reported healthy, and the container HEALTHCHECK
+  // (which probes only /healthz) never noticed. This does one trivial engine read, so a
+  // dead or wedged worker is detectable by a probe instead of by a human.
+  app.get('/readyz', async (_request, reply) => {
+    try {
+      engine.listActors();
+      return { ok: true, engine: 'reachable' };
+    } catch (error) {
+      reply.code(503);
+      return { ok: false, engine: 'unreachable', reason: error instanceof Error ? error.message : String(error) };
+    }
+  });
 
   // Which binary is this? Unauthenticated, like /healthz: it is build metadata,
   // not spine state. Separate from /healthz on purpose — the Docker HEALTHCHECK

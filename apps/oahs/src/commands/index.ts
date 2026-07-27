@@ -471,8 +471,13 @@ export async function initCommand(admin: OahsClient, opts: InitOptions): Promise
     'gate.review.approve',
     'feature.init',
     'dispatch.release_hold',
+    // 0.2a: `oahs approve --spec-file` submits the §9.3 intent hash and
+    // `--check-merge` the §9.6 merge fact — both are evidence writes.
+    'evidence.submit',
   ];
-  const DEV_GRANTS = ['task.claim', 'task.advance', 'task.block'];
+  // 0.2a: the runner measures (test_run/git_diff/commit) under its claim's
+  // fencing token; without this grant a fresh `oahs init` cannot dispatch.
+  const DEV_GRANTS = ['task.claim', 'task.advance', 'task.block', 'evidence.submit'];
   for (const permission of PO_GRANTS) {
     await admin.call('grant_permission', { actorId: po.actor.id, permission });
   }

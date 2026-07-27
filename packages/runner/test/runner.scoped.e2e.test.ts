@@ -56,7 +56,7 @@ beforeAll(async () => {
   const admin = makeClient({ baseUrl, token: ADMIN });
   const dev = await admin.call<{ actor: Actor; token: string }>('create_actor', { type: 'agent', displayName: 'Dev' });
   devToken = dev.token;
-  for (const permission of ['task.plan', 'task.claim', 'task.advance', 'task.block', 'gate.spec.approve']) {
+  for (const permission of ['task.plan', 'task.claim', 'task.advance', 'task.block', 'gate.spec.approve', 'evidence.submit', 'feature.init']) {
     await admin.call('grant_permission', { actorId: dev.actor.id, permission });
   }
   po = makeClient({ baseUrl, token: dev.token });

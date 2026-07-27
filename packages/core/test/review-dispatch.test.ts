@@ -34,10 +34,11 @@ function makeRig(): Rig {
   const reviewer = engine.createActor({ type: 'user', displayName: 'Reviewer' });
   const rejectOnly = engine.createActor({ type: 'agent', displayName: 'Reviewer Agent' });
   const outsider = engine.createActor({ type: 'user', displayName: 'Outsider' });
-  for (const p of ['task.plan', 'task.claim', 'task.advance', 'gate.spec.approve', 'state.downgrade'] as const) {
+  for (const p of ['task.plan', 'task.claim', 'task.advance', 'gate.spec.approve', 'state.downgrade', 'feature.init'] as const) {
     engine.grant({ actorId: po.id, permission: p });
   }
   engine.grant({ actorId: dev.id, permission: 'task.claim' });
+  engine.grant({ actorId: dev.id, permission: 'evidence.submit' });
   engine.grant({ actorId: dev.id, permission: 'task.advance' });
   engine.grant({ actorId: reviewer.id, permission: 'gate.review.approve' });
   engine.grant({ actorId: rejectOnly.id, permission: 'gate.review.reject' });

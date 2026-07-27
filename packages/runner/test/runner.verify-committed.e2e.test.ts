@@ -176,6 +176,7 @@ beforeAll(async () => {
     { actorId: cpo.actor.id, permission: 'feature.init' },
     { actorId: cpo.actor.id, permission: 'ops.force_release_claim' },
     { actorId: cdev.actor.id, permission: 'task.claim' },
+    { actorId: cdev.actor.id, permission: 'evidence.submit' },
     { actorId: cdev.actor.id, permission: 'task.advance' },
     { actorId: cdev.actor.id, permission: 'task.block' },
   ]) {

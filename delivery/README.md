@@ -8,7 +8,7 @@ Every phase folder holds the same three artifacts:
 | `stories.yaml` | The importable backlog (roadmap D9) — `oahs import <featureId> <path>`. |
 | `CHECKLIST.md` | The implementation checklist: per story — tests to write first, exact files to change, acceptance boxes, the verification command to pin at the spec gate. Phases 8–12 only (1–7 shipped before the checklist convention existed). |
 
-Phases 1–7 are shipped (see git log and `OAHS.md` Status). The remaining work to complete
+**Status lives in ONE place: `OAHS.md` Status.** This file used to state its own ("Phases 1–7 are shipped"), `OAHS.md` said 8–10 were shipped too, and `EXECUTION-PLAN.md`'s risk register said "HEAD là c10e9cd (Phase 7); phase 8–11 mới chỉ là checklist" — three incompatible answers in the plan of record. Read `OAHS.md`; if a phase is marked ✅ there, its `CHECKLIST.md` here should be complete, and where it is not that gap is the truth. The remaining work to complete
 the product is **phases 8–12**, in that order. This README is the master checklist.
 
 **[EXECUTION-PLAN.md](EXECUTION-PLAN.md)** turns that backlog into an ordered, code-grounded

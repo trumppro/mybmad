@@ -57,7 +57,12 @@ say "build the agent-runtime image (the one no test has ever built)"
 docker build -q -f "$ROOT/apps/oahs/Dockerfile.runner" -t oahs-runner:e2e "$ROOT" > /dev/null
 
 say "start the spine (ephemeral, host)"
-$OAHS serve --ephemeral --port "$PORT" > "$WORK/spine.log" 2>&1 &
+# --host 0.0.0.0 is REQUIRED here since 0.3 made loopback the default: the claim
+# container has to reach this spine. On Docker Desktop that is host.docker.internal,
+# which a loopback-only listener cannot serve. (On Linux CI `--network host` shares
+# the namespace so 127.0.0.1 would work, but the harness must run on both.) This is
+# an ephemeral spine on a throwaway port in a test, not an operator default.
+$OAHS serve --ephemeral --port "$PORT" --host 0.0.0.0 > "$WORK/spine.log" 2>&1 &
 SPINE_PID=$!
 for _ in $(seq 1 40); do
   curl -sf "http://127.0.0.1:${PORT}/healthz" > /dev/null 2>&1 && break
@@ -65,14 +70,19 @@ for _ in $(seq 1 40); do
 done
 curl -sf "http://127.0.0.1:${PORT}/healthz" > /dev/null || fail "spine did not come up"
 ADMIN="$(sed -n 's/^admin token (generated): //p' "$WORK/spine.log" | head -1)"
-[ -n "$ADMIN" ] || fail "no admin token in spine log"
+[ -n "$ADMIN" ] || fail "no admin token in spine log (0.3 added JSON request logs to this
+stream; the token line is still plain stdout — if that changed, fix this extraction)"
 export OAHS_URL="http://127.0.0.1:${PORT}"
 
 say "create the runner identity + grants"
 ACTOR_OUT="$($OAHS actor create --type agent --name Runner --token "$ADMIN")"
 ACTOR_ID="$(sed -n 's/^actorId: //p' <<< "$ACTOR_OUT")"
 RUNNER_TOKEN="$(sed -n 's/^token: //p' <<< "$ACTOR_OUT")"
-for p in feature.init task.plan task.claim task.advance task.block gate.spec.approve; do
+# `evidence.submit` (0.2a): the containerised runner MEASURES — it submits
+# test_run/git_diff/commit, which is now an authority rather than a free write.
+# Without it the dispatch reaches the agent, the agent commits, and the run dies
+# at the first submit with PermissionDeniedError.
+for p in feature.init task.plan task.claim task.advance task.block gate.spec.approve evidence.submit; do
   $OAHS grant "$ACTOR_ID" "$p" --token "$ADMIN" > /dev/null
 done
 export OAHS_TOKEN="$RUNNER_TOKEN"

@@ -6,7 +6,7 @@
  */
 import { parse } from 'yaml';
 
-import { StoriesValidationError } from './types.js';
+import { SAFE_SPINE_STRING, StoriesValidationError } from './types.js';
 
 export interface StoryEntry {
   id: string;
@@ -18,6 +18,24 @@ export interface StoryEntry {
 }
 
 const ID_PATTERN = /^[A-Za-z0-9-]+$/;
+
+/**
+ * 0.2c: `invoke_dev_with` reaches the runner's agent command template and is
+ * interpolated into it before execution, so it is validated HERE — the contract's
+ * `create_work_item` refinement cannot see it, because `import_stories` carries an
+ * opaque YAML string on the wire. Same rule (SAFE_SPINE_STRING), enforced on the
+ * bulk path so the two ways of creating a work item agree.
+ */
+function readInvokeDevWith(entry: Record<string, unknown>, id: string): string {
+  const raw = entry['invoke_dev_with'];
+  if (typeof raw !== 'string') return '';
+  if (!SAFE_SPINE_STRING.test(raw)) {
+    throw new StoriesValidationError(
+      `entry "${id}" has an invoke_dev_with containing characters that are not allowed (${JSON.stringify(raw)}): it is interpolated into the agent command the runner executes, so only letters, digits, spaces and . _ / : @ # , - are permitted`,
+    );
+  }
+  return raw;
+}
 
 export function parseStories(yamlText: string): StoryEntry[] {
   let raw: unknown;
@@ -64,7 +82,7 @@ export function parseStories(yamlText: string): StoryEntry[] {
       description: entry['description'],
       specCheckpoint: entry['spec_checkpoint'] === true,
       doneCheckpoint: entry['done_checkpoint'] === true,
-      invokeDevWith: typeof entry['invoke_dev_with'] === 'string' ? entry['invoke_dev_with'] : '',
+      invokeDevWith: readInvokeDevWith(entry, id),
     });
   }
 

@@ -31,6 +31,5 @@ export async function start(): Promise<void> {
   const engine = createMemoryEngine();
   const app = await buildServer({ engine, tokenStore, adminToken });
   await app.listen({ port, host: '0.0.0.0' });
-  // eslint-disable-next-line no-console
   console.log(`oahs spine-api listening on :${port} (HTTP /rpc/*, MCP /mcp)`);
 }

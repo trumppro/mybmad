@@ -56,6 +56,7 @@ describe('oahs serve --data: durable engine + token store', () => {
     poId = extract(poOut, 'actorId');
     poToken = extract(poOut, 'token');
     await grantCommand(admin, { actorId: poId, permission: 'task.plan' });
+    await grantCommand(admin, { actorId: poId, permission: 'feature.init' }); // 0.2b
 
     const po = makeClient({ baseUrl: handle.url, token: poToken });
     featureId = extract(await featureCreateCommand(po), 'featureId');

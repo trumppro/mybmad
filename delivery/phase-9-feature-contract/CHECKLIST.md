@@ -1,5 +1,12 @@
 # Phase 9 checklist — the feature-layer contract
 
+> **Acceptance boxes below are UNTICKED (54 of 54) while `OAHS.md` Status marks this
+> phase ✅.** The code landed; this artifact was never filled in. Until someone walks it,
+> treat the ✅ as the author's summary and this file as the unverified detail — not the
+> other way round. (Phase 10's checklist IS filled in, so the artifact is used in
+> practice; these two were skipped.) Recorded 2026-07-26 rather than silently ticked,
+> because ticking boxes nobody checked is how a checklist stops meaning anything.
+
 Global rules: see [delivery/README.md](../README.md). Operational source:
 `docs/ref/actorium-user-manual.pdf`; team handbook `docs/oahs/04-so-tay-van-hanh.md`.
 

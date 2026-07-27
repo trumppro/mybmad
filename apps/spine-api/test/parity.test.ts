@@ -39,13 +39,18 @@ beforeAll(async () => {
   engine = createMemoryEngine();
   const tokenStore = new TokenStore();
 
-  // Seed shared state: one feature, one work item.
-  const feature = engine.createFeature({ actorId: 'admin' });
+  // Seed shared state: one feature, one work item. 0.2b made the planning surface
+  // permissioned, so the seeder is a real actor holding the two planning grants —
+  // `'admin'` was a bare string that never named an actor at all.
+  const seeder = engine.createActor({ type: 'user', displayName: 'Parity seeder' });
+  engine.grant({ actorId: seeder.id, permission: 'feature.init' });
+  engine.grant({ actorId: seeder.id, permission: 'task.plan' });
+  const feature = engine.createFeature({ actorId: seeder.id });
   const item = engine.createWorkItem({
     featureId: feature.id,
     externalKey: 'p1',
     title: 'Parity fixture story',
-    actorId: 'admin',
+    actorId: seeder.id,
   });
   workItemId = item.id;
 
